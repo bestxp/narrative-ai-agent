@@ -94,6 +94,22 @@ type Chunk struct {
 	ToolCalls []ToolCall // emitted on the chunk that finalises them
 	Finish    string     // "stop" | "tool_calls" | "length" | ...
 	Done      bool       // last chunk in the stream
+	// Usage is the provider-reported token count for the entire
+	// request so far. Most providers emit it on the very last
+	// chunk (the one with finish_reason set); Ollama omits it
+	// entirely. Callers that need a number regardless should fall
+	// back to an estimate.
+	Usage Usage
+}
+
+// Usage mirrors the OpenAI usage block. PromptTokens counts the
+// input messages, CompletionTokens counts the streamed response,
+// TotalTokens is the sum and the value most operators actually
+// want.
+type Usage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
 }
 
 // Client is a thin HTTP wrapper. It exposes one entry point, Stream,
@@ -222,7 +238,8 @@ func parseSSE(r io.Reader, onChunk func(Chunk) error, log zerolog.Logger) error 
 
 // decodeChunk turns a single SSE JSON payload into our Chunk shape.
 // The OpenAI wire format nests choices[0].delta.content /
-// choices[0].delta.tool_calls.
+// choices[0].delta.tool_calls. The top-level "usage" block is
+// provider-emitted once per request, usually on the final chunk.
 func decodeChunk(payload string) (Chunk, error) {
 	var raw struct {
 		Choices []struct {
@@ -240,11 +257,15 @@ func decodeChunk(payload string) (Chunk, error) {
 				} `json:"tool_calls"`
 			} `json:"delta"`
 		} `json:"choices"`
+		Usage *Usage `json:"usage,omitempty"`
 	}
 	if err := json.Unmarshal([]byte(payload), &raw); err != nil {
 		return Chunk{}, err
 	}
 	out := Chunk{}
+	if raw.Usage != nil {
+		out.Usage = *raw.Usage
+	}
 	if len(raw.Choices) == 0 {
 		return out, nil
 	}

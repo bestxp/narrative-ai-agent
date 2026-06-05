@@ -13,6 +13,7 @@ import (
 	"narrative/internal/adapter/llm"
 	"narrative/internal/adapter/storage"
 	"narrative/internal/domain"
+	"narrative/internal/slowlog"
 )
 
 // fakeLLM replays a deterministic sequence of chunks. The test
@@ -30,6 +31,7 @@ type fakeChunk struct {
 	toolArgs string
 	toolID   string
 	finish   string
+	usage    llm.Usage
 }
 
 func (f *fakeLLM) Stream(_ context.Context, _ llm.ChatRequest, onChunk func(llm.Chunk) error) error {
@@ -42,7 +44,7 @@ func (f *fakeLLM) Stream(_ context.Context, _ llm.ChatRequest, onChunk func(llm.
 	}
 	f.mu.Unlock()
 	for _, fc := range round {
-		ch := llm.Chunk{Content: fc.content, Finish: fc.finish}
+		ch := llm.Chunk{Content: fc.content, Finish: fc.finish, Usage: fc.usage}
 		if fc.toolName != "" {
 			ch.ToolCalls = []llm.ToolCall{{
 				ID:       fc.toolID,
@@ -76,13 +78,18 @@ func newGMTestEnv(t *testing.T) (*GM, *storage.FileStore, *fakeLLM) {
 	fl := NewFirstLaunch(fs)
 	npcm := NewNPCManager(fs)
 	wt := NewWorldTransition(fs)
+	cu := NewCharacterUpdate(fs, discardLogger(), slowlog.Discard())
 	fake := &fakeLLM{}
 	log, _ := newBufLogger()
 	g := NewGM(GMConfig{
 		Role:         llm.RoleConfig{Model: "test", MaxTokens: 100, Temperature: 0.5},
 		SystemPrompt: "# rules",
-	}, fs, fake, ss, mt, fl, npcm, wt, log)
+	}, fs, fake, ss, mt, fl, npcm, wt, cu, slowlog.Discard(), "off", false, log)
 	return g, fs, fake
+}
+
+func deltaOnly(s *strings.Builder) Callbacks {
+	return Callbacks{OnDelta: func(t string) error { s.WriteString(t); return nil }}
 }
 
 func TestGM_StreamsReplyIntoCallback(t *testing.T) {
@@ -95,10 +102,8 @@ func TestGM_StreamsReplyIntoCallback(t *testing.T) {
 		},
 	}
 	var got strings.Builder
-	require.NoError(t, g.Reply(context.Background(), "chat1", "я пришёл", func(s string) error {
-		got.WriteString(s)
-		return nil
-	}))
+	_, err := g.Reply(context.Background(), "chat1", "я пришёл", deltaOnly(&got))
+	require.NoError(t, err)
 	assert.Equal(t, "Привет, путник.", got.String())
 	assert.Equal(t, 1, fake.calls)
 }
@@ -116,10 +121,8 @@ func TestGM_ToolRound_EndDay(t *testing.T) {
 		},
 	}
 	var got strings.Builder
-	require.NoError(t, g.Reply(context.Background(), "chat1", "конец дня", func(s string) error {
-		got.WriteString(s)
-		return nil
-	}))
+	_, err := g.Reply(context.Background(), "chat1", "конец дня", deltaOnly(&got))
+	require.NoError(t, err)
 	mem, _ := fs.ReadRaw("worlds/naruto/memorise.md")
 	assert.Contains(t, mem, "д00001: первый день")
 	assert.Equal(t, 2, fake.calls)
@@ -137,7 +140,8 @@ func TestGM_ToolRound_UpdateState(t *testing.T) {
 		},
 		{{content: " ок.", finish: "stop"}},
 	}
-	require.NoError(t, g.Reply(context.Background(), "chat1", "идём в деревню", func(string) error { return nil }))
+	_, err := g.Reply(context.Background(), "chat1", "идём в деревню", Callbacks{})
+	require.NoError(t, err)
 	state, _ := fs.ReadRaw("worlds/naruto/state.md")
 	assert.Contains(t, state, "Маркус входит в деревню")
 	assert.Contains(t, state, "Какаши")
@@ -152,7 +156,8 @@ func TestGM_ToolRound_RotatePlan_RejectsBadRange(t *testing.T) {
 		},
 		{{content: "не вышло", finish: "stop"}},
 	}
-	require.NoError(t, g.Reply(context.Background(), "chat1", "x", func(string) error { return nil }))
+	_, err := g.Reply(context.Background(), "chat1", "x", Callbacks{})
+	require.NoError(t, err)
 	assert.Equal(t, 2, fake.calls)
 }
 
@@ -166,7 +171,7 @@ func TestGM_StopsAtMaxRounds(t *testing.T) {
 		}}
 	}
 	fake.rounds = many
-	err := g.Reply(context.Background(), "chat1", "x", func(string) error { return nil })
+	_, err := g.Reply(context.Background(), "chat1", "x", Callbacks{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "exceeded")
 }
@@ -176,7 +181,8 @@ func TestGM_ResetConversation(t *testing.T) {
 	fake.rounds = [][]fakeChunk{
 		{{content: "hi", finish: "stop"}},
 	}
-	require.NoError(t, g.Reply(context.Background(), "chat1", "ping", func(string) error { return nil }))
+	_, err := g.Reply(context.Background(), "chat1", "ping", Callbacks{})
+	require.NoError(t, err)
 	conv := g.getConversation("chat1")
 	assert.NotEmpty(t, conv.messages)
 
@@ -194,12 +200,39 @@ func TestGM_BuildsContextWithNPCs(t *testing.T) {
 		return onChunk(llm.Chunk{Content: "ok", Finish: "stop"})
 	}}
 	g.llm = captureLLM
-	require.NoError(t, g.Reply(context.Background(), "chat1", "go", func(string) error { return nil }))
+	_, err := g.Reply(context.Background(), "chat1", "go", Callbacks{})
+	require.NoError(t, err)
 	require.NotEmpty(t, captured.Messages)
 	assert.Contains(t, captured.Messages[0].Content, "rules")
 	assert.Contains(t, captured.Messages[0].Content, "naruto")
 	assert.Contains(t, captured.Messages[0].Content, "Какаши")
 	assert.Contains(t, captured.Messages[0].Content, "спокойный")
+}
+
+func TestGM_TokenUsage_Estimate(t *testing.T) {
+	g, _, fake := newGMTestEnv(t)
+	g.tracking = "estimate"
+	fake.rounds = [][]fakeChunk{
+		{{content: "Привет, мир.", finish: "stop"}},
+	}
+	var lastTok llm.Usage
+	_, err := g.Reply(context.Background(), "chat1", "ping", Callbacks{OnTokens: func(u llm.Usage) { lastTok = u }})
+	require.NoError(t, err)
+	assert.Greater(t, lastTok.PromptTokens, 0)
+	assert.Greater(t, lastTok.CompletionTokens, 0)
+}
+
+func TestGM_TokenUsage_Usage(t *testing.T) {
+	g, _, fake := newGMTestEnv(t)
+	g.tracking = "usage"
+	fake.rounds = [][]fakeChunk{
+		{{content: "ok", finish: "stop", usage: llm.Usage{PromptTokens: 12, CompletionTokens: 7, TotalTokens: 19}}},
+	}
+	var lastTok llm.Usage
+	totals, err := g.Reply(context.Background(), "chat1", "ping", Callbacks{OnTokens: func(u llm.Usage) { lastTok = u }})
+	require.NoError(t, err)
+	assert.Equal(t, 12, lastTok.PromptTokens)
+	assert.Equal(t, 19, totals.TotalTokens)
 }
 
 func TestMergeToolCalls_FirstChunkStartsNew(t *testing.T) {

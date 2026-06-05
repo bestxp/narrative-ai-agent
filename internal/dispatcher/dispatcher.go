@@ -16,6 +16,7 @@ import (
 	"narrative/internal/adapter/gitops"
 	"narrative/internal/adapter/storage"
 	"narrative/internal/config"
+	"narrative/internal/domain"
 	"narrative/internal/messaging"
 	"narrative/internal/usecase"
 )
@@ -24,20 +25,22 @@ import (
 // single point that knows about /commands; everything else flows
 // through the GM.
 type Dispatcher struct {
-	cfg  *config.Config
-	fs   *storage.FileStore
-	git  *gitops.Operator
-	rf   *usecase.ResponseFormat
-	fl   *usecase.FirstLaunch
-	ss   *usecase.SessionStart
-	npcm *usecase.NPCManager
-	mt   *usecase.Maintenance
-	wt   *usecase.WorldTransition
-	gm   *usecase.GM // optional; nil until main.go wires the LLM
-	log  zerolog.Logger
+	cfg    *config.Config
+	fs     *storage.FileStore
+	git    *gitops.Operator
+	rf     *usecase.ResponseFormat
+	fl     *usecase.FirstLaunch
+	ss     *usecase.SessionStart
+	npcm   *usecase.NPCManager
+	mt     *usecase.Maintenance
+	wt     *usecase.WorldTransition
+	cu     *usecase.CharacterUpdate
+	gm     *usecase.GM // optional; nil until main.go wires the LLM
+	slow   *usecase.SlowLogger
+	log    zerolog.Logger
 }
 
-func New(cfg *config.Config, fs *storage.FileStore, git *gitops.Operator, log zerolog.Logger) *Dispatcher {
+func New(cfg *config.Config, fs *storage.FileStore, git *gitops.Operator, cu *usecase.CharacterUpdate, slow *usecase.SlowLogger, log zerolog.Logger) *Dispatcher {
 	l := log.With().Str("component", "dispatcher").Logger()
 	return &Dispatcher{
 		cfg:  cfg,
@@ -49,6 +52,8 @@ func New(cfg *config.Config, fs *storage.FileStore, git *gitops.Operator, log ze
 		npcm: usecase.NewNPCManagerWithLogger(fs, l),
 		mt:   usecase.NewMaintenanceWithLogger(fs, l),
 		wt:   usecase.NewWorldTransitionWithLogger(fs, l),
+		cu:   cu,
+		slow: slow,
 		log:  l,
 	}
 }
@@ -63,10 +68,20 @@ func (d *Dispatcher) AttachGM(gm *usecase.GM) {
 // Handle is the central entry point. It returns the reply body; the
 // caller (MultiClient dispatcher goroutine) is responsible for
 // sending and, when applicable, opening a stream.
+//
+// For freeform messages Handle internally calls HandleStream with a
+// buffering callback. Callers that want to show the LLM "thinking"
+// status to the player should call HandleStream directly with their
+// own OnStatus / OnDelta callbacks.
 func (d *Dispatcher) Handle(ctx context.Context, msg messaging.IncomingMessage) (string, error) {
 	d.log.Info().Str("chat", msg.ChatID).Str("command", msg.Command).Strs("args", msg.Args).Msg("dispatch")
 	if msg.Command == "" {
-		return d.handleFreeform(ctx, msg)
+		var buf strings.Builder
+		cb := usecase.Callbacks{OnDelta: func(s string) error { buf.WriteString(s); return nil }}
+		if err := d.HandleStream(ctx, msg, cb); err != nil {
+			return "", err
+		}
+		return buf.String(), nil
 	}
 	switch msg.Command {
 	case "start":
@@ -75,8 +90,12 @@ func (d *Dispatcher) Handle(ctx context.Context, msg messaging.IncomingMessage) 
 		return d.cmdLaunch(msg)
 	case "status":
 		return d.cmdStatus()
+	case "me":
+		return d.cmdMe()
 	case "commit":
 		return d.cmdCommit(msg)
+	case "save":
+		return d.cmdSave(d.cfg.Git.VerboseSave)
 	case "push":
 		return d.cmdPush()
 	case "maintenance":
@@ -93,29 +112,51 @@ func (d *Dispatcher) Handle(ctx context.Context, msg messaging.IncomingMessage) 
 	return "", nil
 }
 
-func (d *Dispatcher) commit(msg string) {
-	if d.git == nil {
-		return
+// HandleStream is the callback-based entry point. It is used by
+// main.go to drive Telegram streaming — OnDelta is called for
+// every LLM text fragment, OnStatus rotates the "…" placeholder
+// into an informative phase label, and OnTokens is called with
+// the cumulative token usage once per LLM round. All callbacks
+// are optional; the function is a no-op when no GM is wired.
+func (d *Dispatcher) HandleStream(ctx context.Context, msg messaging.IncomingMessage, cb usecase.Callbacks) error {
+	if msg.Command != "" {
+		// Commands are non-streaming. Buffer and return.
+		reply, err := d.Handle(ctx, msg)
+		if err != nil {
+			return err
+		}
+		if cb.OnDelta != nil && reply != "" {
+			return cb.OnDelta(reply)
+		}
+		return nil
 	}
-	_ = d.git.CommitAll(msg)
+	if d.gm == nil {
+		// Fallback: echo + validate, sent as a single chunk.
+		v := d.rf.Validate(msg.Text)
+		reply := fmt.Sprintf("**диалоги и действия**\n%s\n\n**КОНТЕКСТ И ИЗМЕНЕНИЯ**\nбез изменений\n\n**ВАЛИДАЦИЯ ПРАВИЛ**\n- Лимит слов: %d\n- Слов в ответе: %d\n- Превышен: %v\n- Запрещённые формы: %v\n",
+			msg.Text, d.cfg.Narrative.WordLimit, v.WordCount, v.OverLimit, v.ForbiddenForms)
+		if cb.OnDelta != nil {
+			return cb.OnDelta(reply)
+		}
+		return nil
+	}
+	if d.slow != nil {
+		_ = d.slow.Write("incoming.text", msg.ChatID, map[string]any{
+			"sender":  msg.Sender.ID,
+			"text":    msg.Text,
+			"command": msg.Command,
+		})
+	}
+	_, err := d.gm.Reply(ctx, msg.ChatID, msg.Text, cb)
+	return err
 }
 
-func (d *Dispatcher) handleFreeform(ctx context.Context, msg messaging.IncomingMessage) (string, error) {
-	// If a GM is wired, stream the LLM's response back. Otherwise fall
-	// back to the legacy echo + validation behaviour.
-	if d.gm == nil {
-		v := d.rf.Validate(msg.Text)
-		return fmt.Sprintf("**диалоги и действия**\n%s\n\n**КОНТЕКСТ И ИЗМЕНЕНИЯ**\nбез изменений\n\n**ВАЛИДАЦИЯ ПРАВИЛ**\n- Лимит слов: %d\n- Слов в ответе: %d\n- Превышен: %v\n- Запрещённые формы: %v\n",
-			msg.Text, d.cfg.Narrative.WordLimit, v.WordCount, v.OverLimit, v.ForbiddenForms), nil
+func (d *Dispatcher) commit(msg string) gitops.CommitResult {
+	if d.git == nil {
+		return gitops.CommitResult{}
 	}
-	var buf strings.Builder
-	if err := d.gm.Reply(ctx, msg.ChatID, msg.Text, func(delta string) error {
-		buf.WriteString(delta)
-		return nil
-	}); err != nil {
-		return "", err
-	}
-	return buf.String(), nil
+	res, _ := d.git.CommitAll(msg)
+	return res
 }
 
 func (d *Dispatcher) cmdStart() (string, error) {
@@ -172,6 +213,29 @@ func (d *Dispatcher) cmdStatus() (string, error) {
 	return fmt.Sprintf("Персонаж: %s\nМир: %s\n\n**state.md**\n%s", sc.Character, sc.World, sc.State), nil
 }
 
+// cmdMe shows the active character's persistent files: SOUL.md,
+// SKILL.md, memory.md and the current state.md. Each section is
+// truncated to roughly the screen size so a Telegram reply stays
+// under 4096 chars even on heavily-developed characters.
+func (d *Dispatcher) cmdMe() (string, error) {
+	if d.cu == nil {
+		return "character_update не подключён.", nil
+	}
+	if !d.fs.Exists(storage.InfoFile) {
+		return "Нет активной сессии. /launch сначала.", nil
+	}
+	raw, _ := d.fs.ReadRaw(storage.InfoFile)
+	parsed, err := domain.ParseInfo(raw)
+	if err != nil || parsed.ActiveCharacter == "" {
+		return "Нет активного персонажа. /launch сначала.", nil
+	}
+	snap, err := d.cu.Read(parsed.ActiveCharacter, parsed.ActiveWorld)
+	if err != nil {
+		return "", err
+	}
+	return snap.Format(40), nil
+}
+
 func (d *Dispatcher) cmdCommit(msg messaging.IncomingMessage) (string, error) {
 	if d.git == nil {
 		return "git не инициализирован (тестовый режим).", nil
@@ -180,10 +244,73 @@ func (d *Dispatcher) cmdCommit(msg messaging.IncomingMessage) (string, error) {
 	if len(msg.Args) > 0 {
 		commitMsg = strings.Join(msg.Args, " ")
 	}
-	if err := d.git.CommitAll(commitMsg); err != nil {
+	res, err := d.git.CommitAll(commitMsg)
+	if err != nil {
 		return "", err
 	}
-	return "git commit выполнен.", nil
+	return d.formatCommitResult(res, false), nil
+}
+
+// cmdSave is the explicit "commit + push" entry point. It returns
+// a one-line summary (or a multi-line block when verbose=true);
+// the caller (main.go) decides whether to surface it as a
+// separate Telegram message or fold it into the next reply.
+func (d *Dispatcher) cmdSave(verbose bool) (string, error) {
+	if d.git == nil {
+		return "git не инициализирован (тестовый режим).", nil
+	}
+	res, err := d.git.CommitAll("auto: save")
+	if err != nil {
+		return "", err
+	}
+	body := d.formatCommitResult(res, verbose)
+	if d.git.RemoteDisabled() || res.Empty {
+		return body, nil
+	}
+	if err := d.git.SyncRebase(); err != nil {
+		if errors.Is(err, gitops.ErrRemoteDisabled) {
+			return body, nil
+		}
+		return body + "\n⚠️ push: " + err.Error(), nil
+	}
+	return body + "\ngit push ok.", nil
+}
+
+// formatCommitResult renders the CommitResult for the player.
+// Empty commits get a one-liner saying so (no notification
+// should really fire for an empty commit). Real commits return
+// either a short "✅ сохранено: commit abc1234" or a verbose
+// block listing the touched files.
+func (d *Dispatcher) formatCommitResult(res gitops.CommitResult, verbose bool) string {
+	if res.Empty {
+		return "нечего коммитить (no changes)."
+	}
+	if verbose {
+		out := "✅ сохранено: commit " + res.Hash + "\n"
+		out += "  файлов: " + itoa(len(res.FilesChanged)) + "\n"
+		for _, f := range res.FilesChanged {
+			out += "  - " + f + "\n"
+		}
+		return out
+	}
+	return "✅ сохранено: commit " + res.Hash
+}
+
+// itoa avoids importing strconv for one place. The bot never
+// logs numbers larger than a few thousand, so the inline loop is
+// cheaper than pulling in a stdlib import.
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	var buf [20]byte
+	i := len(buf)
+	for n > 0 {
+		i--
+		buf[i] = byte('0' + n%10)
+		n /= 10
+	}
+	return string(buf[i:])
 }
 
 func (d *Dispatcher) cmdPush() (string, error) {
@@ -282,11 +409,14 @@ func (d *Dispatcher) cmdHelp() (string, error) {
 		"/start — загрузить info.yaml и state.md",
 		"/launch <перс> <мир> [канон] — первоначальная настройка",
 		"/status — текущий персонаж/мир/state.md",
+		"/me — содержимое SOUL/SKILL/memory/state персонажа",
 		"/endday <N> <выжимка> — записать день в memorise.md",
 		"/maintenance — выжимка NPC > 40 строк",
 		"/leave <мир> [время] — переход в новый мир",
 		"/return <мир> <дней> — возврат с time-skip",
-		"/commit <msg> / /push — git",
+		"/save — коммит + push, уведомление отдельным сообщением",
+		"/commit <msg> — коммит (только локально)",
+		"/push — pull --rebase + push",
 	}
 	sort.Strings(cmds)
 	return "Команды:\n" + strings.Join(cmds, "\n"), nil

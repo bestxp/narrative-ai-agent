@@ -35,6 +35,11 @@ type Config struct {
 	// distinct LLM usage (narration, compaction, classification...)
 	// is a separate role with its own model and prompt.
 	LLM LLMConfig `yaml:"llm"`
+	// Slowlog configures the per-request audit log. When disabled
+	// the package is wired but every entry is dropped. When
+	// enabled the path is opened in append mode; the parent
+	// directory is created if missing.
+	Slowlog SlowlogConfig `yaml:"slowlog"`
 }
 
 // MessagingConfig groups every chat transport under a single section.
@@ -104,6 +109,28 @@ type GitConfig struct {
 	// message and SyncRebase becomes a no-op. Default false (push
 	// enabled) matches the canonical lazy-universe flow.
 	RemoteDisabled bool `yaml:"remote_disabled"`
+	// AutoSave controls the silent "commit after N messages"
+	// behaviour. AfterMessages = 0 disables auto-save entirely; the
+	// operator can still trigger a save via /save. The number is
+	// the count of bot replies (freeform only, not commands) —
+	// counting bot replies keeps the cadence predictable and avoids
+	// accidental commits from a stream of /status calls.
+	AutoSave AutoSaveConfig `yaml:"auto_save"`
+	// VerboseSave switches the "✅ saved" notification from a
+	// one-liner to a multi-line block listing the touched files
+	// and the byte delta. Off by default — most operators want
+	// the short form.
+	VerboseSave bool `yaml:"verbose_save"`
+}
+
+// AutoSaveConfig holds the auto-commit cadence. The default of 5
+// matches a typical "one bot turn = one scene" workflow: after five
+// turns the player has usually said or done something worth
+// persisting.
+type AutoSaveConfig struct {
+	// AfterMessages is the number of bot replies between auto
+	// commits. 0 disables the feature.
+	AfterMessages int `yaml:"after_messages"`
 }
 
 // NarrativeConfig shapes the GM's behaviour at runtime.
@@ -115,6 +142,15 @@ type NarrativeConfig struct {
 	// Language is the GM's output language. Currently "ru" only;
 	// future multilingual support can branch on this.
 	Language string `yaml:"language"`
+	// RulesCheckBlock controls whether the LLM-generated
+	// "**ВАЛИДАЦИЯ ПРАВИЛ**" block (word count, NPC-isolation
+	// confirmation, file-update list, etc.) is actually shown
+	// to the player. The LLM is still asked to write the block
+	// — turning this off simply strips the trailing block from
+	// the reply text before it reaches Telegram. Useful for
+	// production play (default off) vs. debugging (turn on to
+	// see what the model is reporting about itself).
+	RulesCheckBlock bool `yaml:"rules_check_block"`
 }
 
 // LLMConfig is a registry of named LLM roles. A role is a single
@@ -131,7 +167,32 @@ type LLMConfig struct {
 	// a role does not specify its own RequestTimeoutSeconds. 120s
 	// is comfortable for chat completions on a local model.
 	DefaultTimeoutSeconds int `yaml:"default_timeout_seconds"`
+	// TokenTracking controls how the bot reports token usage per
+	// reply. "off" = no accounting at all. "estimate" = count
+	// characters in the request and the streamed response and
+	// divide by 4 (a coarse but provider-independent
+	// approximation that works for any OpenAI-compatible API that
+	// does not return a usage block, e.g. Ollama). "usage" = take
+	// the value from the provider's usage block verbatim; if the
+	// provider does not return one, the bot falls back to
+	// estimate and logs a warning. Slowlog receives the same
+	// numbers regardless of mode.
+	TokenTracking string `yaml:"token_tracking"`
+	// IncludeInReply appends a one-line token count to the GM's
+	// reply when TokenTracking is not "off" (e.g. "🔢 ~1234
+	// tok"). Operators who only want the number in slowlog can
+	// flip this off without turning the count itself off.
+	IncludeInReply bool `yaml:"include_in_reply"`
 }
+
+// TokenTrackingOff / Estimate / Usage are the canonical modes for
+// LLMConfig.TokenTracking. Using named constants keeps the call
+// sites free of stringly-typed comparisons.
+const (
+	TokenTrackingOff     = "off"
+	TokenTrackingEstimate = "estimate"
+	TokenTrackingUsage   = "usage"
+)
 
 // LLMRoleConfig describes one named LLM role.
 type LLMRoleConfig struct {
@@ -161,6 +222,22 @@ type LLMRoleConfig struct {
 	// RequestTimeoutSeconds is the HTTP timeout for this role's
 	// calls. Falls back to LLMConfig.DefaultTimeoutSeconds when 0.
 	RequestTimeoutSeconds int `yaml:"request_timeout_seconds"`
+}
+
+// SlowlogConfig configures the audit log that records every LLM
+// request/response, every tool call, every file mutation and every
+// incoming/outgoing message. Operators turn it on while debugging
+// a tricky session and off again once the bug is reproduced.
+type SlowlogConfig struct {
+	// Enabled flips the slowlog between File-mode and Discard.
+	// Default false — most production runs do not need the disk
+	// I/O and the disk growth.
+	Enabled bool `yaml:"enabled"`
+	// File is the path the JSON-lines audit log is appended to.
+	// Resolved relative to the config file's directory. A typical
+	// value is "./slow.log" or an absolute path in
+	// ~/.cache/lazy-universe/.
+	File string `yaml:"file"`
 }
 
 // NarrativeRole is the canonical key for the GM role. Other roles
@@ -230,6 +307,24 @@ func (c *Config) Validate() error {
 	}
 	if c.Paths.GitWorkdir == "" {
 		c.Paths.GitWorkdir = "."
+	}
+	// Slowlog.File defaults to ./slow.log so an operator who only
+	// flips `slowlog.enabled: true` gets a sensible path.
+	if c.Slowlog.Enabled && c.Slowlog.File == "" {
+		c.Slowlog.File = "slow.log"
+	}
+	// TokenTracking defaults to "off" — most operators do not need
+	// the per-reply line, and the estimate mode adds a final chunk
+	// of work after every response. Flip to "estimate" in
+	// config.yaml to enable.
+	if c.LLM.TokenTracking == "" {
+		c.LLM.TokenTracking = TokenTrackingOff
+	}
+	switch c.LLM.TokenTracking {
+	case TokenTrackingOff, TokenTrackingEstimate, TokenTrackingUsage:
+		// ok
+	default:
+		return fmt.Errorf("llm.token_tracking must be one of off|estimate|usage, got %q", c.LLM.TokenTracking)
 	}
 	if c.Git.Remote == "" {
 		c.Git.Remote = "origin"

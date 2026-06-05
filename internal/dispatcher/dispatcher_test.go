@@ -14,6 +14,8 @@ import (
 	"narrative/internal/adapter/storage"
 	"narrative/internal/config"
 	"narrative/internal/messaging"
+	"narrative/internal/slowlog"
+	"narrative/internal/usecase"
 )
 
 func initRepo(t *testing.T) string {
@@ -59,7 +61,8 @@ func setup(t *testing.T) (*Dispatcher, *storage.FileStore) {
 	require.NoError(t, os.MkdirAll(dataDir, 0o755))
 	fs, err := storage.NewFileStore(dataDir)
 	require.NoError(t, err)
-	d := New(newCfg(t, workdir), fs, nil, zerolog.Nop())
+	cu := usecase.NewCharacterUpdate(fs, zerolog.Nop(), slowlog.Discard())
+	d := New(newCfg(t, workdir), fs, nil, cu, slowlog.Discard(), zerolog.Nop())
 	return d, fs
 }
 

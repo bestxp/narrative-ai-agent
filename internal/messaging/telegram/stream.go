@@ -53,10 +53,10 @@ func (s *stream) Final(ctx context.Context, text string) error {
 	if s.closed {
 		return nil
 	}
-	s.closed = true
 	if err := s.Append(ctx, text); err != nil {
 		return err
 	}
+	s.closed = true
 	s.client.streamsMu.Lock()
 	delete(s.client.activeStreams, s.chatID)
 	s.client.streamsMu.Unlock()

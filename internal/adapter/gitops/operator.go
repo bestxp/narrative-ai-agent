@@ -61,28 +61,59 @@ func (o *Operator) run(args ...string) (string, error) {
 	return combined, nil
 }
 
+// CommitResult is the outcome of a successful CommitAll. The hash
+// is the short SHA returned by `git rev-parse --short HEAD` after
+// the commit; FilesChanged is the list of paths from
+// `git show --name-only --pretty=format:`. An empty hash with
+// Empty=true means "nothing to commit" — operators should not
+// surface a saved notification in that case.
+type CommitResult struct {
+	Hash         string
+	FilesChanged []string
+	Empty        bool
+}
+
 // CommitAll stages everything under workdir and commits with the given
 // message. Author/email are configured for the local repo only.
-func (o *Operator) CommitAll(message string) error {
+// The returned CommitResult is always non-nil; when there is
+// nothing to commit Empty=true and the rest of the fields are
+// zero. Network/permission errors are returned as the error
+// value and CommitResult is the zero value.
+func (o *Operator) CommitAll(message string) (CommitResult, error) {
 	if _, err := o.run("config", "user.name", o.author); err != nil {
-		return err
+		return CommitResult{}, err
 	}
 	if _, err := o.run("config", "user.email", o.email); err != nil {
-		return err
+		return CommitResult{}, err
 	}
 	if _, err := o.run("add", "-A"); err != nil {
-		return err
+		return CommitResult{}, err
 	}
 	if _, err := o.run("commit", "-m", message); err != nil {
 		// "nothing to commit" should not be fatal
 		if strings.Contains(err.Error(), "nothing to commit") || strings.Contains(err.Error(), "no changes added") {
 			o.log.Debug().Msg("nothing to commit")
-			return nil
+			return CommitResult{Empty: true}, nil
 		}
-		return err
+		return CommitResult{}, err
 	}
-	o.log.Info().Str("message", message).Msg("git commit")
-	return nil
+	hash, herr := o.run("rev-parse", "--short", "HEAD")
+	if herr != nil {
+		// Commit happened, hash retrieval didn't — fall back to
+		// the message in the log and an empty hash. The caller
+		// still knows the commit succeeded.
+		o.log.Warn().Err(herr).Msg("commit ok but hash retrieval failed")
+	}
+	files, _ := o.run("show", "--name-only", "--pretty=format:")
+	res := CommitResult{Hash: strings.TrimSpace(hash)}
+	for _, ln := range strings.Split(files, "\n") {
+		ln = strings.TrimSpace(ln)
+		if ln != "" {
+			res.FilesChanged = append(res.FilesChanged, ln)
+		}
+	}
+	o.log.Info().Str("message", message).Str("hash", res.Hash).Int("files", len(res.FilesChanged)).Msg("git commit")
+	return res, nil
 }
 
 // ErrRemoteDisabled is returned by SyncRebase when the operator

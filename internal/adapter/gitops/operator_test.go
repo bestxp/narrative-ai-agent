@@ -50,14 +50,20 @@ func TestIsRepo_False(t *testing.T) {
 func TestCommitAll_NothingToCommitIsNoop(t *testing.T) {
 	dir := initRepo(t)
 	op := New(dir, "origin", "master", "Bot", "bot@x")
-	assert.NoError(t, op.CommitAll("noop"))
+	res, err := op.CommitAll("noop")
+	require.NoError(t, err)
+	assert.True(t, res.Empty)
 }
 
 func TestCommitAll_CommitsNewFile(t *testing.T) {
 	dir := initRepo(t)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "a.md"), []byte("x"), 0o644))
 	op := New(dir, "origin", "master", "Bot", "bot@x")
-	require.NoError(t, op.CommitAll("test commit"))
+	res, err := op.CommitAll("test commit")
+	require.NoError(t, err)
+	assert.False(t, res.Empty)
+	assert.NotEmpty(t, res.Hash)
+	assert.Contains(t, res.FilesChanged, "a.md")
 	out, err := op.Status()
 	require.NoError(t, err)
 	assert.Empty(t, out, "expected clean tree")
@@ -77,7 +83,8 @@ func TestCommitAll_LogsInfo(t *testing.T) {
 	log, buf := newBufLogger()
 	op := NewWithLogger(dir, "origin", "master", "Bot", "bot@x", false, log)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "a.md"), []byte("x"), 0o644))
-	require.NoError(t, op.CommitAll("logged commit"))
+	_, err := op.CommitAll("logged commit")
+	require.NoError(t, err)
 	assert.Contains(t, buf.String(), "git commit")
 }
 
@@ -85,7 +92,8 @@ func TestCommitAll_LogsDebugOnNoop(t *testing.T) {
 	dir := initRepo(t)
 	log, buf := newBufLogger()
 	op := NewWithLogger(dir, "origin", "master", "Bot", "bot@x", false, log)
-	require.NoError(t, op.CommitAll("noop"))
+	_, err := op.CommitAll("noop")
+	require.NoError(t, err)
 	assert.Contains(t, buf.String(), "nothing to commit")
 }
 

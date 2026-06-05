@@ -13,6 +13,7 @@ import (
 	"narrative/internal/adapter/llm"
 	"narrative/internal/adapter/storage"
 	"narrative/internal/domain"
+	"narrative/internal/slowlog"
 )
 
 // LLMClient is the minimal surface GM needs from the LLM. It mirrors
@@ -20,6 +21,48 @@ import (
 // can swap in a stub without a real HTTP server.
 type LLMClient interface {
 	Stream(ctx context.Context, req llm.ChatRequest, onChunk func(llm.Chunk) error) error
+}
+
+// StatusFunc is called between major GM phases. The transport
+// layer uses it to rotate the "…" placeholder into something
+// informative ("собираю контекст…", "NPC: Саске — 3 строки…")
+// so the player sees the bot is alive, not just frozen on three
+// dots. StatusFunc may be nil; in that case GM skips the calls.
+type StatusFunc func(phase string, details map[string]any)
+
+// Callbacks groups the per-stream transport hooks. A zero value
+// is valid — every field is optional and silently skipped when
+// nil. Keeping them on a struct (rather than four positional
+// arguments) leaves room for future hooks without churn.
+type Callbacks struct {
+	// OnDelta is called for every non-empty text delta the LLM
+	// emits. Typical use: append the text to the outgoing
+	// stream session.
+	OnDelta func(string) error
+	// OnStatus is called between major GM phases (context build,
+	// LLM request, tool dispatch, ...). The transport layer uses
+	// it to display an informative placeholder while the bot is
+	// working. The string is a short phase label; the map is
+	// optional per-phase detail (NPC names, tool name, ...).
+	OnStatus StatusFunc
+	// OnTokens is called once per LLM round (possibly several
+	// times per Reply, when tool calls are in flight) with the
+	// accumulated token usage for the round. The final call's
+	// numbers are the ones the transport appends to the reply if
+	// the operator enabled `llm.include_in_reply`.
+	OnTokens func(llm.Usage)
+}
+
+// TokenUsage is the summary the GM emits at the end of a Reply.
+// It is the union of provider-reported and locally-estimated
+// numbers; Source is "usage" when the provider returned a block
+// and "estimate" when the bot fell back. A source of "off" means
+// the operator disabled accounting and the numbers are zero.
+type TokenUsage struct {
+	PromptTokens     int
+	CompletionTokens int
+	TotalTokens      int
+	Source           string // "usage" | "estimate" | "off"
 }
 
 // GM is the Game Master. It owns the conversation with the LLM and
@@ -34,6 +77,10 @@ type GM struct {
 	fl           *FirstLaunch
 	npcm         *NPCManager
 	wt           *WorldTransition
+	cu           *CharacterUpdate
+	slow         *slowlog.Logger
+	tracking     string // "off" | "estimate" | "usage"
+	includeReply bool
 	log          zerolog.Logger
 
 	// tools cached on construction; immutable.
@@ -52,14 +99,19 @@ type GMConfig struct {
 // the first "system" message on every turn. The conversation state
 // (per ChatID) is kept in a sync.Map; the GM is therefore safe to
 // call from multiple goroutines.
-func NewGM(cfg GMConfig, fs *storage.FileStore, llmCli LLMClient, ss *SessionStart, mt *Maintenance, fl *FirstLaunch, npcm *NPCManager, wt *WorldTransition, log zerolog.Logger) *GM {
+func NewGM(cfg GMConfig, fs *storage.FileStore, llmCli LLMClient, ss *SessionStart, mt *Maintenance, fl *FirstLaunch, npcm *NPCManager, wt *WorldTransition, cu *CharacterUpdate, slow *slowlog.Logger, tracking string, includeReply bool, log zerolog.Logger) *GM {
 	log = log.With().Str("component", "gm").Logger()
 	tools := make([]llm.ToolSchema, 0, len(domain.Tools()))
 	for _, t := range domain.Tools() {
+		raw, err := t.MarshalParameters()
+		if err != nil {
+			log.Warn().Err(err).Str("tool", t.Function.Name).Msg("tool schema marshal failed; skipping")
+			continue
+		}
 		tools = append(tools, llm.ToolSchema{
 			Name:        t.Function.Name,
 			Description: t.Function.Description,
-			Parameters:  t.Function.Parameters,
+			Parameters:  raw,
 		})
 	}
 	return &GM{
@@ -72,6 +124,10 @@ func NewGM(cfg GMConfig, fs *storage.FileStore, llmCli LLMClient, ss *SessionSta
 		fl:           fl,
 		npcm:         npcm,
 		wt:           wt,
+		cu:           cu,
+		slow:         slow,
+		tracking:     tracking,
+		includeReply: includeReply,
 		log:          log,
 		tools:        tools,
 	}
@@ -108,8 +164,17 @@ func (g *GM) ResetConversation(chatID string) {
 //
 // maxToolRounds caps the number of tool-call rounds so a runaway
 // model cannot loop forever. 5 is enough for any realistic session.
-func (g *GM) Reply(ctx context.Context, chatID, userText string, onDelta func(string) error) error {
+//
+// The returned TokenUsage is the cumulative prompt/completion count
+// across all rounds of this Reply. When the operator has
+// token_tracking=off the struct is zero-valued and the
+// dispatcher/transport can simply ignore it.
+func (g *GM) Reply(ctx context.Context, chatID, userText string, cb Callbacks) (TokenUsage, error) {
 	const maxToolRounds = 5
+	var totals TokenUsage
+	if g.tracking == "" || g.tracking == "off" {
+		totals.Source = "off"
+	}
 
 	conv := g.getConversation(chatID)
 	conv.mu.Lock()
@@ -117,21 +182,39 @@ func (g *GM) Reply(ctx context.Context, chatID, userText string, onDelta func(st
 	history := append([]llm.Message(nil), conv.messages...)
 	conv.mu.Unlock()
 
+	if cb.OnStatus != nil {
+		cb.OnStatus("request_received", map[string]any{"text_len": len(userText)})
+	}
+
 	for round := 0; round < maxToolRounds; round++ {
+		if cb.OnStatus != nil {
+			cb.OnStatus("build_context", nil)
+		}
 		// System prompt + current context is rebuilt on every tool
 		// round so tool-modified state.md is visible to the model.
 		ctxPrompt, err := g.buildContextPrompt()
 		if err != nil {
-			return fmt.Errorf("gm: build context: %w", err)
+			return totals, fmt.Errorf("gm: build context: %w", err)
 		}
 		messages := make([]llm.Message, 0, len(history)+1)
 		messages = append(messages, llm.Message{Role: "system", Content: ctxPrompt})
 		messages = append(messages, history...)
 
+		if cb.OnStatus != nil {
+			cb.OnStatus("llm_request", map[string]any{
+				"model":         g.role.Model,
+				"messages":      len(messages),
+				"prompt_chars":  promptCharSize(messages),
+			})
+		}
+
 		var (
-			assistantBuf strings.Builder
-			toolCalls    []llm.ToolCall
-			finishReason string
+			assistantBuf   strings.Builder
+			toolCalls      []llm.ToolCall
+			finishReason   string
+			usageFromAPI   llm.Usage
+			gotUsage       bool
+			roundCompChars int
 		)
 		streamErr := g.llm.Stream(ctx, llm.ChatRequest{
 			Model:       g.role.Model,
@@ -145,8 +228,11 @@ func (g *GM) Reply(ctx context.Context, chatID, userText string, onDelta func(st
 			}
 			if ch.Content != "" {
 				assistantBuf.WriteString(ch.Content)
-				if err := onDelta(ch.Content); err != nil {
-					return err
+				roundCompChars += len(ch.Content)
+				if cb.OnDelta != nil {
+					if err := cb.OnDelta(ch.Content); err != nil {
+						return err
+					}
 				}
 			}
 			if len(ch.ToolCalls) > 0 {
@@ -155,10 +241,14 @@ func (g *GM) Reply(ctx context.Context, chatID, userText string, onDelta func(st
 			if ch.Finish != "" {
 				finishReason = ch.Finish
 			}
+			if ch.Usage.TotalTokens > 0 || ch.Usage.PromptTokens > 0 {
+				usageFromAPI = ch.Usage
+				gotUsage = true
+			}
 			return nil
 		})
 		if streamErr != nil {
-			return streamErr
+			return totals, streamErr
 		}
 
 		// Persist the assistant turn regardless of finish reason.
@@ -170,17 +260,51 @@ func (g *GM) Reply(ctx context.Context, chatID, userText string, onDelta func(st
 		})
 		conv.mu.Unlock()
 		history = append(history, llm.Message{
-			Role: "assistant",
-			Content: assistantBuf.String(), ToolCalls: toolCalls,
+			Role: "assistant", Content: assistantBuf.String(), ToolCalls: toolCalls,
 		})
+
+		// Accumulate per-round token accounting.
+		roundUsage := g.accountRound(messages, roundCompChars, assistantBuf.String(), gotUsage, usageFromAPI)
+		totals.PromptTokens += roundUsage.PromptTokens
+		totals.CompletionTokens += roundUsage.CompletionTokens
+		totals.TotalTokens += roundUsage.TotalTokens
+		if roundUsage.Source != "off" && totals.Source == "off" {
+			totals.Source = roundUsage.Source
+		} else if totals.Source == "" && roundUsage.Source != "" {
+			totals.Source = roundUsage.Source
+		}
+		if cb.OnTokens != nil {
+			cb.OnTokens(llm.Usage{
+				PromptTokens:     roundUsage.PromptTokens,
+				CompletionTokens: roundUsage.CompletionTokens,
+				TotalTokens:      roundUsage.TotalTokens,
+			})
+		}
+		if g.slow != nil {
+			_ = g.slow.Write("llm.tokens", chatID, map[string]any{
+				"round":             round,
+				"prompt_tokens":     roundUsage.PromptTokens,
+				"completion_tokens": roundUsage.CompletionTokens,
+				"total_tokens":      roundUsage.TotalTokens,
+				"source":            roundUsage.Source,
+				"model":             g.role.Model,
+			})
+		}
 
 		// If the model only wanted to talk, we're done.
 		if len(toolCalls) == 0 || finishReason != "tool_calls" {
-			return nil
+			return totals, nil
 		}
 
 		// Execute every tool the model requested and append the
 		// tool-role messages so the next round sees the results.
+		if cb.OnStatus != nil {
+			names := make([]string, 0, len(toolCalls))
+			for _, tc := range toolCalls {
+				names = append(names, tc.Function.Name)
+			}
+			cb.OnStatus("tool_dispatch", map[string]any{"tools": names})
+		}
 		results := g.executeTools(ctx, toolCalls)
 		conv.mu.Lock()
 		conv.messages = append(conv.messages, results...)
@@ -188,7 +312,58 @@ func (g *GM) Reply(ctx context.Context, chatID, userText string, onDelta func(st
 		history = append(history, results...)
 		toolCalls = nil
 	}
-	return fmt.Errorf("gm: tool loop exceeded %d rounds", maxToolRounds)
+	return totals, fmt.Errorf("gm: tool loop exceeded %d rounds", maxToolRounds)
+}
+
+// accountRound converts the per-round counters into a TokenUsage.
+// When tracking is "off" the result is zero and source stays "off".
+// When tracking is "estimate" we always estimate regardless of
+// what the provider reported. When tracking is "usage" we trust
+// the provider; if it returned nothing, we estimate and warn.
+func (g *GM) accountRound(messages []llm.Message, compChars int, compText string, gotUsage bool, usage llm.Usage) TokenUsage {
+	switch g.tracking {
+	case "", "off":
+		return TokenUsage{Source: "off"}
+	case "estimate":
+		prompt := llm.EstimateMessages(messages)
+		completion := llm.EstimateTokens(compText)
+		return TokenUsage{
+			PromptTokens:     prompt,
+			CompletionTokens: completion,
+			TotalTokens:      prompt + completion,
+			Source:           "estimate",
+		}
+	case "usage":
+		if gotUsage {
+			return TokenUsage{
+				PromptTokens:     usage.PromptTokens,
+				CompletionTokens: usage.CompletionTokens,
+				TotalTokens:      usage.TotalTokens,
+				Source:           "usage",
+			}
+		}
+		g.log.Warn().Msg("token_tracking=usage but provider returned no usage block — falling back to estimate")
+		prompt := llm.EstimateMessages(messages)
+		completion := llm.EstimateTokens(compText)
+		return TokenUsage{
+			PromptTokens:     prompt,
+			CompletionTokens: completion,
+			TotalTokens:      prompt + completion,
+			Source:           "estimate",
+		}
+	}
+	return TokenUsage{Source: "off"}
+}
+
+func promptCharSize(msgs []llm.Message) int {
+	n := 0
+	for _, m := range msgs {
+		n += len(m.Content)
+		for _, tc := range m.ToolCalls {
+			n += len(tc.Function.Name) + len(tc.Function.Arguments)
+		}
+	}
+	return n
 }
 
 // buildContextPrompt loads the current game-data and produces the
@@ -361,6 +536,24 @@ func (g *GM) dispatchOneTool(_ context.Context, tc llm.ToolCall) (string, string
 		}
 		g.ResetConversation(sc.Character) // best-effort, no chatID available
 		return okJSON("world switched"), ""
+	case "update_character":
+		if g.cu == nil {
+			return "", "update_character: character updater not wired"
+		}
+		file := toString(args["file"])
+		section := toString(args["section"])
+		appendText := toString(args["append"])
+		sc, err := g.ss.Start()
+		if err != nil {
+			return "", err.Error()
+		}
+		if err := g.cu.Append(sc.Character, file, section, appendText); err != nil {
+			return "", err.Error()
+		}
+		return okJSON(map[string]any{
+			"file":    file,
+			"section": section,
+		}), ""
 	}
 	return "", "unknown tool: " + tc.Function.Name
 }

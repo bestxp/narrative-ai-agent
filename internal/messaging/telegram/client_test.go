@@ -3,6 +3,7 @@ package telegram
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -46,7 +47,7 @@ func TestNew_RejectsEmptyToken(t *testing.T) {
 }
 
 func TestThrottledStream_FirstAppendGoesImmediately(t *testing.T) {
-	inner := &stubStream{}
+	inner := &recordingStream{}
 	th := NewThrottledStream(inner)
 
 	start := time.Now()
@@ -60,19 +61,40 @@ func TestThrottledStream_FirstAppendGoesImmediately(t *testing.T) {
 	assert.Equal(t, 1, inner.finals)
 }
 
-// stubStream counts calls. It is enough for the throttle timing test
-// and lets us avoid talking to Telegram's API.
-type stubStream struct {
-	appends int
-	finals  int
+// TestThrottledStream_FinalIsIdempotent asserts that ThrottledStream
+// does not block on the second Final call. The inner stream's
+// own closed-flag short-circuits the duplicate Telegram edit;
+// from the throttle layer's perspective both calls return
+// promptly without sleeping.
+func TestThrottledStream_FinalIsIdempotent(t *testing.T) {
+	rec := &recordingStream{}
+	th := NewThrottledStream(rec)
+	start := time.Now()
+	require.NoError(t, th.Final(context.Background(), "x"))
+	require.NoError(t, th.Final(context.Background(), "y"))
+	elapsed := time.Since(start)
+	assert.Less(t, elapsed, 50*time.Millisecond, "second Final should not be throttled")
 }
 
-func (s *stubStream) Append(_ context.Context, _ string) error {
-	s.appends++
+type recordingStream struct {
+	mu      sync.Mutex
+	appends int
+	finals  int
+	events  []string
+}
+
+func (r *recordingStream) Append(_ context.Context, text string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.appends++
+	r.events = append(r.events, "append:"+text)
 	return nil
 }
 
-func (s *stubStream) Final(_ context.Context, _ string) error {
-	s.finals++
+func (r *recordingStream) Final(_ context.Context, text string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.finals++
+	r.events = append(r.events, "final:"+text)
 	return nil
 }
