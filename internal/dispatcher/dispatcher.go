@@ -1,6 +1,10 @@
-package telegrambot
+// Package dispatcher routes incoming messages from any
+// messaging.Client to the GM usecase. It is transport-agnostic; the
+// old hard-coded /command set lives here as a thin handler.
+package dispatcher
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sort"
@@ -12,29 +16,28 @@ import (
 	"narrative/internal/adapter/gitops"
 	"narrative/internal/adapter/storage"
 	"narrative/internal/config"
+	"narrative/internal/messaging"
 	"narrative/internal/usecase"
 )
 
-// Dispatcher is the production Handler: it routes Telegram commands
-// to usecases and composes the response.
+// Dispatcher turns an IncomingMessage into a reply string. It is the
+// single point that knows about /commands; everything else flows
+// through the GM.
 type Dispatcher struct {
-	cfg   *config.Config
-	fs    *storage.FileStore
-	git   *gitops.Operator
-	rf    *usecase.ResponseFormat
-	fl    *usecase.FirstLaunch
-	ss    *usecase.SessionStart
-	npcm  *usecase.NPCManager
-	mt    *usecase.Maintenance
-	wt    *usecase.WorldTransition
-	log   zerolog.Logger
+	cfg  *config.Config
+	fs   *storage.FileStore
+	git  *gitops.Operator
+	rf   *usecase.ResponseFormat
+	fl   *usecase.FirstLaunch
+	ss   *usecase.SessionStart
+	npcm *usecase.NPCManager
+	mt   *usecase.Maintenance
+	wt   *usecase.WorldTransition
+	gm   *usecase.GM // optional; nil until main.go wires the LLM
+	log  zerolog.Logger
 }
 
-func NewDispatcher(cfg *config.Config, fs *storage.FileStore, git *gitops.Operator) *Dispatcher {
-	return NewDispatcherWithLogger(cfg, fs, git, zerolog.Nop())
-}
-
-func NewDispatcherWithLogger(cfg *config.Config, fs *storage.FileStore, git *gitops.Operator, log zerolog.Logger) *Dispatcher {
+func New(cfg *config.Config, fs *storage.FileStore, git *gitops.Operator, log zerolog.Logger) *Dispatcher {
 	l := log.With().Str("component", "dispatcher").Logger()
 	return &Dispatcher{
 		cfg:  cfg,
@@ -50,30 +53,40 @@ func NewDispatcherWithLogger(cfg *config.Config, fs *storage.FileStore, git *git
 	}
 }
 
-func (d *Dispatcher) Handle(ctx *Context) (string, error) {
-	if ctx.Command == "" {
-		return d.handleFreeform(ctx)
+// AttachGM plugs the LLM-driven GM into the dispatcher. Calling this
+// after New is the canonical wiring path; tests can leave GM nil and
+// the freeform handler falls back to echo+validate.
+func (d *Dispatcher) AttachGM(gm *usecase.GM) {
+	d.gm = gm
+}
+
+// Handle is the central entry point. It returns the reply body; the
+// caller (MultiClient dispatcher goroutine) is responsible for
+// sending and, when applicable, opening a stream.
+func (d *Dispatcher) Handle(ctx context.Context, msg messaging.IncomingMessage) (string, error) {
+	d.log.Info().Str("chat", msg.ChatID).Str("command", msg.Command).Strs("args", msg.Args).Msg("dispatch")
+	if msg.Command == "" {
+		return d.handleFreeform(ctx, msg)
 	}
-	d.log.Info().Int("user_id", ctx.UserID).Str("command", ctx.Command).Strs("args", ctx.Args).Msg("dispatch")
-	switch ctx.Command {
+	switch msg.Command {
 	case "start":
 		return d.cmdStart()
 	case "launch":
-		return d.cmdLaunch(ctx)
+		return d.cmdLaunch(msg)
 	case "status":
 		return d.cmdStatus()
 	case "commit":
-		return d.cmdCommit(ctx)
+		return d.cmdCommit(msg)
 	case "push":
 		return d.cmdPush()
 	case "maintenance":
 		return d.cmdMaintenance()
 	case "endday":
-		return d.cmdEndDay(ctx)
+		return d.cmdEndDay(msg)
 	case "leave":
-		return d.cmdLeave(ctx)
+		return d.cmdLeave(msg)
 	case "return":
-		return d.cmdReturn(ctx)
+		return d.cmdReturn(msg)
 	case "help":
 		return d.cmdHelp()
 	}
@@ -87,11 +100,22 @@ func (d *Dispatcher) commit(msg string) {
 	_ = d.git.CommitAll(msg)
 }
 
-func (d *Dispatcher) handleFreeform(ctx *Context) (string, error) {
-	v := d.rf.Validate(ctx.RawText)
-	body := fmt.Sprintf("**диалоги и действия**\n%s\n\n**КОНТЕКСТ И ИЗМЕНЕНИЯ**\nбез изменений\n\n**ВАЛИДАЦИЯ ПРАВИЛ**\n- Лимит слов: %d\n- Слов в ответе: %d\n- Превышен: %v\n- Запрещённые формы: %v\n",
-		ctx.RawText, d.cfg.Narrative.WordLimit, v.WordCount, v.OverLimit, v.ForbiddenForms)
-	return body, nil
+func (d *Dispatcher) handleFreeform(ctx context.Context, msg messaging.IncomingMessage) (string, error) {
+	// If a GM is wired, stream the LLM's response back. Otherwise fall
+	// back to the legacy echo + validation behaviour.
+	if d.gm == nil {
+		v := d.rf.Validate(msg.Text)
+		return fmt.Sprintf("**диалоги и действия**\n%s\n\n**КОНТЕКСТ И ИЗМЕНЕНИЯ**\nбез изменений\n\n**ВАЛИДАЦИЯ ПРАВИЛ**\n- Лимит слов: %d\n- Слов в ответе: %d\n- Превышен: %v\n- Запрещённые формы: %v\n",
+			msg.Text, d.cfg.Narrative.WordLimit, v.WordCount, v.OverLimit, v.ForbiddenForms), nil
+	}
+	var buf strings.Builder
+	if err := d.gm.Reply(ctx, msg.ChatID, msg.Text, func(delta string) error {
+		buf.WriteString(delta)
+		return nil
+	}); err != nil {
+		return "", err
+	}
+	return buf.String(), nil
 }
 
 func (d *Dispatcher) cmdStart() (string, error) {
@@ -116,13 +140,13 @@ func (d *Dispatcher) cmdStart() (string, error) {
 		sc.Character, sc.World, sc.State, warn), nil
 }
 
-func (d *Dispatcher) cmdLaunch(ctx *Context) (string, error) {
-	if len(ctx.Args) < 2 {
+func (d *Dispatcher) cmdLaunch(msg messaging.IncomingMessage) (string, error) {
+	if len(msg.Args) < 2 {
 		return "Использование: /launch <имя_перса> <имя_мира> [канон/сценарий...]", nil
 	}
-	charName := ctx.Args[0]
-	worldName := ctx.Args[1]
-	canon := strings.Join(ctx.Args[2:], " ")
+	charName := msg.Args[0]
+	worldName := msg.Args[1]
+	canon := strings.Join(msg.Args[2:], " ")
 	err := d.fl.Launch(
 		usecase.CharacterSpec{DisplayName: charName, Dir: charName, TrueNature: "(опишите позже)", Philosophy: ""},
 		usecase.WorldSpec{DisplayName: worldName, Dir: worldName, IsKnown: false, Canon: canon},
@@ -148,15 +172,15 @@ func (d *Dispatcher) cmdStatus() (string, error) {
 	return fmt.Sprintf("Персонаж: %s\nМир: %s\n\n**state.md**\n%s", sc.Character, sc.World, sc.State), nil
 }
 
-func (d *Dispatcher) cmdCommit(ctx *Context) (string, error) {
+func (d *Dispatcher) cmdCommit(msg messaging.IncomingMessage) (string, error) {
 	if d.git == nil {
 		return "git не инициализирован (тестовый режим).", nil
 	}
-	msg := "auto: maintenance"
-	if len(ctx.Args) > 0 {
-		msg = strings.Join(ctx.Args, " ")
+	commitMsg := "auto: maintenance"
+	if len(msg.Args) > 0 {
+		commitMsg = strings.Join(msg.Args, " ")
 	}
-	if err := d.git.CommitAll(msg); err != nil {
+	if err := d.git.CommitAll(commitMsg); err != nil {
 		return "", err
 	}
 	return "git commit выполнен.", nil
@@ -165,6 +189,9 @@ func (d *Dispatcher) cmdCommit(ctx *Context) (string, error) {
 func (d *Dispatcher) cmdPush() (string, error) {
 	if d.git == nil {
 		return "git не инициализирован.", nil
+	}
+	if d.git.RemoteDisabled() {
+		return "git push пропущен: remote_disabled=true (только локальные коммиты).", nil
 	}
 	if err := d.git.SyncRebase(); err != nil {
 		return "", err
@@ -191,15 +218,15 @@ func (d *Dispatcher) cmdMaintenance() (string, error) {
 	return "Обслуживание выполнено. Выжимка NPC: не требуется.", nil
 }
 
-func (d *Dispatcher) cmdEndDay(ctx *Context) (string, error) {
-	if len(ctx.Args) < 2 {
+func (d *Dispatcher) cmdEndDay(msg messaging.IncomingMessage) (string, error) {
+	if len(msg.Args) < 2 {
 		return "Использование: /endday <номер_дня> <краткая_выжимка...>", nil
 	}
-	day, err := strconv.Atoi(ctx.Args[0])
+	day, err := strconv.Atoi(msg.Args[0])
 	if err != nil {
 		return "", fmt.Errorf("day must be int: %w", err)
 	}
-	summary := strings.Join(ctx.Args[1:], " ")
+	summary := strings.Join(msg.Args[1:], " ")
 	sc, err := d.ss.Start()
 	if err != nil {
 		return "", err
@@ -211,14 +238,14 @@ func (d *Dispatcher) cmdEndDay(ctx *Context) (string, error) {
 	return fmt.Sprintf("День %d заархивирован в memorise.md.", day), nil
 }
 
-func (d *Dispatcher) cmdLeave(ctx *Context) (string, error) {
-	if len(ctx.Args) < 1 {
+func (d *Dispatcher) cmdLeave(msg messaging.IncomingMessage) (string, error) {
+	if len(msg.Args) < 1 {
 		return "Использование: /leave <новый_мир> [прошло_времени]", nil
 	}
-	to := ctx.Args[0]
+	to := msg.Args[0]
 	skip := ""
-	if len(ctx.Args) > 1 {
-		skip = strings.Join(ctx.Args[1:], " ")
+	if len(msg.Args) > 1 {
+		skip = strings.Join(msg.Args[1:], " ")
 	}
 	sc, err := d.ss.Start()
 	if err != nil {
@@ -229,19 +256,19 @@ func (d *Dispatcher) cmdLeave(ctx *Context) (string, error) {
 		return "", err
 	}
 	d.commit(fmt.Sprintf("world leave: %s -> %s", sc.World, to))
-	msg := fmt.Sprintf("Мир %s (день %d) покинут.\nАктивный мир: %s", res.FromWorld, res.FromDay, res.NewWorld)
+	out := fmt.Sprintf("Мир %s (день %d) покинут.\nАктивный мир: %s", res.FromWorld, res.FromDay, res.NewWorld)
 	if res.NewWorldInit {
-		msg += " (инициализирован)"
+		out += " (инициализирован)"
 	}
-	return msg, nil
+	return out, nil
 }
 
-func (d *Dispatcher) cmdReturn(ctx *Context) (string, error) {
-	if len(ctx.Args) < 2 {
+func (d *Dispatcher) cmdReturn(msg messaging.IncomingMessage) (string, error) {
+	if len(msg.Args) < 2 {
 		return "Использование: /return <мир> <дней_прошло>", nil
 	}
-	world := ctx.Args[0]
-	days := ctx.Args[1]
+	world := msg.Args[0]
+	days := msg.Args[1]
 	note, err := d.wt.ReturnWorld(world, days)
 	if err != nil {
 		return "", err

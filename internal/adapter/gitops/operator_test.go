@@ -75,7 +75,7 @@ func TestStatus_PorcelainOutput(t *testing.T) {
 func TestCommitAll_LogsInfo(t *testing.T) {
 	dir := initRepo(t)
 	log, buf := newBufLogger()
-	op := NewWithLogger(dir, "origin", "master", "Bot", "bot@x", log)
+	op := NewWithLogger(dir, "origin", "master", "Bot", "bot@x", false, log)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "a.md"), []byte("x"), 0o644))
 	require.NoError(t, op.CommitAll("logged commit"))
 	assert.Contains(t, buf.String(), "git commit")
@@ -84,7 +84,7 @@ func TestCommitAll_LogsInfo(t *testing.T) {
 func TestCommitAll_LogsDebugOnNoop(t *testing.T) {
 	dir := initRepo(t)
 	log, buf := newBufLogger()
-	op := NewWithLogger(dir, "origin", "master", "Bot", "bot@x", log)
+	op := NewWithLogger(dir, "origin", "master", "Bot", "bot@x", false, log)
 	require.NoError(t, op.CommitAll("noop"))
 	assert.Contains(t, buf.String(), "nothing to commit")
 }
@@ -92,7 +92,40 @@ func TestCommitAll_LogsDebugOnNoop(t *testing.T) {
 func TestRun_LogsFailure(t *testing.T) {
 	dir := initRepo(t)
 	log, buf := newBufLogger()
-	op := NewWithLogger(dir, "origin", "master", "Bot", "bot@x", log)
+	op := NewWithLogger(dir, "origin", "master", "Bot", "bot@x", false, log)
 	_, _ = op.run("nonexistent-subcommand-xyz")
 	assert.Contains(t, buf.String(), "git cmd failed")
+}
+
+func TestSyncRebase_RemoteDisabledReturnsError(t *testing.T) {
+	dir := initRepo(t)
+	op := New(dir, "origin", "master", "Bot", "bot@x")
+	op.remoteDisabled = true
+	err := op.SyncRebase()
+	assert.ErrorIs(t, err, ErrRemoteDisabled)
+}
+
+func TestSyncRebase_RemoteDisabled_DoesNotTouchNetwork(t *testing.T) {
+	// If SyncRebase were to call `git pull` while remoteDisabled
+	// is true, the test would try to talk to a non-existent remote
+	// and fail with a different error. We assert that no network
+	// command runs by ensuring the error is exactly ErrRemoteDisabled.
+	dir := initRepo(t)
+	log, buf := newBufLogger()
+	op := NewWithLogger(dir, "origin", "master", "Bot", "bot@x", true, log)
+	err := op.SyncRebase()
+	assert.ErrorIs(t, err, ErrRemoteDisabled)
+	assert.Contains(t, buf.String(), "git push skipped")
+}
+
+func TestRemoteDisabled_DefaultFalse(t *testing.T) {
+	dir := initRepo(t)
+	op := New(dir, "origin", "master", "Bot", "bot@x")
+	assert.False(t, op.RemoteDisabled())
+}
+
+func TestRemoteDisabled_ReflectsConfig(t *testing.T) {
+	dir := initRepo(t)
+	op := NewWithLogger(dir, "origin", "master", "Bot", "bot@x", true, zerolog.Nop())
+	assert.True(t, op.RemoteDisabled())
 }

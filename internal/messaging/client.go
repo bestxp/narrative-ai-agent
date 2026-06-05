@@ -1,0 +1,117 @@
+// Package messaging defines the transport-agnostic surface that any
+// chat client (Telegram, Discord, Web, ...) must satisfy. The lazy-
+// universe bot targets any number of clients simultaneously; the GM
+// usecase consumes a single Client and is unaware of the underlying
+// platform.
+package messaging
+
+import "context"
+
+// Sender is a minimal abstraction over "who is allowed to talk to
+// the bot" and "where do we send replies". Each transport maps the
+// native user id to a string SenderID so the GM can reason about
+// players uniformly (e.g. persist last-seen timestamps per sender).
+type Sender struct {
+	ID   string
+	Name string
+}
+
+// IncomingMessage is the platform-agnostic representation of a user
+// message arriving at the bot.
+type IncomingMessage struct {
+	Sender  Sender
+	ChatID  string
+	Text    string
+	Command string
+	Args    []string
+}
+
+// OutgoingMessage is what the bot wants to deliver to a chat. Edit
+// replaces the original message (used for streaming), Send posts a
+// new one.
+type OutgoingMessage struct {
+	ChatID  string
+	Text    string
+	ParseMode string
+}
+
+// StreamSession is opened by Edit and yields the chat id the bot can
+// call Edit() against. Closing it is implementation specific — the
+// Close method flushes the last buffer and finalises the message.
+type StreamSession interface {
+	// Append replaces the visible text with the current buffer.
+	Append(ctx context.Context, text string) error
+	// Final replaces the visible text one last time (e.g. with the
+	// full response) and closes the stream. The session is unusable
+	// after Final.
+	Final(ctx context.Context, text string) error
+}
+
+// Client is the abstraction every transport implements. It is
+// deliberately small: receive a message, send a reply, stream a
+// reply, and ask whether a sender is on the allow list.
+type Client interface {
+	// Name returns a short identifier used in logs ("telegram",
+	// "discord", "web").
+	Name() string
+
+	// Run blocks until ctx is cancelled or the underlying transport
+	// exits. It is safe to call Run for multiple clients in
+	// goroutines — the package owner is responsible for lifecycle.
+	Run(ctx context.Context) error
+
+	// Send posts a new message to the chat. The transport is free
+	// to split very long messages.
+	Send(ctx context.Context, msg OutgoingMessage) error
+
+	// StartStream opens a streaming session to the chat. The first
+	// call posts an empty placeholder; subsequent Append calls edit
+	// it. Final must be called exactly once.
+	StartStream(ctx context.Context, chatID string) (StreamSession, error)
+
+	// IsAllowed reports whether the sender id is permitted to drive
+	// the GM (per-messenger allow list lives in config).
+	IsAllowed(senderID string) bool
+}
+
+// MultiClient fans a single IncomingMessage channel out to many
+// transports and consolidates the resulting streams. It is the
+// "hub" wiring layer used by main.go.
+type MultiClient struct {
+	clients []Client
+}
+
+// NewMultiClient composes several clients. The order is preserved
+// for log clarity; behaviour is otherwise identical.
+func NewMultiClient(clients ...Client) *MultiClient {
+	return &MultiClient{clients: clients}
+}
+
+// Run starts every client in its own goroutine and blocks until
+// either ctx is cancelled or all clients exit.
+func (m *MultiClient) Run(ctx context.Context) error {
+	if len(m.clients) == 0 {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	errCh := make(chan error, len(m.clients))
+	for _, c := range m.clients {
+		c := c
+		go func() {
+			errCh <- c.Run(ctx)
+		}()
+	}
+	for i := 0; i < len(m.clients); i++ {
+		if err := <-errCh; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// All returns the underlying clients. Useful for the GM to pick a
+// specific transport (e.g. reply via the same channel the message
+// arrived on).
+func (m *MultiClient) All() []Client {
+	return m.clients
+}

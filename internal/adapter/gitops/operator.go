@@ -12,27 +12,38 @@ import (
 
 // Operator wraps the local git CLI. All commands run in `workdir`.
 type Operator struct {
-	workdir string
-	remote  string
-	branch  string
-	author  string
-	email   string
-	log     zerolog.Logger
+	workdir        string
+	remote         string
+	branch         string
+	author         string
+	email          string
+	remoteDisabled bool
+	log            zerolog.Logger
 }
 
 func New(workdir, remote, branch, author, email string) *Operator {
-	return NewWithLogger(workdir, remote, branch, author, email, zerolog.Nop())
+	return NewWithLogger(workdir, remote, branch, author, email, false, zerolog.Nop())
 }
 
-func NewWithLogger(workdir, remote, branch, author, email string, log zerolog.Logger) *Operator {
+// NewWithLogger is the explicit constructor: remoteDisabled flips
+// the operator into local-only mode (no pull, no push, no fetch).
+func NewWithLogger(workdir, remote, branch, author, email string, remoteDisabled bool, log zerolog.Logger) *Operator {
 	return &Operator{
-		workdir: workdir,
-		remote:  remote,
-		branch:  branch,
-		author:  author,
-		email:   email,
-		log:     log.With().Str("component", "gitops").Logger(),
+		workdir:        workdir,
+		remote:         remote,
+		branch:         branch,
+		author:         author,
+		email:          email,
+		remoteDisabled: remoteDisabled,
+		log:            log.With().Str("component", "gitops").Logger(),
 	}
+}
+
+// RemoteDisabled reports whether the operator was configured to
+// skip all remote operations. The dispatcher uses this to answer
+// /push with a friendly "remote disabled" message.
+func (o *Operator) RemoteDisabled() bool {
+	return o.remoteDisabled
 }
 
 func (o *Operator) run(args ...string) (string, error) {
@@ -74,10 +85,22 @@ func (o *Operator) CommitAll(message string) error {
 	return nil
 }
 
+// ErrRemoteDisabled is returned by SyncRebase when the operator
+// was constructed with remoteDisabled=true. The caller can detect
+// it (or use RemoteDisabled()) and surface a friendly "remote
+// disabled, commit only" reply to the player.
+var ErrRemoteDisabled = errors.New("git remote is disabled — push skipped")
+
 // SyncRebase pulls --rebase and pushes. On rejection it attempts
-// fetch+rebase+push once more. Network errors are returned verbatim so
-// the caller can surface them honestly.
+// fetch+rebase+push once more. Network errors are returned verbatim
+// so the caller can surface them honestly. When the operator is in
+// local-only mode (remoteDisabled=true) it short-circuits with
+// ErrRemoteDisabled — no network call is made.
 func (o *Operator) SyncRebase() error {
+	if o.remoteDisabled {
+		o.log.Info().Msg("git push skipped — remote disabled")
+		return ErrRemoteDisabled
+	}
 	if _, err := o.run("pull", "--rebase", o.remote, o.branch); err != nil {
 		o.log.Error().Err(err).Msg("git pull --rebase failed")
 		return fmt.Errorf("pull: %w", err)
