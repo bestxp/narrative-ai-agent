@@ -1,0 +1,22 @@
+telegram:
+  token: "REPLACE_WITH_BOTFATHER_TOKEN"
+  polling_timeout: 60
+  parse_mode: "Markdown"
+
+access:
+  allowed_user_ids:
+    - 123456789
+
+paths:
+  data_root: "game-data"
+  git_workdir: "."
+
+git:
+  remote: "origin"
+  branch: "master"
+  commit_author: "Lazy Universe Bot"
+  commit_email: "bot@lazy-universe.local"
+
+narrative:
+  word_limit: 350
+  language: "ru"
