@@ -60,7 +60,7 @@ func (f *fakeLLM) Stream(_ context.Context, _ llm.ChatRequest, onChunk func(llm.
 func newGMTestEnv(t *testing.T) (*GM, *storage.FileStore, *fakeLLM) {
 	t.Helper()
 	fs, _ := storage.NewFileStore(t.TempDir())
-	require.NoError(t, fs.WriteRawAtomic("info.md", domain.BuildInfo("markus", "naruto", nil, nil)))
+	require.NoError(t, fs.WriteRawAtomic(storage.InfoFile, domain.BuildInfo("markus", "naruto", nil, nil)))
 	require.NoError(t, fs.EnsureDir("characters/markus"))
 	require.NoError(t, fs.WriteRawAtomic("characters/markus/SOUL.md", "# Markus"))
 	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/state.md", "День 1 (в процессе).\nАктивные NPC прямо сейчас: Какаши"))

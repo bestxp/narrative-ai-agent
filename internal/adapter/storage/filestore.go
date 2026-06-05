@@ -41,9 +41,16 @@ func NewFileStoreWithLogger(root string, log zerolog.Logger) (*FileStore, error)
 
 func (f *FileStore) Root() string { return f.root }
 
-// --- path helpers ---
+// InfoFile is the canonical on-disk name of the multiverse
+// registry. It used to be "info.md" with a hybrid YAML+markdown
+// payload, but anchors were duplicated against the system prompt
+// and the markdown tail had nothing the LLM would consume. Pure
+// YAML keeps the storage layer aligned with the rest of the bot's
+// configuration (config.yaml, plan.md is still markdown because
+// it's a freeform human checklist for the GM).
+const InfoFile = "info.yaml"
 
-func (f *FileStore) InfoPath() string                  { return filepath.Join(f.root, "info.md") }
+func (f *FileStore) InfoYAMLPath() string             { return filepath.Join(f.root, InfoFile) }
 func (f *FileStore) CharacterDir(name string) string  { return filepath.Join(f.root, "characters", name) }
 func (f *FileStore) WorldDir(name string) string       { return filepath.Join(f.root, "worlds", name) }
 func (f *FileStore) WorldState(name string) string     { return f.WorldDir(name) + string(filepath.Separator) + "state.md" }

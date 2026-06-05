@@ -119,7 +119,7 @@ func (d *Dispatcher) handleFreeform(ctx context.Context, msg messaging.IncomingM
 }
 
 func (d *Dispatcher) cmdStart() (string, error) {
-	if !d.fs.Exists("info.md") {
+	if !d.fs.Exists(storage.InfoFile) {
 		return "Нет активной сессии. Используйте /launch <персонаж> <мир> для первоначальной настройки.", nil
 	}
 	sc, err := d.ss.Start()
@@ -162,7 +162,7 @@ func (d *Dispatcher) cmdLaunch(msg messaging.IncomingMessage) (string, error) {
 }
 
 func (d *Dispatcher) cmdStatus() (string, error) {
-	if !d.fs.Exists("info.md") {
+	if !d.fs.Exists(storage.InfoFile) {
 		return "Нет активной сессии. /launch сначала.", nil
 	}
 	sc, err := d.ss.Start()
@@ -200,7 +200,7 @@ func (d *Dispatcher) cmdPush() (string, error) {
 }
 
 func (d *Dispatcher) cmdMaintenance() (string, error) {
-	if !d.fs.Exists("info.md") {
+	if !d.fs.Exists(storage.InfoFile) {
 		return "Нет активного мира.", nil
 	}
 	sc, err := d.ss.Start()
@@ -279,7 +279,7 @@ func (d *Dispatcher) cmdReturn(msg messaging.IncomingMessage) (string, error) {
 
 func (d *Dispatcher) cmdHelp() (string, error) {
 	cmds := []string{
-		"/start — загрузить info.md и state.md",
+		"/start — загрузить info.yaml и state.md",
 		"/launch <перс> <мир> [канон] — первоначальная настройка",
 		"/status — текущий персонаж/мир/state.md",
 		"/endday <N> <выжимка> — записать день в memorise.md",

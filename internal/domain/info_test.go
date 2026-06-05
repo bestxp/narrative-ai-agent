@@ -7,28 +7,89 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestParseInfo(t *testing.T) {
-	body := `# info
-- [АКТИВЕН] characters/markus
-- [АКТИВЕН] worlds/naruto
-- [НЕАКТИВЕН] worlds/bleach
+const sampleInfo = `active_character: markus
+active_world: naruto
+characters:
+  - markus
+worlds:
+  - naruto
+  - bleach
 `
-	c, w, err := ParseInfo(body)
+
+func TestParseInfo_FromYAML(t *testing.T) {
+	info, err := ParseInfo(sampleInfo)
 	require.NoError(t, err)
-	assert.True(t, c.Active)
-	assert.Equal(t, "characters/markus", c.Pointer)
-	assert.True(t, w.Active)
-	assert.Equal(t, "worlds/naruto", w.Pointer)
+	assert.Equal(t, "markus", info.ActiveCharacter)
+	assert.Equal(t, "naruto", info.ActiveWorld)
+	assert.Equal(t, []string{"markus"}, info.Characters)
+	assert.Equal(t, []string{"naruto", "bleach"}, info.Worlds)
 }
 
-func TestParseInfo_Empty(t *testing.T) {
-	_, _, err := ParseInfo("")
+func TestParseInfo_Pointers(t *testing.T) {
+	info, err := ParseInfo(sampleInfo)
+	require.NoError(t, err)
+	assert.Equal(t, "characters/markus", info.ActiveCharacterPointer())
+	assert.Equal(t, "worlds/naruto", info.ActiveWorldPointer())
+}
+
+func TestParseInfo_EmptyPlaceholdersAllowed(t *testing.T) {
+	// Freshly bootstrapped registry is a valid Info with zero values —
+	// SessionStart will fill it in via /launch.
+	info, err := ParseInfo(BuildInfo("", "", nil, nil))
+	require.NoError(t, err)
+	assert.Equal(t, "", info.ActiveCharacter)
+	assert.Equal(t, "", info.ActiveWorld)
+	assert.Empty(t, info.Characters)
+	assert.Empty(t, info.Worlds)
+}
+
+func TestParseInfo_EmptyBodyErrors(t *testing.T) {
+	_, err := ParseInfo("")
 	assert.Error(t, err)
 }
 
-func TestBuildInfo_ContainsAnchors(t *testing.T) {
-	out := BuildInfo("m", "w", nil, nil)
-	assert.Contains(t, out, "[АКТИВЕН] characters/m")
-	assert.Contains(t, out, "[АКТИВЕН] worlds/w")
-	assert.Contains(t, out, "## Правила")
+func TestParseInfo_BadYAMLErrors(t *testing.T) {
+	_, err := ParseInfo("active_character: : :")
+	assert.Error(t, err)
+}
+
+func TestBuildInfo_RoundTrip(t *testing.T) {
+	out := BuildInfo("markus", "naruto", []string{"alice"}, []string{"bleach"})
+	info, err := ParseInfo(out)
+	require.NoError(t, err)
+	assert.Equal(t, "markus", info.ActiveCharacter)
+	assert.Equal(t, "naruto", info.ActiveWorld)
+	assert.ElementsMatch(t, []string{"markus", "alice"}, info.Characters)
+	assert.ElementsMatch(t, []string{"naruto", "bleach"}, info.Worlds)
+}
+
+func TestBuildInfo_Dedupes(t *testing.T) {
+	out := BuildInfo("markus", "naruto", []string{"markus", "alice"}, []string{"naruto", "bleach"})
+	info, err := ParseInfo(out)
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"markus", "alice"}, info.Characters)
+	assert.ElementsMatch(t, []string{"naruto", "bleach"}, info.Worlds)
+}
+
+func TestBuildInfo_EmptyProducesValidYAML(t *testing.T) {
+	out := BuildInfo("", "", nil, nil)
+	info, err := ParseInfo(out)
+	require.NoError(t, err)
+	assert.Equal(t, "", info.ActiveCharacter)
+	assert.Equal(t, "", info.ActiveWorld)
+	assert.Empty(t, info.Characters)
+	assert.Empty(t, info.Worlds)
+}
+
+func TestRenderSample(t *testing.T) {
+	// Sanity-check the file shape the bot will write to disk.
+	out := BuildInfo("markus", "naruto", []string{"alice"}, []string{"bleach"})
+	t.Logf("\n%s", out)
+	assert.Contains(t, out, "active_character: markus")
+	assert.Contains(t, out, "active_world: naruto")
+	assert.Contains(t, out, "- markus")
+	assert.Contains(t, out, "- alice")
+	assert.Contains(t, out, "- naruto")
+	assert.Contains(t, out, "- bleach")
+	assert.NotContains(t, out, "---", "info.yaml must be pure YAML, no frontmatter fences")
 }

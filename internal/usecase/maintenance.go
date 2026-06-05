@@ -204,14 +204,13 @@ func (m *Maintenance) CompactNPCs(world string) ([]string, error) {
 // --- helpers ---
 
 func currentWorld(fs *storage.FileStore) string {
-	info, _ := fs.ReadRaw("info.md")
+	info, _ := fs.ReadRaw(storage.InfoFile)
 	if info == "" {
 		return ""
 	}
-	_, w, err := domain.ParseInfo(info)
+	parsed, err := domain.ParseInfo(info)
 	if err != nil {
 		return ""
 	}
-	ptr := w.Pointer
-	return strings.TrimPrefix(ptr, "worlds/")
+	return parsed.ActiveWorld
 }

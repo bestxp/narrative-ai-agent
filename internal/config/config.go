@@ -61,7 +61,11 @@ type TelegramConfig struct {
 	// session. 30-90 is a sane range.
 	PollingTimeout int `yaml:"polling_timeout"`
 	// ParseMode is the default Telegram message parse mode ("",
-	// "Markdown", "MarkdownV2", "HTML"). Empty means plain text.
+	// "MarkdownV2", "HTML"). Empty means plain text. The bot does
+	// not currently escape MarkdownV2/HTML special characters, so
+	// leaving this empty is the only safe default — turning it on
+	// without escaping the reply text will cause Telegram to reject
+	// the edit with HTTP 400 and the stream will go silent.
 	ParseMode string `yaml:"parse_mode"`
 	// AllowedUserIDs is the access control list. Messages from any
 	// user not on this list are silently dropped. Keep it small.
@@ -70,7 +74,7 @@ type TelegramConfig struct {
 
 // PathsConfig controls where the bot stores and looks for files.
 type PathsConfig struct {
-	// DataRoot is the directory that holds info.md, the characters/
+	// DataRoot is the directory that holds info.yaml, the characters/
 	// tree and the worlds/ tree. Created on first launch if missing.
 	DataRoot string `yaml:"data_root"`
 	// GitWorkdir is the directory in which git add/commit/push

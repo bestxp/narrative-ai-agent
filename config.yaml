@@ -18,9 +18,10 @@ messaging:
     token: "REPLACE_WITH_BOTFATHER_TOKEN"
     # Long-poll длительность для GetUpdates, секунды. 30-90 — комфортный диапазон.
     polling_timeout: 60
-    # Режим парсинга сообщений: "" (plain), "Markdown", "MarkdownV2", "HTML".
-    parse_mode: "Markdown"
-    # Whitelist Telegram user_id. Сообщения от всех, кто не в списке, дропаются.
+    # Режим парсинга сообщений: "" (plain), "MarkdownV2", "HTML".
+    # По умолчанию plain — бот шлёт **для примера**, и любой parse_mode
+    parse_mode: "MarkdownV2"
+    # Whitelist Telegram user_id. Сообщения от всех, кто не в списке, дропаются. @userinfobot
     allowed_user_ids:
       - 123456789
 
@@ -29,7 +30,7 @@ messaging:
 # Относительные пути резолвятся относительно директории этого YAML-файла.
 # ----------------------------------------------------------------------------
 paths:
-  data_root: "game-data"   # Корень: info.md, characters/, worlds/
+  data_root: "game-data"   # Корень: info.yaml, characters/, worlds/
   git_workdir: "."         # Где запускать git add/commit/push
 
 # ----------------------------------------------------------------------------

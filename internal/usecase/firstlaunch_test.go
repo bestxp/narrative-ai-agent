@@ -18,7 +18,7 @@ func TestFirstLaunch_CreatesSkeleton(t *testing.T) {
 	)
 	require.NoError(t, err)
 	for _, rel := range []string{
-		"info.md",
+		storage.InfoFile,
 		"characters/markus/SOUL.md",
 		"characters/markus/SKILL.md",
 		"characters/markus/memory.md",

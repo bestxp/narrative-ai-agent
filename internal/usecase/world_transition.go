@@ -75,7 +75,7 @@ func (w *WorldTransition) Leave(fromWorld, toWorld, skipNote, character string) 
 		}
 		created = true
 	}
-	// Switch active world in info.md.
+	// Switch active world in the registry (info.yaml).
 	if err := w.switchActive(to, character); err != nil {
 		return nil, err
 	}
@@ -87,52 +87,66 @@ func (w *WorldTransition) Leave(fromWorld, toWorld, skipNote, character string) 
 	return &LeaveResult{FromWorld: from, FromDay: fromDay, NewWorld: to, NewWorldInit: created}, nil
 }
 
+// switchActive rewrites the registry (info.yaml) so that the
+// active world points at toWorld and the toWorld appears in the
+// worlds list. The active character is preserved unless the caller
+// passes a non-empty character — that path is taken by Leave, where
+// the caller has just confirmed the player character for the new
+// world. If the world's directory does not exist on disk the
+// worlds list is left as-is — directories are the source of truth
+// for "which worlds exist" and the registry is just an
+// operator-facing summary.
+//
+// The registry is expected to exist by the time we reach this
+// method — it is created by FirstLaunch.Launch at /launch and
+// bootstrapped by SessionStart.Start at /start. If it is missing
+// here the caller's on-disk state is inconsistent (e.g. game-data
+// was wiped between sessions) and we surface the error honestly
+// rather than silently re-initialising and dropping the player's
+// character/world list.
 func (w *WorldTransition) switchActive(toWorld, character string) error {
-	cur, _ := w.fs.ReadRaw("info.md")
-	if cur == "" {
-		return errors.New("info.md not found")
+	body, err := w.fs.ReadRaw(storage.InfoFile)
+	if err != nil {
+		w.log.Error().
+			Err(err).
+			Str("path", w.fs.InfoYAMLPath()).
+			Str("to_world", toWorld).
+			Msg("registry read failed — was /launch run?")
+		return fmt.Errorf("read %s: %w", storage.InfoFile, err)
 	}
-	lines := strings.Split(cur, "\n")
-	var inActiveWorld, inWorldsSection bool
-	for i, ln := range lines {
-		trim := strings.TrimSpace(ln)
-		if strings.HasPrefix(trim, "## ") {
-			inActiveWorld = trim == "## Активный мир"
-			inWorldsSection = trim == "## Миры"
-			continue
-		}
-		if !strings.HasPrefix(trim, "- [") {
-			continue
-		}
-		if inActiveWorld && strings.Contains(ln, "worlds/") {
-			lines[i] = "- [АКТИВЕН] worlds/" + toWorld
-			inActiveWorld = false
-			continue
-		}
-		if inWorldsSection && strings.Contains(ln, "worlds/"+toWorld) {
-			lines[i] = "- [АКТИВЕН] worlds/" + toWorld
-		}
+	info, err := domain.ParseInfo(body)
+	if err != nil {
+		return err
 	}
-	// If bleach did not exist in info.md at all, inject into Миры.
-	if !containsWorld(lines, toWorld) {
-		// Find the "## Миры" section and append.
-		for i, ln := range lines {
-			if strings.TrimSpace(ln) == "## Миры" {
-				lines = append(lines[:i+1], append([]string{"- [АКТИВЕН] worlds/" + toWorld}, lines[i+1:]...)...)
-				break
-			}
+	if character != "" {
+		info.ActiveCharacter = character
+	}
+	info.ActiveWorld = toWorld
+	found := false
+	for _, x := range info.Worlds {
+		if x == toWorld {
+			found = true
+			break
 		}
 	}
-	return w.fs.WriteRawAtomic("info.md", strings.Join(lines, "\n"))
+	if !found {
+		info.Worlds = append(info.Worlds, toWorld)
+	}
+	rendered := domain.BuildInfo(info.ActiveCharacter, info.ActiveWorld, without(info.Characters, info.ActiveCharacter), without(info.Worlds, info.ActiveWorld))
+	// BuildInfo emits the full file (frontmatter + anchors); use it
+	// to replace the body in one shot, preserving the existing
+	// anchor lines and any operator edits to the freeform section.
+	return w.fs.WriteRawAtomic(storage.InfoFile, rendered)
 }
 
-func containsWorld(lines []string, w string) bool {
-	for _, ln := range lines {
-		if strings.Contains(ln, "worlds/"+w) {
-			return true
+func without(xs []string, drop string) []string {
+	out := make([]string, 0, len(xs))
+	for _, x := range xs {
+		if x != drop {
+			out = append(out, x)
 		}
 	}
-	return false
+	return out
 }
 
 func (w *WorldTransition) initialiseBlankWorld(dir string) error {

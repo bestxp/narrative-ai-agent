@@ -148,9 +148,13 @@ func (c *Client) Send(ctx context.Context, msg messaging.OutgoingMessage) error 
 // StartStream implements messaging.Client.
 func (c *Client) StartStream(ctx context.Context, chatID string) (messaging.StreamSession, error) {
 	chat := parseChatID(chatID)
+	if chat == 0 {
+		return nil, fmt.Errorf("telegram: invalid chat id %q", chatID)
+	}
 	m := tg.NewMessage(chat, "…")
 	sent, err := c.api.Send(m)
 	if err != nil {
+		c.log.Error().Err(err).Str("chat", chatID).Int64("chat_int", chat).Msg("telegram: stream start failed")
 		return nil, fmt.Errorf("telegram: stream start: %w", err)
 	}
 	c.streamsMu.Lock()
@@ -160,6 +164,7 @@ func (c *Client) StartStream(ctx context.Context, chatID string) (messaging.Stre
 	c.activeStreams[chatID] = sent.MessageID
 	c.streamsMu.Unlock()
 	c.sendTyping(chatID)
+	c.log.Debug().Str("chat", chatID).Int("msg_id", sent.MessageID).Msg("stream started")
 	return &stream{
 		client: c,
 		chatID: chatID,

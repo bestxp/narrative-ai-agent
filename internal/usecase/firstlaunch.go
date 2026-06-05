@@ -12,7 +12,7 @@ import (
 )
 
 // FirstLaunch creates the entire on-disk skeleton for a new player +
-// world pair. It is idempotent: if info.md already exists and points
+// world pair. It is idempotent: if info.yaml already exists and points
 // at a different character, an error is returned and nothing is touched.
 type FirstLaunch struct {
 	fs  *storage.FileStore
@@ -42,12 +42,12 @@ type WorldSpec struct {
 }
 
 var (
-	ErrAlreadyLaunched = errors.New("first launch: game-data/info.md already exists")
+	ErrAlreadyLaunched = errors.New("first launch: game-data/info.yaml already exists")
 	ErrInvalidSpec     = errors.New("first launch: invalid character or world name")
 )
 
 func (f *FirstLaunch) Launch(char CharacterSpec, world WorldSpec) error {
-	if f.fs.Exists("info.md") {
+	if f.fs.Exists(storage.InfoFile) {
 		return ErrAlreadyLaunched
 	}
 	charDir, err := domain.SanitizeName(char.Dir)
@@ -64,7 +64,7 @@ func (f *FirstLaunch) Launch(char CharacterSpec, world WorldSpec) error {
 	if err := f.writeWorld(worldDir, world); err != nil {
 		return err
 	}
-	if err := f.fs.WriteRawAtomic("info.md", domain.BuildInfo(charDir, worldDir, nil, nil)); err != nil {
+	if err := f.fs.WriteRawAtomic(storage.InfoFile, domain.BuildInfo(charDir, worldDir, nil, nil)); err != nil {
 		return err
 	}
 	f.log.Info().Str("character", charDir).Str("world", worldDir).Msg("first_launch")

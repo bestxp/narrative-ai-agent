@@ -1,68 +1,118 @@
 package domain
 
 import (
+	"bytes"
 	"errors"
-	"regexp"
-	"strings"
+	"fmt"
+
+	"gopkg.in/yaml.v3"
 )
 
-var infoHeaderRe = regexp.MustCompile(`(?m)^-\s*\[(АКТИВЕН|НЕАКТИВЕН)\]\s+(.+?)\s*$`)
-
-type ActiveRef struct {
-	Active  bool
-	Pointer string
+// Info is the entire content of info.yaml: a pure YAML document
+// describing the active character/world of the multiverse plus the
+// known-but-inactive characters and worlds the player can switch
+// back to. There is no markdown tail — the skill's anchor
+// checklist lives next to the system prompt (prompts/narrative.md)
+// because every operator already opens that file at session start
+// anyway, and duplicating anchors in a separate file added more
+// drift than it saved.
+type Info struct {
+	ActiveCharacter string   `yaml:"active_character"`
+	ActiveWorld     string   `yaml:"active_world"`
+	Characters      []string `yaml:"characters"`
+	Worlds          []string `yaml:"worlds"`
 }
 
-func ParseInfo(content string) (charRef ActiveRef, worldRef ActiveRef, err error) {
-	for _, line := range strings.Split(content, "\n") {
-		m := infoHeaderRe.FindStringSubmatch(line)
-		if m == nil {
-			continue
-		}
-		active := m[1] == "АКТИВЕН"
-		ptr := m[2]
-		switch {
-		case strings.HasPrefix(ptr, "characters/") && charRef.Pointer == "":
-			charRef = ActiveRef{Active: active, Pointer: ptr}
-		case strings.HasPrefix(ptr, "worlds/") && worldRef.Pointer == "":
-			worldRef = ActiveRef{Active: active, Pointer: ptr}
-		}
+// ActiveCharacterPointer returns the canonical "characters/<dir>"
+// pointer, or "" if no character is registered.
+func (i Info) ActiveCharacterPointer() string {
+	if i.ActiveCharacter == "" {
+		return ""
 	}
-	if charRef.Pointer == "" && worldRef.Pointer == "" {
-		return charRef, worldRef, errors.New("info.md: no character or world references found")
-	}
-	return charRef, worldRef, nil
+	return "characters/" + i.ActiveCharacter
 }
 
+// ActiveWorldPointer returns the canonical "worlds/<dir>" pointer.
+func (i Info) ActiveWorldPointer() string {
+	if i.ActiveWorld == "" {
+		return ""
+	}
+	return "worlds/" + i.ActiveWorld
+}
+
+// MarshalInfo renders the YAML representation of i. The output is
+// stable: keys appear in struct-declaration order thanks to the
+// yaml.v3 default.
+func (i Info) MarshalInfo() (string, error) {
+	out, err := yaml.Marshal(i)
+	if err != nil {
+		return "", fmt.Errorf("marshal info: %w", err)
+	}
+	return string(out), nil
+}
+
+// ParseInfo decodes an info.yaml body into an Info. An empty body
+// or a structurally invalid document are errors. An all-zero but
+// well-formed Info (a freshly created placeholder) is accepted:
+// the bot is allowed to come up with no active character or world
+// and the dispatcher will prompt the operator to run /launch.
+func ParseInfo(content string) (Info, error) {
+	if content == "" {
+		return Info{}, errors.New("info.yaml: empty document")
+	}
+	var info Info
+	dec := yaml.NewDecoder(bytes.NewReader([]byte(content)))
+	dec.KnownFields(false)
+	if err := dec.Decode(&info); err != nil {
+		return Info{}, fmt.Errorf("parse info.yaml: %w", err)
+	}
+	return info, nil
+}
+
+// BuildInfo composes a fresh info.yaml body. The active character
+// and world are always present in their respective lists; extras
+// passed via allChars and allWorlds are deduped against the
+// active value. An empty primary produces an empty slice — used
+// by SessionStart to bootstrap a placeholder that /launch can
+// later fill.
 func BuildInfo(activeChar, activeWorld string, allChars, allWorlds []string) string {
-	var b strings.Builder
-	b.WriteString("# Lazy Multiverse — реестр\n\n")
-	b.WriteString("## Активный персонаж\n")
-	b.WriteString("- [АКТИВЕН] characters/" + activeChar + "\n\n")
-	b.WriteString("## Активный мир\n")
-	b.WriteString("- [АКТИВЕН] worlds/" + activeWorld + "\n\n")
-	b.WriteString("## Персонажи\n")
-	for _, c := range allChars {
-		if c == activeChar {
+	info := Info{
+		ActiveCharacter: activeChar,
+		ActiveWorld:     activeWorld,
+		Characters:      mergeUnique(allChars, activeChar),
+		Worlds:          mergeUnique(allWorlds, activeWorld),
+	}
+	body, _ := info.MarshalInfo()
+	return string(body)
+}
+
+func mergeUnique(extras []string, primary string) []string {
+	if primary == "" {
+		// Empty registry: keep the slice nil so it round-trips as
+		// a missing key, not as `[]` in the YAML.
+		if len(extras) == 0 {
+			return nil
+		}
+		out := make([]string, 0, len(extras))
+		for _, e := range extras {
+			if e == "" {
+				continue
+			}
+			out = append(out, e)
+		}
+		if len(out) == 0 {
+			return nil
+		}
+		return out
+	}
+	seen := map[string]bool{primary: true}
+	out := []string{primary}
+	for _, e := range extras {
+		if e == "" || seen[e] {
 			continue
 		}
-		b.WriteString("- [НЕАКТИВЕН] characters/" + c + "\n")
+		seen[e] = true
+		out = append(out, e)
 	}
-	b.WriteString("\n## Миры\n")
-	for _, w := range allWorlds {
-		if w == activeWorld {
-			continue
-		}
-		b.WriteString("- [НЕАКТИВЕН] worlds/" + w + "\n")
-	}
-	b.WriteString("\n## Правила (якоря — перечитать при старте сессии)\n")
-	b.WriteString("- [ ] Не управляю персонажем игрока\n")
-	b.WriteString("- [ ] Не спрашиваю направление сцены\n")
-	b.WriteString("- [ ] Обслуживание файлов — первоочередной приоритет\n")
-	b.WriteString("- [ ] INDEX POLLUTION: только patch или cat→write_file\n")
-	b.WriteString("- [ ] memorise.md: д{NNNNN}, сухо, при «конец дня»\n")
-	b.WriteString("- [ ] NPC знают только то, что им сказали (info-isolation)\n")
-	b.WriteString("- [ ] Имена файлов — только латиница\n")
-	b.WriteString("- [ ] Проверяю git push, не доверяю git commit\n")
-	return b.String()
+	return out
 }

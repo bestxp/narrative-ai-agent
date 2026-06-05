@@ -195,7 +195,7 @@ func (g *GM) Reply(ctx context.Context, chatID, userText string, onDelta func(st
 // "what's happening right now" half of the system message. The
 // static skill rules are prepended by the caller.
 func (g *GM) buildContextPrompt() (string, error) {
-	if !g.fs.Exists("info.md") {
+	if !g.fs.Exists(storage.InfoFile) {
 		return domain.BuildSystemPrompt(g.staticPrompt, domain.PromptContext{}), nil
 	}
 	sc, err := g.ss.Start()
@@ -351,7 +351,7 @@ func (g *GM) dispatchOneTool(_ context.Context, tc llm.ToolCall) (string, string
 	case "leave_world":
 		to := toString(args["to_world"])
 		skip := toString(args["skip_note"])
-		// We need the from-world which lives in info.md.
+		// We need the from-world which lives in the registry (info.yaml).
 		sc, err := g.ss.Start()
 		if err != nil {
 			return "", err.Error()
@@ -430,15 +430,15 @@ func toStringSlice(v any) []string {
 }
 
 func currentWorldName(fs *storage.FileStore) string {
-	raw, _ := fs.ReadRaw("info.md")
+	raw, _ := fs.ReadRaw(storage.InfoFile)
 	if raw == "" {
 		return ""
 	}
-	_, w, err := domain.ParseInfo(raw)
+	parsed, err := domain.ParseInfo(raw)
 	if err != nil {
 		return ""
 	}
-	return strings.TrimPrefix(w.Pointer, "worlds/")
+	return parsed.ActiveWorld
 }
 
 func readCurrentDay(fs *storage.FileStore, world string) int {

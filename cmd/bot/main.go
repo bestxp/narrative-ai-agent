@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strings"
 	"sync"
 	"syscall"
 
@@ -163,30 +162,36 @@ func handleIncoming(ctx context.Context, log zerolog.Logger, c messaging.Client,
 	var session messaging.StreamSession
 	if ok {
 		s, err := streamer.StartStream(ctx, msg.ChatID)
-		if err == nil {
+		if err != nil {
+			log.Warn().Err(err).Str("chat", msg.ChatID).Msg("stream start failed, falling back to Send")
+		} else {
 			session = s
 		}
 	}
-	var buf strings.Builder
 	reply, err := disp.Handle(ctx, msg)
 	if err != nil {
 		log.Error().Err(err).Str("chat", msg.ChatID).Msg("dispatch error")
 		reply = "⚠️ " + err.Error()
 	}
 	if reply == "" {
+		// Nothing to say. The placeholder message is left as "…" —
+		// deleting it would be more disruptive (Telegram shows
+		// "message deleted" to the player). Just close the stream.
 		if session != nil {
 			_ = session.Final(ctx, "…")
 		}
 		return
 	}
-	buf.WriteString(reply)
 	if session != nil {
-		_ = session.Final(ctx, buf.String())
+		if err := session.Final(ctx, reply); err != nil {
+			log.Error().Err(err).Str("chat", msg.ChatID).Msg("stream final failed, retrying via Send")
+			_ = c.Send(ctx, messaging.OutgoingMessage{ChatID: msg.ChatID, Text: reply, ParseMode: parseMode})
+		}
 		return
 	}
 	if err := c.Send(ctx, messaging.OutgoingMessage{
 		ChatID:    msg.ChatID,
-		Text:      buf.String(),
+		Text:      reply,
 		ParseMode: parseMode,
 	}); err != nil {
 		log.Error().Err(err).Msg("send error")

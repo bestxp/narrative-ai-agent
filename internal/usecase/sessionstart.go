@@ -31,66 +31,66 @@ type SessionContext struct {
 	State             string
 	SyncStateAhead    bool
 	SyncMemoriseAhead bool
-	UnreadAnchors     []string
 	Warnings          []string
 }
 
-var ErrNoActiveSession = errors.New("no active session: run /start to create one")
+// ErrNoActiveSession is returned by Start when the registry is
+// bootstrapped but has no active world. The operator can recover by
+// running /launch.
+var ErrNoActiveSession = errors.New("no active session: run /launch <character> <world>")
+
+// ensureRegistry writes a minimal info.yaml placeholder when the
+// registry is missing or empty. The placeholder has no active
+// character or world; /launch fills them in. The placeholder exists
+// so downstream code (PromptContext, /status, /push) can call
+// ParseInfo without a nil-error special case.
+func (s *SessionStart) ensureRegistry() error {
+	if s.fs.Exists(storage.InfoFile) {
+		raw, _ := s.fs.ReadRaw(storage.InfoFile)
+		if raw != "" {
+			return nil
+		}
+	}
+	placeholder := domain.BuildInfo("", "", nil, nil)
+	if err := s.fs.WriteRawAtomic(storage.InfoFile, placeholder); err != nil {
+		s.log.Error().Err(err).Str("path", s.fs.InfoYAMLPath()).Msg("registry bootstrap failed")
+		return fmt.Errorf("bootstrap %s: %w", storage.InfoFile, err)
+	}
+	s.log.Warn().Str("path", s.fs.InfoYAMLPath()).Msg("registry missing — created empty placeholder, run /launch")
+	return nil
+}
 
 func (s *SessionStart) Start() (*SessionContext, error) {
-	infoRaw, err := s.fs.ReadRaw("info.md")
+	if err := s.ensureRegistry(); err != nil {
+		return nil, err
+	}
+	infoRaw, err := s.fs.ReadRaw(storage.InfoFile)
 	if err != nil {
 		return nil, err
 	}
 	if infoRaw == "" {
 		return nil, ErrNoActiveSession
 	}
-	charRef, worldRef, err := domain.ParseInfo(infoRaw)
+	info, err := domain.ParseInfo(infoRaw)
 	if err != nil {
-		return nil, fmt.Errorf("parse info: %w", err)
+		return nil, fmt.Errorf("parse info.yaml: %w", err)
 	}
-	if !worldRef.Active {
-		return nil, errors.New("info.md: no active world")
+	if info.ActiveWorld == "" {
+		return nil, ErrNoActiveSession
 	}
-	world := strings.TrimPrefix(worldRef.Pointer, "worlds/")
+	world := info.ActiveWorld
 	state, err := s.fs.ReadRaw("worlds/" + world + "/state.md")
 	if err != nil {
 		return nil, fmt.Errorf("read state: %w", err)
 	}
 	ctx := &SessionContext{
-		Character: strings.TrimPrefix(charRef.Pointer, "characters/"),
+		Character: info.ActiveCharacter,
 		World:     world,
 		State:     state,
 	}
-	anchors, warns := s.scanAnchors(infoRaw)
-	ctx.UnreadAnchors = anchors
-	ctx.Warnings = append(ctx.Warnings, warns...)
 	ctx.SyncStateAhead, ctx.SyncMemoriseAhead = s.checkSync(world, state)
-	s.log.Info().Str("world", world).Str("character", ctx.Character).Int("unread_anchors", len(anchors)).Msg("session_start")
+	s.log.Info().Str("world", world).Str("character", ctx.Character).Msg("session_start")
 	return ctx, nil
-}
-
-// scanAnchors returns the unchecked anchors from the "## Правила"
-// section. Anchor lines look like `- [ ] Не управляю...`.
-func (s *SessionStart) scanAnchors(info string) (unchecked []string, warns []string) {
-	inRules := false
-	for _, line := range strings.Split(info, "\n") {
-		trim := strings.TrimSpace(line)
-		if strings.HasPrefix(trim, "##") {
-			inRules = strings.Contains(strings.ToLower(trim), "правил")
-			continue
-		}
-		if !inRules {
-			continue
-		}
-		if strings.HasPrefix(trim, "- [ ]") {
-			unchecked = append(unchecked, strings.TrimSpace(strings.TrimPrefix(trim, "- [ ]")))
-		}
-	}
-	if len(unchecked) > 0 {
-		warns = append(warns, fmt.Sprintf("непрочитанных якорей: %d", len(unchecked)))
-	}
-	return
 }
 
 // checkSync compares the day counter in state.md with the last archived

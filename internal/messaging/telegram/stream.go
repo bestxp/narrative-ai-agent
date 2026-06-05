@@ -37,8 +37,16 @@ func (s *stream) Append(ctx context.Context, text string) error {
 	if s.client.cfg.ParseMode != "" {
 		e.ParseMode = s.client.cfg.ParseMode
 	}
-	_, err := s.client.api.Send(e)
-	return err
+	if _, err := s.client.api.Send(e); err != nil {
+		s.client.log.Error().
+			Err(err).
+			Str("chat", s.chatID).
+			Int("msg_id", s.msgID).
+			Int("text_len", len(text)).
+			Msg("stream edit failed")
+		return err
+	}
+	return nil
 }
 
 func (s *stream) Final(ctx context.Context, text string) error {
@@ -71,21 +79,24 @@ func NewThrottledStream(inner messaging.StreamSession) *ThrottledStream {
 
 func (t *ThrottledStream) Append(ctx context.Context, text string) error {
 	t.mu.Lock()
-	defer t.mu.Unlock()
 	if since := time.Since(t.last); since < t.minDelay {
+		wait := t.minDelay - since
+		t.mu.Unlock()
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(t.minDelay - since):
+		case <-time.After(wait):
 		}
+		t.mu.Lock()
 	}
 	t.last = time.Now()
+	t.mu.Unlock()
 	return t.inner.Append(ctx, text)
 }
 
 func (t *ThrottledStream) Final(ctx context.Context, text string) error {
 	t.mu.Lock()
-	defer t.mu.Unlock()
 	t.last = time.Now()
+	t.mu.Unlock()
 	return t.inner.Final(ctx, text)
 }

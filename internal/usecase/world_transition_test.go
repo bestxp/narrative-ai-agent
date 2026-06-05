@@ -14,8 +14,8 @@ import (
 func TestWorldTransition_Leave_CreatesNew(t *testing.T) {
 	fs, _ := storage.NewFileStore(t.TempDir())
 	seedWorld(t, fs, "naruto")
-	body := domain.BuildInfo("markus", "naruto", nil, nil) + "\n- [НЕАКТИВЕН] worlds/bleach\n"
-	require.NoError(t, fs.WriteRawAtomic("info.md", body))
+	// bleach is not in the worlds list yet — switchActive must add it.
+	require.NoError(t, fs.WriteRawAtomic(storage.InfoFile, domain.BuildInfo("markus", "naruto", nil, nil)))
 	wt := NewWorldTransition(fs)
 	res, err := wt.Leave("naruto", "bleach", "1 час", "markus")
 	require.NoError(t, err)
@@ -27,14 +27,18 @@ func TestWorldTransition_Leave_CreatesNew(t *testing.T) {
 	} {
 		assert.True(t, fs.Exists(rel), "missing %s", rel)
 	}
-	info, _ := fs.ReadRaw("info.md")
-	assert.Contains(t, info, "[АКТИВЕН] worlds/bleach")
+	info, _ := fs.ReadRaw(storage.InfoFile)
+	parsed, err := domain.ParseInfo(info)
+	require.NoError(t, err)
+	assert.Equal(t, "bleach", parsed.ActiveWorld)
+	assert.Contains(t, parsed.Worlds, "bleach")
+	assert.Contains(t, parsed.Worlds, "naruto", "naruto stays in the list for future return")
 }
 
 func TestWorldTransition_Leave_CompressesState(t *testing.T) {
 	fs, _ := storage.NewFileStore(t.TempDir())
 	seedWorld(t, fs, "naruto")
-	require.NoError(t, fs.WriteRawAtomic("info.md", domain.BuildInfo("markus", "naruto", nil, nil)))
+	require.NoError(t, fs.WriteRawAtomic(storage.InfoFile, domain.BuildInfo("markus", "naruto", nil, nil)))
 	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/state.md", "День 7 (в процессе).\nДлинный текст сцены...\n"))
 	wt := NewWorldTransition(fs)
 	_, err := wt.Leave("naruto", "bleach", "", "")
@@ -47,7 +51,7 @@ func TestWorldTransition_Leave_CompressesState(t *testing.T) {
 func TestWorldTransition_Leave_AppendsMemory(t *testing.T) {
 	fs, _ := storage.NewFileStore(t.TempDir())
 	seedWorld(t, fs, "naruto")
-	require.NoError(t, fs.WriteRawAtomic("info.md", domain.BuildInfo("markus", "naruto", nil, nil)))
+	require.NoError(t, fs.WriteRawAtomic(storage.InfoFile, domain.BuildInfo("markus", "naruto", nil, nil)))
 	require.NoError(t, fs.EnsureDir("characters/markus"))
 	require.NoError(t, fs.WriteRawAtomic("characters/markus/memory.md", ""))
 	wt := NewWorldTransition(fs)
@@ -60,7 +64,7 @@ func TestWorldTransition_Leave_AppendsMemory(t *testing.T) {
 func TestWorldTransition_Return_AdvancesDay(t *testing.T) {
 	fs, _ := storage.NewFileStore(t.TempDir())
 	seedWorld(t, fs, "naruto")
-	require.NoError(t, fs.WriteRawAtomic("info.md", domain.BuildInfo("markus", "bleach", nil, []string{"naruto"})))
+	require.NoError(t, fs.WriteRawAtomic(storage.InfoFile, domain.BuildInfo("markus", "bleach", nil, []string{"naruto"})))
 	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/state.md", "День 3 (завершён).\nУход.\n"))
 	wt := NewWorldTransition(fs)
 	note, err := wt.ReturnWorld("naruto", "5")
@@ -85,7 +89,7 @@ func TestWorldTransition_Logs(t *testing.T) {
 	seedWorld(t, fs, "naruto")
 	log, buf := newBufLogger()
 	wt := NewWorldTransitionWithLogger(fs, log)
-	require.NoError(t, fs.WriteRawAtomic("info.md", domain.BuildInfo("markus", "naruto", nil, nil)))
+	require.NoError(t, fs.WriteRawAtomic(storage.InfoFile, domain.BuildInfo("markus", "naruto", nil, nil)))
 	_, err := wt.Leave("naruto", "bleach", "", "")
 	require.NoError(t, err)
 	assert.Contains(t, buf.String(), "world_leave")
