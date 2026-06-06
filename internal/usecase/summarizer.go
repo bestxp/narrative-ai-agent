@@ -23,19 +23,27 @@ import (
 // under "## История (сжато)" so the next system prompt has
 // the facts even after the original turns leave conversations[].
 //
-// The summary role is intentionally NOT a hard dependency:
-// when no summary role is configured the summarizer
-// short-circuits and returns an empty string, the GM still
-// drops the turns, and the player sees a "🔄 компактирую"
-// notice with the dropped-turns count. This keeps the bot
-// functional on a single-role configuration; the summary
-// step is an enhancement, not a requirement.
+// Three configurations are supported:
+//
+//   1. Dedicated summary role (e.g. deepseek-v4-flash). Cheap,
+//      fast, isolated from narrative. RECOMMENDED.
+//   2. Fallback: the narrative role itself is used with
+//      lowered max_tokens and temperature so a single-model
+//      deployment still gets a written fact log. The cost is
+//      one extra round-trip to the same model per compaction;
+//      latency is comparable to the dedicated role.
+//   3. Disabled: no summary at all — drop-only. The OnCompaction
+//      notice still fires, but state.md gets no history section.
 type Summarizer struct {
-	llm   LLMClient
-	role  llm.RoleConfig
+	llm    LLMClient
+	role   llm.RoleConfig
 	prompt string
-	slow  *slowlog.Logger
-	log   zerolog.Logger
+	slow   *slowlog.Logger
+	log    zerolog.Logger
+	// fallbackMode is true when this summarizer shares the
+	// narrative model. We use the same role config but with
+	// a small MaxTokens override to keep the response tight.
+	fallbackMode bool
 }
 
 // NewSummarizer builds a Summarizer for the given role. The
@@ -49,6 +57,39 @@ func NewSummarizer(llmCli LLMClient, role llm.RoleConfig, systemPrompt string, s
 		slow:   slow,
 		log:    log.With().Str("component", "summarizer").Logger(),
 	}
+}
+
+// NewFallbackSummarizer wires the narrative role itself as a
+// summary role. Used when no dedicated summary role is
+// configured. The MaxTokens is clamped to 500 and the
+// temperature to 0.2 — narrative temperatures are typically
+// 0.7+ which produce noisy summaries. The system prompt is
+// the same prompts/summary.md (or whatever the operator
+// pointed at via the fallback path).
+func NewFallbackSummarizer(llmCli LLMClient, narrative llm.RoleConfig, systemPrompt string, slow *slowlog.Logger, log zerolog.Logger) *Summarizer {
+	role := narrative
+	if role.MaxTokens > 500 {
+		role.MaxTokens = 500
+	}
+	if role.Temperature == 0 || role.Temperature > 0.4 {
+		role.Temperature = 0.2
+	}
+	return &Summarizer{
+		llm:          llmCli,
+		role:         role,
+		prompt:       systemPrompt,
+		slow:         slow,
+		log:          log.With().Str("component", "summarizer").Logger(),
+		fallbackMode: true,
+	}
+}
+
+// IsFallback reports whether this summarizer uses the
+// narrative model (true) or a dedicated summary role (false).
+// The operator sees this in slowlog to disambiguate the
+// source of the summary in the audit trail.
+func (s *Summarizer) IsFallback() bool {
+	return s != nil && s.fallbackMode
 }
 
 // IsConfigured reports whether the summarizer is wired to a
@@ -113,21 +154,34 @@ func (s *Summarizer) SummarizeOldTurns(ctx context.Context, messages []llm.Messa
 	res := SummaryResult{
 		Text:   out,
 		Tokens: tokens,
-		Source: "summary",
+		Source: source(s),
 	}
 	s.log.Info().
 		Str("model", s.role.Model).
+		Bool("fallback", s.fallbackMode).
 		Int("input_tokens", tokens).
 		Int("output_chars", len(out)).
 		Msg("summary generated")
 	if s.slow != nil {
 		_ = s.slow.Write("summary.generated", "", map[string]any{
 			"model":        s.role.Model,
+			"fallback":     s.fallbackMode,
 			"input_tokens": tokens,
 			"output_chars": len(out),
 		})
 	}
 	return res, nil
+}
+
+// source returns "summary" for dedicated roles and
+// "summary-fallback" for narrative-mode roles. The flag is
+// visible in slowlog so the operator can audit which model
+// was used without grepping config.
+func source(s *Summarizer) string {
+	if s.fallbackMode {
+		return "summary-fallback"
+	}
+	return "summary"
 }
 
 // renderTurnsForSummary flattens a slice of chat-completion

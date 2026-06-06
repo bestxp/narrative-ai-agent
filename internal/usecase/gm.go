@@ -326,6 +326,7 @@ func (g *GM) Reply(ctx context.Context, chatID, userText string, cb Callbacks) (
 			usageFromAPI   llm.Usage
 			gotUsage       bool
 			roundCompChars int
+			rawTrace       []string
 		)
 		streamErr := g.llm.Stream(ctx, llm.ChatRequest{
 			Model:       g.role.Model,
@@ -334,6 +335,13 @@ func (g *GM) Reply(ctx context.Context, chatID, userText string, cb Callbacks) (
 			Temperature: g.role.Temperature,
 			MaxTokens:   g.role.MaxTokens,
 		}, func(ch llm.Chunk) error {
+			// Always grab the most recent raw trace so the
+			// slowlog event below can include it on empty
+			// turns. We overwrite rather than append because
+			// every chunk already carries the running trace.
+			if len(ch.RawTrace) > 0 {
+				rawTrace = ch.RawTrace
+			}
 			if ch.Done {
 				return nil
 			}
@@ -400,10 +408,78 @@ func (g *GM) Reply(ctx context.Context, chatID, userText string, cb Callbacks) (
 				"source":            roundUsage.Source,
 				"model":             g.role.Model,
 			})
+		// Diagnostic: capture finish reason + content preview so a
+		// 0-byte assistant turn is visible in slow.log (not just
+		// "4516 prompt, 0 completion"). Without this we can't tell
+		// whether the model returned empty content, the stream
+		// got cut off, or the provider sent a done frame only.
+		preview := assistantBuf.String()
+		if len(preview) > 500 {
+			preview = preview[:500] + "…"
+		}
+		fields := map[string]any{
+			"round":         round,
+			"finish":        finishReason,
+			"tool_calls":    len(toolCalls),
+			"content_chars": len(assistantBuf.String()),
+			"content_prev":  preview,
+		}
+		// When the assistant produced no text AND no tool calls,
+		// the raw SSE trace is the only way to diagnose. We do
+		// not log it on healthy rounds (would spam slow.log with
+		// 3-5 entries per turn).
+		if len(assistantBuf.String()) == 0 && len(toolCalls) == 0 {
+			fields["raw_trace"] = rawTrace
+		}
+		_ = g.slow.Write("llm.round", chatID, fields)
 		}
 
-		// If the model only wanted to talk, we're done.
+		// If the model only wanted to talk, we're done — but first
+		// check format compliance and re-prompt on missing blocks.
 		if len(toolCalls) == 0 || finishReason != "tool_calls" {
+			// Skip the format gate entirely when the round
+			// produced no content. Re-prompting on an empty
+			// string would force us to send "[system note]
+			// missing: 4 blocks" with no original to fix, and
+			// the model would either repeat nothing or invent
+			// text that ignores our blocks. Instead we surface
+			// a polite "model returned empty" placeholder so
+			// the user is not left hanging on a frozen "…".
+			if len(assistantBuf.String()) == 0 {
+				if cb.OnDelta != nil {
+					_ = cb.OnDelta("⚠️ модель не вернула ответ — попробуй ещё раз")
+				}
+				g.log.Warn().
+					Int("round", round).
+					Str("finish", finishReason).
+					Msg("llm returned empty content; skipping format gate")
+				return totals, nil
+			}
+			if !g.isFormatCompliant(assistantBuf.String()) {
+				fixed, fixedUsage, fixErr := g.repromptForFormat(ctx, chatID, history, assistantBuf.String(), cb)
+				totals.PromptTokens += fixedUsage.PromptTokens
+				totals.CompletionTokens += fixedUsage.CompletionTokens
+				totals.TotalTokens += fixedUsage.TotalTokens
+				if totals.Source == "" || totals.Source == "off" {
+					totals.Source = fixedUsage.Source
+				}
+				if fixErr != nil {
+					g.log.Warn().Err(fixErr).Msg("format re-prompt failed; returning original reply")
+				} else if fixed != "" {
+					if cb.OnDelta != nil {
+						_ = cb.OnDelta("\n\n[формат восстановлен]\n\n" + fixed)
+					}
+					conv.mu.Lock()
+					if len(conv.messages) > 0 {
+						last := conv.messages[len(conv.messages)-1]
+						if last.Role == "assistant" {
+							last.Content = assistantBuf.String() + "\n\n[формат восстановлен]\n\n" + fixed
+							conv.messages[len(conv.messages)-1] = last
+						}
+					}
+					conv.mu.Unlock()
+				}
+			}
 			return totals, nil
 		}
 
@@ -480,9 +556,17 @@ func promptCharSize(msgs []llm.Message) int {
 // buildContextPrompt loads the current game-data and produces the
 // "what's happening right now" half of the system message. The
 // static skill rules are prepended by the caller.
+//
+// disableThinking forwards g.role.DisableThinking into
+// BuildSystemPrompt so a /no_think sentinel is prepended when the
+// role is configured to skip chain-of-thought. This is the
+// in-prompt half of the dual switch — the wire-level
+// chat_template_kwargs.think=false is the other half. Providers
+// that ignore the wire flag (Ollama Cloud minimax-m3:cloud today)
+// still respond to the prompt directive.
 func (g *GM) buildContextPrompt() (string, error) {
 	if !g.fs.Exists(storage.InfoFile) {
-		return domain.BuildSystemPrompt(g.staticPrompt, domain.PromptContext{}), nil
+		return domain.BuildSystemPrompt(g.staticPrompt, domain.PromptContext{}, g.role.DisableThinking), nil
 	}
 	sc, err := g.ss.Start()
 	if err != nil {
@@ -501,7 +585,7 @@ func (g *GM) buildContextPrompt() (string, error) {
 		WorldMemoriseTail: tailMemorise(safeRead(g.fs, "worlds/"+sc.World+"/memorise.md"), 20),
 		NPCs:              g.loadActiveNPCs(sc.World, sc.State),
 	}
-	return domain.BuildSystemPrompt(g.staticPrompt, ctx), nil
+	return domain.BuildSystemPrompt(g.staticPrompt, ctx, g.role.DisableThinking), nil
 }
 
 func safeRead(fs *storage.FileStore, rel string) string {
@@ -603,6 +687,7 @@ func (g *GM) dispatchOneTool(_ context.Context, tc llm.ToolCall) (string, string
 		moment := toString(args["moment"])
 		inFlight := toBool(args["in_flight"])
 		npcs := toStringSlice(args["npcs"])
+		events := toStringSlice(args["events"])
 		if moment == "" {
 			return "", "update_state requires moment"
 		}
@@ -611,6 +696,7 @@ func (g *GM) dispatchOneTool(_ context.Context, tc llm.ToolCall) (string, string
 		day := readCurrentDay(g.fs, currentWorldName(g.fs))
 		if err := g.mt.UpdateState(StateSnapshot{
 			Day: day, InFlight: inFlight, Moment: moment, NPCs: npcs,
+			AppendEvents: events,
 		}); err != nil {
 			return "", err.Error()
 		}
@@ -764,4 +850,174 @@ func readCurrentDay(fs *storage.FileStore, world string) int {
 		return 1
 	}
 	return n
+}
+
+// requiredFormatHeaders is the contract the GM enforces on every
+// assistant message. The model is told the four-block structure
+// in prompts/narrative.md; this list is the same one the
+// dispatcher reads. Keeping the names in code lets us detect
+// drift between the prompt and the validator at boot.
+var requiredFormatHeaders = []string{
+	"**диалоги и действия**",
+	"**КОНТЕКСТ И ИЗМЕНЕНИЯ**",
+	"**БУДУЩЕЕ**",
+	"**ВАЛИДАЦИЯ ПРАВИЛ**",
+}
+
+func (g *GM) isFormatCompliant(text string) bool {
+	if text == "" {
+		return false
+	}
+	for _, h := range requiredFormatHeaders {
+		if !strings.Contains(text, h) {
+			return false
+		}
+	}
+	return true
+}
+
+func (g *GM) missingFormatHeaders(text string) []string {
+	if text == "" {
+		return requiredFormatHeaders
+	}
+	var missing []string
+	for _, h := range requiredFormatHeaders {
+		if !strings.Contains(text, h) {
+			missing = append(missing, h)
+		}
+	}
+	return missing
+}
+
+// repromptForFormat appends a corrective user message to history
+// and runs one more LLM round. The corrective text is short and
+// neutral — it only lists the headers that were missing, then
+// asks the model to emit the full reply. The model sees the
+// original reply in the history so it can re-emit it correctly
+// rather than starting from scratch.
+//
+// Limit: at most one re-prompt. Long sessions occasionally
+// produce 2-block replies; one nudge is enough. If the second
+// reply also misses a header we return whatever we got — the
+// operator can see it in the slowlog and tune the prompt.
+func (g *GM) repromptForFormat(ctx context.Context, chatID string, history []llm.Message, original string, cb Callbacks) (string, TokenUsage, error) {
+	var totals TokenUsage
+	if g.tracking == "" || g.tracking == "off" {
+		totals.Source = "off"
+	}
+
+	missing := g.missingFormatHeaders(original)
+	if len(missing) == 0 {
+		return "", totals, nil
+	}
+
+	missingList := strings.Join(missing, ", ")
+	reprompt := fmt.Sprintf(
+		"[system note] твой предыдущий ответ не содержал обязательных блоков: %s. "+
+			"Перепиши ответ с нуля, включив все четыре блока **в этом порядке**: "+
+			"**диалоги и действия**, **КОНТЕКСТ И ИЗМЕНЕНИЯ**, **БУДУЩЕЕ**, **ВАЛИДАЦИЯ ПРАВИЛ**. "+
+			"Не пиши пятый блок (варианты действий / следующий ход / выбор игрока), "+
+			"не задавай игроку вопрос в конце, не нумеруй опции.",
+		missingList,
+	)
+
+	history = append(history,
+		llm.Message{Role: "user", Content: reprompt},
+	)
+
+	convMessages := history
+	ctxPrompt, err := g.buildContextPrompt()
+	if err != nil {
+		return "", totals, fmt.Errorf("reprompt: build context: %w", err)
+	}
+	messages := make([]llm.Message, 0, len(convMessages)+1)
+	messages = append(messages, llm.Message{Role: "system", Content: ctxPrompt})
+	messages = append(messages, convMessages...)
+
+	var (
+		buf          strings.Builder
+		finishReason string
+		usageFromAPI llm.Usage
+		gotUsage     bool
+		compChars    int
+		rawTrace     []string
+	)
+	streamErr := g.llm.Stream(ctx, llm.ChatRequest{
+		Model:       g.role.Model,
+		Messages:    messages,
+		Tools:       g.tools,
+		Temperature: g.role.Temperature,
+		MaxTokens:   g.role.MaxTokens,
+	}, func(ch llm.Chunk) error {
+		if len(ch.RawTrace) > 0 {
+			rawTrace = ch.RawTrace
+		}
+		if ch.Done {
+			return nil
+		}
+		if ch.Content != "" {
+			buf.WriteString(ch.Content)
+			compChars += len(ch.Content)
+			if cb.OnDelta != nil {
+				if err := cb.OnDelta(ch.Content); err != nil {
+					return err
+				}
+			}
+		}
+		if ch.Finish != "" {
+			finishReason = ch.Finish
+		}
+		if ch.Usage.TotalTokens > 0 || ch.Usage.PromptTokens > 0 {
+			usageFromAPI = ch.Usage
+			gotUsage = true
+		}
+		return nil
+	})
+	if streamErr != nil {
+		return "", totals, streamErr
+	}
+	_ = finishReason
+	_ = gotUsage
+	_ = usageFromAPI
+	_ = compChars
+
+	// Persist the corrective turn as part of conversation
+	// history so the model learns the pattern.
+	conv := g.getConversation(chatID)
+	conv.mu.Lock()
+	conv.messages = append(conv.messages, llm.Message{Role: "user", Content: reprompt})
+	conv.messages = append(conv.messages, llm.Message{Role: "assistant", Content: buf.String()})
+	conv.mu.Unlock()
+
+	if g.slow != nil {
+		origPrev := original
+		if len(origPrev) > 200 {
+			origPrev = origPrev[:200] + "…"
+		}
+		fixPrev := buf.String()
+		if len(fixPrev) > 200 {
+			fixPrev = fixPrev[:200] + "…"
+		}
+		fields := map[string]any{
+			"missing":        missing,
+			"original_chars": len(original),
+			"reprompt_chars": len(buf.String()),
+			"original_prev":  origPrev,
+			"reprompt_prev":  fixPrev,
+		}
+		// If the corrective round also produced no content, the
+		// raw SSE trace is the only diagnostic. Without it the
+		// operator would only see "reprompt_chars: 0" and have
+		// to guess whether the model refused, timed out, or
+		// crashed.
+		if len(buf.String()) == 0 {
+			fields["raw_trace"] = rawTrace
+		}
+		_ = g.slow.Write("format.reprompt", chatID, fields)
+	}
+	g.log.Info().Strs("missing", missing).Int("reprompt_chars", len(buf.String())).Msg("format re-prompt")
+
+	// Return only the new chunk — caller will splice it into
+	// the user-visible buffer with a clear separator.
+	return buf.String(), totals, nil
 }

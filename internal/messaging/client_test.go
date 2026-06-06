@@ -20,6 +20,7 @@ type fakeClient struct {
 	stopped   bool
 	mu        sync.Mutex
 	sendCount int
+	commands  []BotCommand
 }
 
 func (f *fakeClient) Name() string { return f.name }
@@ -47,6 +48,11 @@ func (f *fakeClient) StartStream(ctx context.Context, chatID string, replyToMess
 }
 
 func (f *fakeClient) IsAllowed(id string) bool { return f.allow[id] }
+
+func (f *fakeClient) SetCommands(ctx context.Context, cmds []BotCommand) error {
+	f.commands = append(f.commands, cmds...)
+	return nil
+}
 
 func TestMultiClient_StartsAll(t *testing.T) {
 	a := &fakeClient{name: "a"}

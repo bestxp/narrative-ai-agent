@@ -404,6 +404,30 @@ func (d *Dispatcher) cmdReturn(msg messaging.IncomingMessage) (string, error) {
 	return note, nil
 }
 
+// Commands returns the canonical command set with short
+// descriptions, suitable for handing to a transport's
+// SetCommands. The list is the source of truth — main.go
+// uses it for the Telegram native menu, but any transport
+// that supports a command picker can consume the same
+// slice. Keep the descriptions short (≤256 chars per
+// Telegram).
+func (d *Dispatcher) Commands() []messaging.BotCommand {
+	return []messaging.BotCommand{
+		{Command: "start", Description: "Загрузить info.yaml и state.md"},
+		{Command: "status", Description: "Текущий персонаж, мир, день"},
+		{Command: "me", Description: "Содержимое SOUL/SKILL/memory/state"},
+		{Command: "launch", Description: "Первоначальная настройка (перс + мир)"},
+		{Command: "endday", Description: "Записать день в memorise.md"},
+		{Command: "maintenance", Description: "Сжать NPC > 40 строк"},
+		{Command: "leave", Description: "Переход в новый мир"},
+		{Command: "return", Description: "Возврат с time-skip"},
+		{Command: "save", Description: "git commit + push, уведомление"},
+		{Command: "commit", Description: "Только git commit (локально)"},
+		{Command: "push", Description: "Только git push"},
+		{Command: "help", Description: "Список команд"},
+	}
+}
+
 func (d *Dispatcher) cmdHelp() (string, error) {
 	cmds := []string{
 		"/start — загрузить info.yaml и state.md",

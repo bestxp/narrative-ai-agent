@@ -23,6 +23,7 @@ import (
 	"narrative/internal/logging"
 	"narrative/internal/messaging"
 	"narrative/internal/messaging/telegram"
+	promptpkg "narrative/internal/prompts"
 	"narrative/internal/slowlog"
 	"narrative/internal/usecase"
 )
@@ -74,14 +75,12 @@ func main() {
 	cu := usecase.NewCharacterUpdate(fs, log, slow)
 	disp := dispatcher.New(cfg, fs, gitOp, cu, slow, log)
 
-	// Wire the GM. We always construct the LLM client; the no-llm
-	// flag is a "dry run" toggle for environments where the LLM is
-	// not yet reachable.
 	role, ok := cfg.Role(config.NarrativeRole)
 	if !ok {
 		log.Fatal().Str("role", config.NarrativeRole).Msg("narrative role not configured")
 	}
-	systemPrompt, err := os.ReadFile(role.SystemPromptPath)
+	log.Info().Strs("prompts", promptpkg.List()).Msg("bundled prompts")
+	systemPrompt, err := promptpkg.LoadSystemPrompt(role.SystemPromptPath, "narrative.md")
 	if err != nil {
 		log.Fatal().Err(err).Str("path", role.SystemPromptPath).Msg("read system prompt")
 	}
@@ -92,6 +91,8 @@ func main() {
 		MaxTokens:             role.MaxTokens,
 		Temperature:           role.Temperature,
 		RequestTimeoutSeconds: role.RequestTimeoutSeconds,
+		DisableThinking:       role.DisableThinking,
+		ReasoningEffort:       role.ReasoningEffort,
 	}, log)
 	ss := usecase.NewSessionStartWithLogger(fs, log)
 	mt := usecase.NewMaintenanceWithLogger(fs, log)
@@ -100,30 +101,61 @@ func main() {
 	wt := usecase.NewWorldTransitionWithLogger(fs, log)
 	sysSt := usecase.NewSystemState(fs, log, slow)
 
-	// summarizer is optional: if no `summary` role is configured
-	// the bot runs drop-only compaction. With a summary role the
-	// dropped turns are compressed to a 200-400 tok fact log and
-	// appended to state.md before the next system prompt sees them.
+	// summarizer: three modes.
+	//   1. Dedicated `summary` role in config → use it.
+	//   2. No summary role, but `narrative` is wired → fallback
+	//      to narrative with clamped max_tokens/temperature.
+	//   3. Neither → no summariser, drop-only compaction.
 	var summarizer *usecase.Summarizer
-	if sumRole, ok := cfg.Role("summary"); ok {
-		sumPrompt, err := os.ReadFile(sumRole.SystemPromptPath)
-		if err != nil {
-			log.Warn().Err(err).Str("path", sumRole.SystemPromptPath).Msg("summary system prompt unreadable; dropping summarizer")
-		} else {
-			sumLLM := llm.New(llm.RoleConfig{
-				APIURL:                sumRole.APIURL,
-				APIKey:                sumRole.APIKey,
-				Model:                 sumRole.Model,
-				MaxTokens:             sumRole.MaxTokens,
-				Temperature:           sumRole.Temperature,
-				RequestTimeoutSeconds: sumRole.RequestTimeoutSeconds,
-			}, log)
-			summarizer = usecase.NewSummarizer(sumLLM, llm.RoleConfig{
-				Model:       sumRole.Model,
-				MaxTokens:   sumRole.MaxTokens,
-				Temperature: sumRole.Temperature,
-			}, string(sumPrompt), slow, log)
-			log.Info().Str("model", sumRole.Model).Str("url", sumRole.APIURL).Msg("summarizer role attached")
+	{
+		var sumRole llm.RoleConfig
+		var sumPrompt string
+		var ok bool
+		if sumRoleCfg, hasSummary := cfg.Role("summary"); hasSummary {
+			sumRole = llm.RoleConfig{
+				APIURL:                sumRoleCfg.APIURL,
+				APIKey:                sumRoleCfg.APIKey,
+				Model:                 sumRoleCfg.Model,
+				MaxTokens:             sumRoleCfg.MaxTokens,
+				Temperature:           sumRoleCfg.Temperature,
+				RequestTimeoutSeconds: sumRoleCfg.RequestTimeoutSeconds,
+				DisableThinking:       sumRoleCfg.DisableThinking,
+				ReasoningEffort:       sumRoleCfg.ReasoningEffort,
+			}
+			sumPrompt, err = promptpkg.LoadSystemPrompt(sumRoleCfg.SystemPromptPath, "summary.md")
+			if err != nil {
+				log.Warn().Err(err).Str("path", sumRoleCfg.SystemPromptPath).Msg("summary prompt unreadable; dropping to fallback")
+			} else {
+				ok = true
+			}
+			log.Info().Str("model", sumRoleCfg.Model).Msg("summarizer: dedicated role")
+		}
+		if !ok {
+			sumRole = llm.RoleConfig{
+				APIURL:                role.APIURL,
+				APIKey:                role.APIKey,
+				Model:                 role.Model,
+				MaxTokens:             role.MaxTokens,
+				Temperature:           role.Temperature,
+				RequestTimeoutSeconds: role.RequestTimeoutSeconds,
+				DisableThinking:       role.DisableThinking,
+				ReasoningEffort:       role.ReasoningEffort,
+			}
+			sumPrompt, err = promptpkg.LoadSystemPrompt("", "summary.md")
+			if err != nil || sumPrompt == "" {
+				log.Warn().Err(err).Msg("fallback summary prompt unreadable; compaction will be drop-only")
+			} else {
+				ok = true
+			}
+			log.Info().Str("model", role.Model).Msg("summarizer: fallback to narrative role (clamped)")
+		}
+		if ok {
+			sumLLM := llm.New(sumRole, log)
+			if _, hasSummary := cfg.Role("summary"); hasSummary {
+				summarizer = usecase.NewSummarizer(sumLLM, sumRole, sumPrompt, slow, log)
+			} else {
+				summarizer = usecase.NewFallbackSummarizer(sumLLM, sumRole, sumPrompt, slow, log)
+			}
 		}
 	}
 
@@ -156,6 +188,16 @@ func main() {
 		log.Fatal().Err(err).Msg("telegram init")
 	}
 	pool := messaging.NewMultiClient(tgClient)
+
+	// Register Telegram command hints so the user sees a native
+	// menu when they type "/" in the chat. The set is owned by
+	// the dispatcher; we just translate it into the transport
+	// shape here. Best-effort: if Telegram rejects (offline,
+	// token revoked) we log and keep running.
+	commands := disp.Commands()
+	if err := tgClient.SetCommands(context.Background(), commands); err != nil {
+		log.Warn().Err(err).Msg("telegram: setMyCommands failed; native menu may be stale")
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	sigCh := make(chan os.Signal, 1)

@@ -42,8 +42,22 @@ type NPCSnapshot struct {
 // The format is intentionally human-readable: the LLM is going to
 // re-read this every turn, and a markdown layout is easier to
 // navigate than a JSON blob.
-func BuildSystemPrompt(staticRules string, ctx PromptContext) string {
+//
+// disableThinking prepends a "/no_think" directive to the system
+// prompt. The primary switch for Ollama v0.5.11+ thinking-capable
+// models (Qwen3, DeepSeek R1) is the top-level `think: false` on
+// the wire payload — that is the supported, documented path. The
+// in-prompt sentinel is a redundant reminder for models that do
+// happen to recognise Qwen-style "/no_think" tokens, and a
+// softener for operators who do not realise the wire flag exists.
+// It costs ~5 extra tokens per turn; the operator can disable
+// the role-level flag if they want zero overhead.
+func BuildSystemPrompt(staticRules string, ctx PromptContext, disableThinking ...bool) string {
+	noThink := len(disableThinking) > 0 && disableThinking[0]
 	var b strings.Builder
+	if noThink {
+		b.WriteString("/no_think\n")
+	}
 	b.WriteString(strings.TrimSpace(staticRules))
 	b.WriteString("\n\n---\n\n# Текущая сессия\n\n")
 

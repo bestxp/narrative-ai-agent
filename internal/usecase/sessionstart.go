@@ -89,7 +89,11 @@ func (s *SessionStart) Start() (*SessionContext, error) {
 		State:     state,
 	}
 	ctx.SyncStateAhead, ctx.SyncMemoriseAhead = s.checkSync(world, state)
-	s.log.Info().Str("world", world).Str("character", ctx.Character).Msg("session_start")
+	// Note: "session_start" is logged by the caller (gm.buildContextPrompt)
+	// once per Reply, not here. ss.Start() is invoked from tool dispatch
+	// (leave_world, update_character) as well, and we don't want a
+	// duplicate line per tool call. The caller logs at info with the
+	// full session context.
 	return ctx, nil
 }
 

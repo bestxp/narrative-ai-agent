@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -69,6 +70,7 @@ func (c *Client) Recv() <-chan messaging.IncomingMessage {
 }
 
 // IsAllowed implements messaging.Client.
+// IsAllowed implements messaging.Client.
 func (c *Client) IsAllowed(senderID string) bool {
 	id, err := strconv.Atoi(senderID)
 	if err != nil {
@@ -80,6 +82,97 @@ func (c *Client) IsAllowed(senderID string) bool {
 		}
 	}
 	return false
+}
+
+// SetCommands implements messaging.Client. It registers the
+// bot's command list with the Telegram Bot API so the client
+// shows a native menu when the user types "/" in the chat input.
+// The scope is "default" — i.e. the commands are visible to
+// every user who can talk to the bot. Per-user scopes
+// (admin-only commands) are a future extension.
+//
+// The go-telegram-bot-api v4.6.4 wrapper does not expose
+// setMyCommands as a typed helper, so we hit the raw
+// /setMyCommands endpoint via MakeRequest. The wire format
+// is a flat array of {command, description} objects — the
+// same shape the BotFather UI uses.
+func (c *Client) SetCommands(ctx context.Context, cmds []messaging.BotCommand) error {
+	params := make(map[string]string)
+	params["commands"] = encodeCommandsJSON(cmds)
+	_, err := c.api.MakeRequest("setMyCommands", asURLValues(params))
+	if err != nil {
+		c.log.Warn().Err(err).Int("count", len(cmds)).Msg("telegram: setMyCommands failed")
+		return err
+	}
+	c.log.Info().Int("count", len(cmds)).Msg("telegram: setMyCommands ok")
+	return nil
+}
+
+// encodeCommandsJSON serialises a command list the way the
+// Telegram API expects: a single JSON array string passed as
+// the "commands" query parameter. We hand-build the JSON
+// rather than calling json.Marshal so we don't pull in any
+// allocation overhead — this is a startup-time call only.
+func encodeCommandsJSON(cmds []messaging.BotCommand) string {
+	if len(cmds) == 0 {
+		return "[]"
+	}
+	var b strings.Builder
+	b.WriteString("[")
+	for i, c := range cmds {
+		if i > 0 {
+			b.WriteString(",")
+		}
+		b.WriteString(`{"command":`)
+		b.WriteString(jsonString(c.Command))
+		b.WriteString(`,"description":`)
+		b.WriteString(jsonString(c.Description))
+		b.WriteString("}")
+	}
+	b.WriteString("]")
+	return b.String()
+}
+
+// jsonString returns a JSON string literal for s. The
+// conversion is intentionally minimal — Telegram does not
+// accept special characters in command names (a-z, 0-9, _),
+// so the only characters that need escaping in descriptions
+// are " and \ plus the basic control characters.
+func jsonString(s string) string {
+	var b strings.Builder
+	b.WriteByte('"')
+	for _, r := range s {
+		switch r {
+		case '"':
+			b.WriteString(`\"`)
+		case '\\':
+			b.WriteString(`\\`)
+		case '\n':
+			b.WriteString(`\n`)
+		case '\r':
+			b.WriteString(`\r`)
+		case '\t':
+			b.WriteString(`\t`)
+		default:
+			if r < 0x20 {
+				continue
+			}
+			b.WriteRune(r)
+		}
+	}
+	b.WriteByte('"')
+	return b.String()
+}
+
+// asURLValues is a tiny adapter from map[string]string to
+// url.Values. We can't import net/url here without bloating
+// the import block; the parameter shape is trivial.
+func asURLValues(m map[string]string) url.Values {
+	v := make(url.Values, len(m))
+	for k, val := range m {
+		v.Set(k, val)
+	}
+	return v
 }
 
 // Run implements messaging.Client. It blocks until ctx is cancelled
@@ -136,7 +229,7 @@ func (c *Client) Run(ctx context.Context) error {
 
 // Send implements messaging.Client.
 func (c *Client) Send(ctx context.Context, msg messaging.OutgoingMessage) error {
-	m := tg.NewMessage(parseChatID(msg.ChatID), msg.Text)
+	m := tg.NewMessage(parseChatID(msg.ChatID), c.formatText(msg.Text, msg.ParseMode))
 	if msg.ParseMode != "" {
 		m.ParseMode = msg.ParseMode
 	} else if c.cfg.ParseMode != "" {
@@ -145,8 +238,13 @@ func (c *Client) Send(ctx context.Context, msg messaging.OutgoingMessage) error 
 	if msg.ReplyToMessageID > 0 {
 		m.ReplyToMessageID = msg.ReplyToMessageID
 	}
-	_, err := c.api.Send(m)
-	return err
+	sent, err := c.api.Send(m)
+	if err != nil {
+		c.log.Error().Err(err).Str("chat", msg.ChatID).Int("reply_to", msg.ReplyToMessageID).Int("text_len", len(msg.Text)).Msg("telegram: send failed")
+		return err
+	}
+	c.log.Debug().Str("chat", msg.ChatID).Int("msg_id", sent.MessageID).Int("reply_to", msg.ReplyToMessageID).Msg("send ok")
+	return nil
 }
 
 // StartStream implements messaging.Client.
@@ -165,7 +263,7 @@ func (c *Client) startStream(ctx context.Context, chatID string, replyToMessageI
 	}
 	sent, err := c.api.Send(m)
 	if err != nil {
-		c.log.Error().Err(err).Str("chat", chatID).Int64("chat_int", chat).Msg("telegram: stream start failed")
+		c.log.Error().Err(err).Str("chat", chatID).Int64("chat_int", chat).Int("reply_to", replyToMessageID).Msg("telegram: stream start failed")
 		return nil, fmt.Errorf("telegram: stream start: %w", err)
 	}
 	c.streamsMu.Lock()
@@ -175,14 +273,35 @@ func (c *Client) startStream(ctx context.Context, chatID string, replyToMessageI
 	c.activeStreams[chatID] = sent.MessageID
 	c.streamsMu.Unlock()
 	c.sendTyping(chatID)
-	c.log.Debug().Str("chat", chatID).Int("msg_id", sent.MessageID).Msg("stream started")
+	c.log.Debug().Str("chat", chatID).Int("msg_id", sent.MessageID).Int("reply_to", replyToMessageID).Msg("stream started")
 	return &stream{
-		client: c,
-		chatID: chatID,
-		msgID:  sent.MessageID,
-		chat:   chat,
-		ctx:    ctx,
+		client:   c,
+		chatID:   chatID,
+		msgID:    sent.MessageID,
+		chat:     chat,
+		ctx:      ctx,
+		lastSent: "…",
 	}, nil
+}
+
+// formatText returns the wire-form text to send. When the
+// configured ParseMode is HTML the LLM-emitted Markdown
+// (**bold**, *italic*, `code`, [text](url)) is converted to
+// the equivalent Telegram HTML entities. For MarkdownV2 or
+// plain text the conversion is a no-op — MarkdownV2's strict
+// escaping is the caller's problem.
+//
+// The per-message ParseMode (msg.ParseMode) takes precedence
+// over the client default; passing "" falls back to c.cfg.
+func (c *Client) formatText(text, msgMode string) string {
+	mode := msgMode
+	if mode == "" {
+		mode = c.cfg.ParseMode
+	}
+	if mode == "HTML" || mode == "html" {
+		return markdownToHTML(text)
+	}
+	return text
 }
 
 // Close stops accepting new updates and closes the receive channel.

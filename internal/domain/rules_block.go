@@ -18,13 +18,6 @@ var rulesBlockRe = regexp.MustCompile(`(?m)^\*\*ВАЛИДАЦИЯ ПРАВИЛ\
 // so truncating at the rules header is enough — the bullet list
 // that follows is dropped along with any further headers the
 // LLM might have appended.
-//
-// The current narrative.md does not ask the model to add a
-// fourth block, so "drop everything after the rules header" is
-// the right policy. If a future prompt grows a fourth block
-// (e.g. **Ближайшие события**) it will be lost when the rules
-// block is stripped — that is by design, the operator opted in
-// to the rules block being hidden.
 func StripRulesBlock(text string) string {
 	if text == "" {
 		return text
@@ -34,11 +27,12 @@ func StripRulesBlock(text string) string {
 		return text
 	}
 	out := text[:loc[0]]
-	// Collapse 3+ consecutive newlines that the removal may have
-	// left behind into a single blank line, then trim trailing
-	// newlines so the reply does not pick up an ugly gap.
-	for strings.Contains(out, "\n\n\n") {
-		out = strings.ReplaceAll(out, "\n\n\n", "\n\n")
+	return cleanTrailingWhitespace(out)
+}
+
+func cleanTrailingWhitespace(s string) string {
+	for strings.Contains(s, "\n\n\n") {
+		s = strings.ReplaceAll(s, "\n\n\n", "\n\n")
 	}
-	return strings.TrimRight(out, "\n")
+	return strings.TrimRight(s, "\n ")
 }

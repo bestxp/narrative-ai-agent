@@ -29,6 +29,20 @@ type RoleConfig struct {
 	MaxTokens             int
 	Temperature           float64
 	RequestTimeoutSeconds int
+	// DisableThinking mirrors the YAML flag. When true, the
+	// wire request sets `reasoning_effort: "none"` to skip
+	// chain-of-thought on the providers that recognise it
+	// (Ollama via /v1/chat/completions, OpenAI reasoning
+	// models, xAI Grok, OpenRouter). Kept on the role so the
+	// wire translation happens once at request time, not per
+	// call. See ChatRequest.ReasoningEffort.
+	DisableThinking bool
+	// ReasoningEffort overrides DisableThinking for the
+	// cases where the operator wants a level other than off
+	// (e.g. "low" for GPT-OSS which rejects "none"). Empty
+	// string means "no override"; when DisableThinking is
+	// true and ReasoningEffort is empty we default to "none".
+	ReasoningEffort string
 }
 
 // Message is a single chat entry.
@@ -63,6 +77,25 @@ type ChatRequest struct {
 	Temperature float64      `json:"temperature"`
 	MaxTokens   int          `json:"max_tokens,omitempty"`
 	Stream      bool         `json:"stream"`
+	// ReasoningEffort turns off / dials down chain-of-thought
+	// reasoning on providers that recognise the OpenAI-standard
+	// `reasoning_effort` field. Empty string means "do not
+	// emit the key at all" — for Qwen3/DeepSeek R1 that leaves
+	// thinking ON (Ollama's default for thinking-capable
+	// models), for OpenAI's reasoning models it falls back to
+	// the provider default. Set to "none" to disable, or
+	// "low"/"medium"/"high" to dial the effort down.
+	//
+	// Wire coverage: Ollama via /v1/chat/completions (the
+	// surface the bot uses), OpenAI reasoning models, xAI
+	// Grok, OpenRouter. The native Ollama `think: true/false`
+	// on /api/chat is NOT accepted on the OpenAI-compat
+	// surface — we have to use reasoning_effort there.
+	//
+	// Operators of GPT-OSS should pass "low" (not "none";
+	// GPT-OSS rejects "none") and accept the residual cost.
+	// See: https://ollama.com/blog/thinking
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 }
 
 // ToolSchema is the public-facing tool declaration. We accept the
@@ -91,6 +124,7 @@ type wireToolFunction struct {
 // Chunk is a single streaming or non-streaming fragment.
 type Chunk struct {
 	Content   string     // delta text (may be empty)
+	Reasoning string     // delta reasoning / chain-of-thought (o1, minimax-m3:cloud)
 	ToolCalls []ToolCall // emitted on the chunk that finalises them
 	Finish    string     // "stop" | "tool_calls" | "length" | ...
 	Done      bool       // last chunk in the stream
@@ -100,6 +134,12 @@ type Chunk struct {
 	// entirely. Callers that need a number regardless should fall
 	// back to an estimate.
 	Usage Usage
+	// RawTrace is a sampling of the raw SSE payloads seen while
+	// parsing the stream. Populated on every chunk; callers that
+	// hit an "empty assistant turn" can dump it to slowlog to see
+	// what the provider actually sent (truncated to 200 chars per
+	// entry; keeps the first 3 and last 2 events).
+	RawTrace []string
 }
 
 // Usage mirrors the OpenAI usage block. PromptTokens counts the
@@ -156,6 +196,30 @@ func (c *Client) Stream(ctx context.Context, req ChatRequest, onChunk func(Chunk
 		req.Tools = nil
 		req.WireTools = wire
 	}
+	// Translate the role's DisableThinking / ReasoningEffort
+	// into a top-level `reasoning_effort` field on the wire.
+	//
+	// Priority:
+	//   1. Caller-supplied ReasoningEffort (per-request
+	//      override) wins over everything.
+	//   2. Role.ReasoningEffort (explicit level like "low").
+	//   3. Role.DisableThinking → "none".
+	//   4. Default: leave the field off so the provider's own
+	//      default applies (Qwen3/R1 default to thinking ON
+	//      on Ollama, OFF on OpenAI non-reasoning models).
+	//
+	// The empty-string check is critical: serialising an
+	// empty `reasoning_effort` would silently override the
+	// provider default, which is the exact bug that bit us on
+	// the minimax-m3:cloud deployment.
+	if req.ReasoningEffort == "" {
+		switch {
+		case c.role.ReasoningEffort != "":
+			req.ReasoningEffort = c.role.ReasoningEffort
+		case c.role.DisableThinking:
+			req.ReasoningEffort = "none"
+		}
+	}
 	if c.role.RequestTimeoutSeconds > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, time.Duration(c.role.RequestTimeoutSeconds)*time.Second)
@@ -194,6 +258,18 @@ func (c *Client) Stream(ctx context.Context, req ChatRequest, onChunk func(Chunk
 func parseSSE(r io.Reader, onChunk func(Chunk) error, log zerolog.Logger) error {
 	br := bufio.NewReaderSize(r, 32*1024)
 	var pending bytes.Buffer
+	// Diagnostic capture: when the stream yields zero content
+	// (a common symptom of "Ollama returned only [DONE]" or a
+	// provider that emits tool_calls without any visible text),
+	// we want to see the raw payloads in the slowlog so the
+	// operator can distinguish "model thought for 30s then
+	// produced nothing" from "model refused" from "model
+	// crashed mid-stream". We always keep the first 3 and the
+	// last 2 — a 200-char preview of each is enough.
+	var rawSeen []string
+	const keepFirst = 3
+	const keepLast = 2
+	const previewLen = 200
 	for {
 		line, err := br.ReadString('\n')
 		if err != nil && line == "" {
@@ -211,14 +287,30 @@ func parseSSE(r io.Reader, onChunk func(Chunk) error, log zerolog.Logger) error 
 			payload := pending.String()
 			pending.Reset()
 			if payload == "[DONE]" {
-				_ = onChunk(Chunk{Done: true})
+				_ = onChunk(Chunk{Done: true, RawTrace: rawSeen})
 				return nil
+			}
+			// Capture raw payload for the diagnostic trace.
+			// We keep the first N verbatim and the last M
+			// only if the total event count exceeds the
+			// first-N budget — that way a 1000-chunk stream
+			// doesn't blow up the trace, but a 5-chunk
+			// "broken" stream keeps everything.
+			if len(rawSeen) < keepFirst+keepLast {
+				prev := payload
+				if len(prev) > previewLen {
+					prev = prev[:previewLen] + "…"
+				}
+				rawSeen = append(rawSeen, prev)
+			} else {
+				rawSeen = append(rawSeen[keepFirst-1:], prev(payload, previewLen))
 			}
 			chunk, perr := decodeChunk(payload)
 			if perr != nil {
 				log.Warn().Err(perr).Str("payload", truncate(payload, 200)).Msg("skip malformed chunk")
 				continue
 			}
+			chunk.RawTrace = rawSeen
 			if cerr := onChunk(chunk); cerr != nil {
 				return cerr
 			}
@@ -232,20 +324,36 @@ func parseSSE(r io.Reader, onChunk func(Chunk) error, log zerolog.Logger) error 
 		// them in chat completions.
 	}
 	// Server closed without [DONE] — treat as graceful stop.
-	_ = onChunk(Chunk{Done: true})
+	_ = onChunk(Chunk{Done: true, RawTrace: rawSeen})
 	return nil
+}
+
+func prev(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
 }
 
 // decodeChunk turns a single SSE JSON payload into our Chunk shape.
 // The OpenAI wire format nests choices[0].delta.content /
 // choices[0].delta.tool_calls. The top-level "usage" block is
 // provider-emitted once per request, usually on the final chunk.
+//
+// Some providers (o1 family, Ollama Cloud minimax-m3:cloud) also
+// emit delta.reasoning — chain-of-thought that arrives in
+// parallel with empty delta.content. The reasoning text is
+// surfaced to the caller via Chunk.Reasoning so it can be
+// counted, logged, or surfaced as a "thinking…" status. We
+// never write it to the user-visible stream — only the final
+// delta.content matters for that.
 func decodeChunk(payload string) (Chunk, error) {
 	var raw struct {
 		Choices []struct {
 			FinishReason string `json:"finish_reason"`
 			Delta        struct {
 				Content   string `json:"content"`
+				Reasoning string `json:"reasoning"`
 				ToolCalls []struct {
 					Index    int    `json:"index"`
 					ID       string `json:"id"`
@@ -271,6 +379,7 @@ func decodeChunk(payload string) (Chunk, error) {
 	}
 	delta := raw.Choices[0].Delta
 	out.Content = delta.Content
+	out.Reasoning = delta.Reasoning
 	out.Finish = raw.Choices[0].FinishReason
 	for _, tc := range delta.ToolCalls {
 		out.ToolCalls = append(out.ToolCalls, ToolCall{

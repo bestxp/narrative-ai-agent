@@ -14,13 +14,20 @@ func TestResponseFormat_AllBlocksPresent(t *testing.T) {
 **КОНТЕКСТ И ИЗМЕНЕНИЯ**
 files: state.md
 
+**БУДУЩЕЕ**
+- Ближайшие события: продолжение сцены
+
 **ВАЛИДАЦИЯ ПРАВИЛ**
-- ok
+- Лимит слов: 2 / 350
+- Управлял персонажем игрока: нет
+- NPC знал только то, что должен: да
+- Файлы обновлены: state.md
 `
 	v := rf.Validate(body)
-	assert.True(t, v.HasDialogue)
-	assert.True(t, v.HasContextBlock)
-	assert.True(t, v.HasValidationBlk)
+	assert.True(t, v.HasDialogue, "missing **диалоги и действия**")
+	assert.True(t, v.HasContextBlock, "missing **КОНТЕКСТ И ИЗМЕНЕНИЯ**")
+	assert.True(t, v.HasFutureBlock, "missing **БУДУЩЕЕ**")
+	assert.True(t, v.HasValidationBlk, "missing **ВАЛИДАЦИЯ ПРАВИЛ**")
 }
 
 func TestResponseFormat_OverLimit(t *testing.T) {

@@ -66,6 +66,22 @@ func setup(t *testing.T) (*Dispatcher, *storage.FileStore) {
 	return d, fs
 }
 
+func TestDispatcher_CommandsHasAllEntries(t *testing.T) {
+	d, _ := setup(t)
+	cmds := d.Commands()
+	assert.GreaterOrEqual(t, len(cmds), 8, "expected at least 8 commands")
+	names := make(map[string]bool, len(cmds))
+	for _, c := range cmds {
+		assert.NotEmpty(t, c.Command)
+		assert.NotEmpty(t, c.Description)
+		assert.False(t, names[c.Command], "duplicate command name: %s", c.Command)
+		names[c.Command] = true
+	}
+	for _, want := range []string{"start", "status", "me", "launch", "endday", "save", "help"} {
+		assert.True(t, names[want], "missing %q in Commands()", want)
+	}
+}
+
 func TestDispatcher_LaunchAndStart(t *testing.T) {
 	d, fs := setup(t)
 	rep, err := d.Handle(context.Background(), messaging.IncomingMessage{

@@ -122,7 +122,9 @@ func TestLoad_AppliesDefaults(t *testing.T) {
 	assert.Equal(t, 0.8, role.Temperature)
 	assert.Equal(t, 1500, role.MaxTokens)
 	assert.Equal(t, 120, role.RequestTimeoutSeconds)
-	assert.Contains(t, role.SystemPromptPath, "narrative.md")
+	// system_prompt_path is empty by default — the embed.FS
+	// copy in internal/prompts is the fallback.
+	assert.Empty(t, role.SystemPromptPath)
 }
 
 func TestLoad_MultipleRoles(t *testing.T) {
@@ -175,9 +177,9 @@ llm:
 	require.True(t, ok)
 	assert.Equal(t, 0.8, role.Temperature)
 	assert.Equal(t, 1500, role.MaxTokens)
-	// Path is anchored to the config file's directory, so we just
-	// check the basename — keeps the test location-independent.
-	assert.Contains(t, role.SystemPromptPath, "prompts/narrative.md")
+	// system_prompt_path is empty by default — main.go will fall
+	// back to the embed.FS copy in internal/prompts/narrative.md.
+	assert.Empty(t, role.SystemPromptPath)
 }
 
 func TestRole_UnknownReturnsFalse(t *testing.T) {

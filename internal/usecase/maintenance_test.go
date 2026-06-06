@@ -47,6 +47,61 @@ func TestUpdateState_HeaderDayFinished(t *testing.T) {
 	assert.Contains(t, got, "День 2 (завершён)")
 }
 
+// TestUpdateState_AppendsEventsAcrossCalls is the regression
+// test for "state.md is too small": the previous build wrote
+// only the moment/NPCs from the most recent update_state call,
+// losing the per-scene event log. With AppendEvents wired
+// through, multiple updates within a day accumulate into the
+// "Хронология дня" section, and a follow-up call without
+// events does NOT clobber earlier entries.
+func TestUpdateState_AppendsEventsAcrossCalls(t *testing.T) {
+	fs, _ := storage.NewFileStore(t.TempDir())
+	seedWorld(t, fs, "naruto")
+	m := NewMaintenance(fs)
+	// Three updates through the day: each contributes 1-2 events.
+	require.NoError(t, m.UpdateState(StateSnapshot{
+		Day: 3, InFlight: true, Moment: "Утро: Маркус у ворот.",
+		NPCs:   []string{"Ирука-сенсей"},
+		AppendEvents: []string{"Прибыл в Коноху", "Встретил Ируку-сенсея у ворот"},
+	}))
+	require.NoError(t, m.UpdateState(StateSnapshot{
+		Day: 3, InFlight: true, Moment: "Обед: в столовой.",
+		NPCs:   []string{"Ирука-сенсей"},
+		AppendEvents: []string{"Ирука рассказал про экзамен на чунина"},
+	}))
+	// Fourth update: only the moment changes (NPC list rotates
+	// in Саске), no new events. Existing chronology must be
+	// preserved verbatim.
+	require.NoError(t, m.UpdateState(StateSnapshot{
+		Day: 3, InFlight: true, Moment: "Вечер: тренировка на полигоне.",
+		NPCs:   []string{"Саске"},
+	}))
+	got, _ := fs.ReadRaw("worlds/naruto/state.md")
+	assert.Contains(t, got, "Прибыл в Коноху", "first update's events must persist")
+	assert.Contains(t, got, "Встретил Ируку-сенсея у ворот", "first update's events must persist")
+	assert.Contains(t, got, "Ирука рассказал про экзамен на чунина", "second update's events must persist")
+	assert.Contains(t, got, "Вечер: тренировка на полигоне.", "moment reflects latest update")
+	assert.NotContains(t, got, "Обед: в столовой.", "old moment is overwritten (correct)")
+}
+
+// TestUpdateState_ArchiveDayClearsEvents makes sure the day
+// boundary still works: end_day (ArchiveDay) empties the
+// хронология section so the new day starts with a clean log.
+func TestUpdateState_ArchiveDayClearsEvents(t *testing.T) {
+	fs, _ := storage.NewFileStore(t.TempDir())
+	seedWorld(t, fs, "naruto")
+	m := NewMaintenance(fs)
+	require.NoError(t, m.UpdateState(StateSnapshot{
+		Day: 3, InFlight: true, Moment: "x",
+		AppendEvents: []string{"Событие 1", "Событие 2"},
+	}))
+	require.NoError(t, m.ArchiveDay("naruto", 3, "итог дня"))
+	got, _ := fs.ReadRaw("worlds/naruto/state.md")
+	assert.NotContains(t, got, "Событие 1", "хронология должна быть очищена end_day")
+	assert.NotContains(t, got, "Событие 2")
+	assert.Contains(t, got, "День 4 (в процессе)", "день+1 после архивации")
+}
+
 func TestRotatePlan_RejectsBadRange(t *testing.T) {
 	fs, _ := storage.NewFileStore(t.TempDir())
 	seedWorld(t, fs, "naruto")

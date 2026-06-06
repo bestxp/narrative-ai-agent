@@ -1,8 +1,9 @@
 module narrative
 
-go 1.25.0
+go 1.26.0
 
 require (
+	github.com/eekstunt/telegramify-markdown-go v0.2.0
 	github.com/go-telegram-bot-api/telegram-bot-api v4.6.4+incompatible
 	github.com/rs/zerolog v1.35.1
 	github.com/stretchr/testify v1.11.1
@@ -15,5 +16,6 @@ require (
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/technoweenie/multipartstreamer v1.0.1 // indirect
+	github.com/yuin/goldmark v1.8.2 // indirect
 	golang.org/x/sys v0.29.0 // indirect
 )

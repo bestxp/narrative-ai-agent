@@ -1,6 +1,9 @@
 # github.com/davecgh/go-spew v1.1.1
 ## explicit
 github.com/davecgh/go-spew/spew
+# github.com/eekstunt/telegramify-markdown-go v0.2.0
+## explicit; go 1.22
+github.com/eekstunt/telegramify-markdown-go
 # github.com/go-telegram-bot-api/telegram-bot-api v4.6.4+incompatible
 ## explicit
 github.com/go-telegram-bot-api/telegram-bot-api
@@ -26,6 +29,17 @@ github.com/stretchr/testify/require
 # github.com/technoweenie/multipartstreamer v1.0.1
 ## explicit
 github.com/technoweenie/multipartstreamer
+# github.com/yuin/goldmark v1.8.2
+## explicit; go 1.22
+github.com/yuin/goldmark
+github.com/yuin/goldmark/ast
+github.com/yuin/goldmark/extension
+github.com/yuin/goldmark/extension/ast
+github.com/yuin/goldmark/parser
+github.com/yuin/goldmark/renderer
+github.com/yuin/goldmark/renderer/html
+github.com/yuin/goldmark/text
+github.com/yuin/goldmark/util
 # golang.org/x/sys v0.29.0
 ## explicit; go 1.18
 golang.org/x/sys/unix

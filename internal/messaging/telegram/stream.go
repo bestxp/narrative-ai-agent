@@ -15,29 +15,43 @@ import (
 // over time. Append replaces the message; Final makes the last
 // replacement and removes the chat from the active set.
 type stream struct {
-	client *Client
-	chatID string
-	msgID  int
-	chat   int64
-	ctx    context.Context
-	closed bool
+	client   *Client
+	chatID   string
+	msgID    int
+	chat     int64
+	ctx      context.Context
+	closed   bool
+	lastSent string
 }
 
 func (s *stream) Append(ctx context.Context, text string) error {
 	if s.closed {
 		return fmt.Errorf("stream closed")
 	}
+	if s.lastSent == text {
+		return nil
+	}
+	wire := s.client.formatText(text, "")
 	e := tg.EditMessageTextConfig{
 		BaseEdit: tg.BaseEdit{
 			ChatID:    s.chat,
 			MessageID: s.msgID,
 		},
-		Text: text,
+		Text: wire,
 	}
 	if s.client.cfg.ParseMode != "" {
 		e.ParseMode = s.client.cfg.ParseMode
 	}
 	if _, err := s.client.api.Send(e); err != nil {
+		if isMessageNotModified(err) {
+			s.lastSent = text
+			s.client.log.Debug().
+				Str("chat", s.chatID).
+				Int("msg_id", s.msgID).
+				Int("text_len", len(text)).
+				Msg("stream edit: no-op (content unchanged)")
+			return nil
+		}
 		s.client.log.Error().
 			Err(err).
 			Str("chat", s.chatID).
@@ -46,6 +60,7 @@ func (s *stream) Append(ctx context.Context, text string) error {
 			Msg("stream edit failed")
 		return err
 	}
+	s.lastSent = text
 	return nil
 }
 
@@ -57,6 +72,7 @@ func (s *stream) Final(ctx context.Context, text string) error {
 		return err
 	}
 	s.closed = true
+	s.lastSent = ""
 	s.client.streamsMu.Lock()
 	delete(s.client.activeStreams, s.chatID)
 	s.client.streamsMu.Unlock()

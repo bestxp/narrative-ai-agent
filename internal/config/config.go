@@ -272,6 +272,25 @@ type LLMRoleConfig struct {
 	// state.md and memorise.md which the LLM re-reads every
 	// turn via the system prompt. Default 5.
 	CompactionKeepRecent int `yaml:"compaction_keep_recent"`
+	// DisableThinking turns off chain-of-thought reasoning on
+	// providers that recognise `reasoning_effort` (Ollama via
+	// /v1/chat/completions, OpenAI reasoning models, xAI
+	// Grok, OpenRouter). When true, the bot serialises
+	// `reasoning_effort: "none"` in the request body so the
+	// model returns visible content immediately rather than
+	// streaming a long reasoning trace that leaves
+	// delta.content empty. Default false — the operator opts
+	// in per role, because some providers (GPT-OSS) reject
+	// "none" and require a level like "low".
+	DisableThinking bool `yaml:"disable_thinking"`
+	// ReasoningEffort overrides DisableThinking for the
+	// cases where the operator wants a level other than off
+	// (e.g. "low" for GPT-OSS which rejects "none"). Empty
+	// string means "no override"; when DisableThinking is
+	// true and ReasoningEffort is empty we default to "none".
+	// Valid values: "none" | "low" | "medium" | "high"
+	// (some providers also accept "minimal" / "xhigh").
+	ReasoningEffort string `yaml:"reasoning_effort"`
 }
 
 // SlowlogConfig configures the audit log that records every LLM
@@ -400,9 +419,10 @@ func (c *Config) Validate() error {
 		role.Temperature = nonZeroFloat(role.Temperature, 0.8)
 		role.CompactionThreshold = nonZeroFloat(role.CompactionThreshold, 0.7)
 		role.CompactionKeepRecent = nonZero(role.CompactionKeepRecent, 5)
-		if role.SystemPromptPath == "" {
-			role.SystemPromptPath = "prompts/" + name + ".md"
-		}
+		// system_prompt_path stays empty by default. main.go
+		// will fall back to the embed.FS copy in internal/prompts.
+		// Operators who want to A/B test a new prompt set the
+		// path explicitly in config.yaml.
 		c.LLM.Roles[name] = role
 	}
 	// The narrative role is mandatory — it's the only one wired today
@@ -449,7 +469,7 @@ func (c *Config) resolveRelativePaths(base string) {
 		c.Paths.GitWorkdir = filepath.Join(base, c.Paths.GitWorkdir)
 	}
 	for name, role := range c.LLM.Roles {
-		if !filepath.IsAbs(role.SystemPromptPath) {
+		if role.SystemPromptPath != "" && !filepath.IsAbs(role.SystemPromptPath) {
 			role.SystemPromptPath = filepath.Join(base, role.SystemPromptPath)
 			c.LLM.Roles[name] = role
 		}

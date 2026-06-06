@@ -1,0 +1,179 @@
+// Package telegram — markdown conversion is delegated to
+// eekstunt/telegramify-markdown-go, which produces Telegram
+// MessageEntity objects (the API's native formatting format)
+// from a Markdown source. Our wrapper walks those entities
+// and emits Telegram-flavoured HTML so we can drive both
+// sendMessage and editMessageText with parse_mode=HTML.
+//
+// The library handles all the edge cases we used to fight
+// manually:
+//
+//   - **bold**, *italic*, __underline__, ~~strikethrough~~
+//   - `inline code` and ```fenced``` code blocks (with language)
+//   - [text](url) → text_link
+//   - > blockquote
+//   - Stray MarkdownV2 special chars (()*._{}[]#+\-|!) that
+//     would otherwise break the wire format are stripped
+//     from the plain text automatically.
+package telegram
+
+import (
+	"sort"
+	"strings"
+	"unicode/utf16"
+
+	tgmd "github.com/eekstunt/telegramify-markdown-go"
+)
+
+// markdownToHTML converts LLM-emitted Markdown to Telegram
+// HTML. When the converter fails on a parse edge case the
+// original text is returned unchanged so the user still
+// sees something useful (and the bug surfaces in tests
+// rather than in a silent sendMessage 400).
+func markdownToHTML(s string) string {
+	if s == "" {
+		return s
+	}
+	msg := tgmd.Convert(s)
+	return renderEntitiesToHTML(msg.Text, msg.Entities)
+}
+
+// renderEntitiesToHTML walks the entities in order and
+// wraps the corresponding UTF-16 slices of text with the
+// matching HTML tags. Entities are required to be
+// non-overlapping and in ascending Offset order; the
+// library guarantees this. Length is in UTF-16 code units.
+func renderEntitiesToHTML(text string, ents []tgmd.Entity) string {
+	if len(ents) == 0 {
+		return htmlEscape(text)
+	}
+	sorted := make([]tgmd.Entity, len(ents))
+	copy(sorted, ents)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		return sorted[i].Offset < sorted[j].Offset
+	})
+
+	encoded := utf16.Encode([]rune(text))
+
+	var b strings.Builder
+	b.Grow(len(text) + 32)
+
+	cursor := 0
+	for _, e := range sorted {
+		if e.Offset < cursor {
+			continue
+		}
+		if e.Offset > cursor {
+			b.WriteString(utf16ToString(encoded[cursor:e.Offset]))
+		}
+		end := e.Offset + e.Length
+		if end > len(encoded) {
+			end = len(encoded)
+		}
+		inner := utf16ToString(encoded[e.Offset:end])
+		writeEntity(&b, e, inner)
+		cursor = end
+	}
+	if cursor < len(encoded) {
+		b.WriteString(utf16ToString(encoded[cursor:]))
+	}
+	return b.String()
+}
+
+// writeEntity writes a single entity span to b. Telegram's
+// HTML dialect uses these tag names; "pre" preserves the
+// <code> nesting the library expects.
+func writeEntity(b *strings.Builder, e tgmd.Entity, inner string) {
+	switch e.Type {
+	case tgmd.Bold:
+		b.WriteString("<b>")
+		b.WriteString(htmlEscape(inner))
+		b.WriteString("</b>")
+	case tgmd.Italic:
+		b.WriteString("<i>")
+		b.WriteString(htmlEscape(inner))
+		b.WriteString("</i>")
+	case tgmd.Underline:
+		b.WriteString("<u>")
+		b.WriteString(htmlEscape(inner))
+		b.WriteString("</u>")
+	case tgmd.Strikethrough:
+		b.WriteString("<s>")
+		b.WriteString(htmlEscape(inner))
+		b.WriteString("</s>")
+	case tgmd.Code:
+		b.WriteString("<code>")
+		b.WriteString(htmlEscape(inner))
+		b.WriteString("</code>")
+	case tgmd.Pre:
+		if e.Language != "" {
+			b.WriteString(`<pre><code class="language-`)
+			b.WriteString(htmlEscape(e.Language))
+			b.WriteString(`">`)
+		} else {
+			b.WriteString("<pre>")
+		}
+		b.WriteString(htmlEscape(inner))
+		if e.Language != "" {
+			b.WriteString("</code></pre>")
+		} else {
+			b.WriteString("</pre>")
+		}
+	case tgmd.TextLink:
+		b.WriteString(`<a href="`)
+		b.WriteString(htmlEscape(e.URL))
+		b.WriteString(`">`)
+		b.WriteString(htmlEscape(inner))
+		b.WriteString("</a>")
+	case tgmd.Blockquote:
+		b.WriteString("<blockquote>")
+		b.WriteString(htmlEscape(inner))
+		b.WriteString("</blockquote>")
+	default:
+		b.WriteString(htmlEscape(inner))
+	}
+}
+
+func utf16ToString(encoded []uint16) string {
+	if len(encoded) == 0 {
+		return ""
+	}
+	return string(utf16.Decode(encoded))
+}
+
+func htmlEscape(s string) string {
+	if !strings.ContainsAny(s, "<>&\"") {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch r {
+		case '<':
+			b.WriteString("&lt;")
+		case '>':
+			b.WriteString("&gt;")
+		case '&':
+			b.WriteString("&amp;")
+		case '"':
+			b.WriteString("&quot;")
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// isMessageNotModified reports whether err is the harmless
+// "Bad Request: message is not modified" reply from the
+// Telegram editMessageText endpoint. It happens whenever a
+// throttled stream catches up and resends text that already
+// matches the message on screen. Telegram returns 400 in
+// that case, but to the user nothing changed — we just
+// swallow the error and let the next chunk finish the job.
+func isMessageNotModified(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "message is not modified")
+}

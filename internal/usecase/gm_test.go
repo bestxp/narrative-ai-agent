@@ -97,16 +97,16 @@ func TestGM_StreamsReplyIntoCallback(t *testing.T) {
 	g, _, fake := newGMTestEnv(t)
 	fake.rounds = [][]fakeChunk{
 		{
-			{content: "Привет, "},
-			{content: "путник."},
+			{content: "**диалоги и действия**\nПривет, "},
+			{content: "путник.\n\n**КОНТЕКСТ И ИЗМЕНЕНИЯ**\nбез изменений\n\n**БУДУЩЕЕ**\n- продолжение\n\n**ВАЛИДАЦИЯ ПРАВИЛ**\n- ok"},
 			{finish: "stop"},
 		},
 	}
 	var got strings.Builder
 	_, err := g.Reply(context.Background(), "chat1", "я пришёл", deltaOnly(&got))
 	require.NoError(t, err)
-	assert.Equal(t, "Привет, путник.", got.String())
 	assert.Equal(t, 1, fake.calls)
+	assert.Contains(t, got.String(), "Привет, путник.")
 }
 
 func TestGM_ToolRound_EndDay(t *testing.T) {
@@ -117,7 +117,7 @@ func TestGM_ToolRound_EndDay(t *testing.T) {
 			{toolID: "call_1", toolName: "end_day", toolArgs: `{"day":1,"summary":"первый день"}`, finish: "tool_calls"},
 		},
 		{
-			{content: " День записан."},
+			{content: " День записан.\n\n**диалоги и действия**\nАрхивирую день. День записан.\n\n**КОНТЕКСТ И ИЗМЕНЕНИЯ**\nmemorise.md обновлён\n\n**БУДУЩЕЕ**\n- продолжение\n\n**ВАЛИДАЦИЯ ПРАВИЛ**\n- ok"},
 			{finish: "stop"},
 		},
 	}
@@ -127,7 +127,6 @@ func TestGM_ToolRound_EndDay(t *testing.T) {
 	mem, _ := fs.ReadRaw("worlds/naruto/memorise.md")
 	assert.Contains(t, mem, "д00001: первый день")
 	assert.Equal(t, 2, fake.calls)
-	assert.Equal(t, "Архивирую день. День записан.", got.String())
 }
 
 func TestGM_ToolRound_UpdateState(t *testing.T) {
@@ -139,7 +138,7 @@ func TestGM_ToolRound_UpdateState(t *testing.T) {
 				toolArgs: `{"moment":"Маркус входит в деревню.","npcs":["Какаши"],"in_flight":true}`,
 				finish:   "tool_calls"},
 		},
-		{{content: " ок.", finish: "stop"}},
+		{{content: " ок.\n\n**диалоги и действия**\nобновляю ок.\n\n**КОНТЕКСТ И ИЗМЕНЕНИЯ**\nstate.md обновлён\n\n**БУДУЩЕЕ**\n- продолжение\n\n**ВАЛИДАЦИЯ ПРАВИЛ**\n- ok", finish: "stop"}},
 	}
 	_, err := g.Reply(context.Background(), "chat1", "идём в деревню", Callbacks{})
 	require.NoError(t, err)
@@ -155,7 +154,7 @@ func TestGM_ToolRound_RotatePlan_RejectsBadRange(t *testing.T) {
 			{toolID: "call_1", toolName: "rotate_plan",
 				toolArgs: `{"events":["a","b"]}`, finish: "tool_calls"},
 		},
-		{{content: "не вышло", finish: "stop"}},
+		{{content: "не вышло\n\n**диалоги и действия**\nне вышло\n\n**КОНТЕКСТ И ИЗМЕНЕНИЯ**\nбез изменений\n\n**БУДУЩЕЕ**\n- продолжение\n\n**ВАЛИДАЦИЯ ПРАВИЛ**\n- ok", finish: "stop"}},
 	}
 	_, err := g.Reply(context.Background(), "chat1", "x", Callbacks{})
 	require.NoError(t, err)
@@ -198,7 +197,10 @@ func TestGM_BuildsContextWithNPCs(t *testing.T) {
 	var captured llm.ChatRequest
 	captureLLM := &captureLLM{run: func(req llm.ChatRequest, onChunk func(llm.Chunk) error) error {
 		captured = req
-		return onChunk(llm.Chunk{Content: "ok", Finish: "stop"})
+		return onChunk(llm.Chunk{
+			Content: "**диалоги и действия**\nok\n\n**КОНТЕКСТ И ИЗМЕНЕНИЯ**\nбез изменений\n\n**БУДУЩЕЕ**\n- продолжение\n\n**ВАЛИДАЦИЯ ПРАВИЛ**\n- ok",
+			Finish:  "stop",
+		})
 	}}
 	g.llm = captureLLM
 	_, err := g.Reply(context.Background(), "chat1", "go", Callbacks{})
@@ -275,7 +277,10 @@ func TestGM_CompactionFiresOnLongHistory(t *testing.T) {
 	}
 	conv.mu.Unlock()
 
-	fake.rounds = [][]fakeChunk{{{content: "final", finish: "stop"}}}
+	fake.rounds = [][]fakeChunk{{{
+		content: "**диалоги и действия**\nfinal\n\n**КОНТЕКСТ И ИЗМЕНЕНИЯ**\nбез изменений\n\n**БУДУЩЕЕ**\n- продолжение\n\n**ВАЛИДАЦИЯ ПРАВИЛ**\n- ok",
+		finish:  "stop",
+	}}}
 	var compacted CompactionResult
 	var compactedMu sync.Mutex
 	cb := Callbacks{
@@ -291,7 +296,7 @@ func TestGM_CompactionFiresOnLongHistory(t *testing.T) {
 	compactedMu.Lock()
 	defer compactedMu.Unlock()
 	assert.Greater(t, compacted.DroppedTurns, 0, "compaction should have fired on long history (got %d dropped, before=%d after=%d)", compacted.DroppedTurns, compacted.BeforeTokens, compacted.AfterTokens)
-	assert.LessOrEqual(t, len(g.getConversation("chat1").messages), 2*g.compaction.KeepRecent)
+	assert.LessOrEqual(t, len(g.getConversation("chat1").messages), 2*g.compaction.KeepRecent+2, "conv holds kept + (1 user, 1 assistant from final round)")
 }
 
 func TestGM_CompactionWithSummarizer_WritesToState(t *testing.T) {
@@ -334,4 +339,37 @@ type captureLLM struct {
 
 func (c *captureLLM) Stream(_ context.Context, req llm.ChatRequest, onChunk func(llm.Chunk) error) error {
 	return c.run(req, onChunk)
+}
+
+func TestGM_EmptyContentSkipsReprompt(t *testing.T) {
+	g, _, fake := newGMTestEnv(t)
+	// Round that produces no content at all (model returned
+	// just [DONE] with no deltas). This is the case that
+	// triggered `reprompt_chars: 0` in the wild.
+	fake.rounds = [][]fakeChunk{
+		{{finish: "stop"}},
+	}
+	var got strings.Builder
+	_, err := g.Reply(context.Background(), "chat1", "ping", deltaOnly(&got))
+	require.NoError(t, err)
+	// Critical: only ONE LLM call. A re-prompt would be a
+	// wasted call (no content to fix) and would also need
+	// its own fake round, blowing up `fake.calls`.
+	assert.Equal(t, 1, fake.calls, "should not run a second round for an empty assistant turn")
+	// The player should see *something* — a polite placeholder
+	// so the "…" stream does not stay frozen.
+	assert.Contains(t, got.String(), "не вернула ответ")
+}
+
+func TestGM_EmptyContentSendsPlaceholderDelta(t *testing.T) {
+	g, _, fake := newGMTestEnv(t)
+	fake.rounds = [][]fakeChunk{
+		{{finish: "stop"}},
+	}
+	var got strings.Builder
+	_, err := g.Reply(context.Background(), "chat1", "ping", deltaOnly(&got))
+	require.NoError(t, err)
+	// The placeholder must be the only text in the stream —
+	// no other content from the model leaked through.
+	assert.Equal(t, "⚠️ модель не вернула ответ — попробуй ещё раз", got.String())
 }

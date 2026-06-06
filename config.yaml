@@ -19,8 +19,11 @@ messaging:
     # Long-poll длительность для GetUpdates, секунды. 30-90 — комфортный диапазон.
     polling_timeout: 60
     # Режим парсинга сообщений: "" (plain), "MarkdownV2", "HTML".
-    # По умолчанию plain — бот шлёт **для примера**, и любой parse_mode
-    parse_mode: "MarkdownV2"
+    # По умолчанию — HTML: нативный для Telegram, прощает опечатки
+    # вроде лишних `_*[]().` в русской прозе, которые ломают MarkdownV2.
+    # Бот автоматически конвертирует LLM-emitted Markdown
+    # (**bold**, *italic*, `code`, [text](url)) в <b>/<i>/<code>/<a>.
+    parse_mode: "HTML"
     # Whitelist Telegram user_id. Сообщения от всех, кто не в списке, дропаются. @userinfobot
     allowed_user_ids:
       - 123456789
@@ -117,23 +120,42 @@ llm:
       api_key: "ollama"
       # Тег модели. Для Ollama — `ollama pull <model>` заранее.
       model: "qwen2.5:7b-instruct"
-      # Файл с system prompt, читается один раз на старте.
-      system_prompt_path: "prompts/narrative.md"
+      # Файл с system prompt. По умолчанию читается
+      # встроенная копия internal/prompts/narrative.md.
+      # Укажите путь, чтобы переопределить без пересборки
+      # бинаря (полезно для A/B-тестов новых промптов).
+      system_prompt_path: ""
       # Потолок длины ответа. Для нарратива 1200-2000 — комфортно.
       max_tokens: 1500
       # 0.7-0.9 — нарративная проза. Для сжатия лучше 0.2-0.3.
       temperature: 0.8
-    # Per-role override. 0 = взять default_timeout_seconds.
-    request_timeout_seconds: 120
-    # context_window: жёсткий лимит input-токенов для одной
-    # chat-completion request. Когда разговор растёт за
-    # compaction_threshold × context_window, бот дропает
-    # самые старые turn'ы (до compaction_keep_recent) и шлёт
-    # уведомление. 0 = выключить компактинг.
-    # Default: 32000 для мощных моделей вроде minimax-m3.
-    context_window: 32000
-    compaction_threshold: 0.7
-    compaction_keep_recent: 5
+      # Per-role override. 0 = взять default_timeout_seconds.
+      request_timeout_seconds: 120
+      # context_window: жёсткий лимит input-токенов для одной
+      # chat-completion request. Когда разговор растёт за
+      # compaction_threshold × context_window, бот дропает
+      # самые старые turn'ы (до compaction_keep_recent) и шлёт
+      # уведомление. 0 = выключить компактинг.
+      # Default: 32000 для мощных моделей вроде minimax-m3.
+      context_window: 32000
+      compaction_threshold: 0.7
+      compaction_keep_recent: 5
+      # disable_thinking: отключить chain-of-thought reasoning
+      # на провайдерах, которые уважают OpenAI-compat поле
+      # `reasoning_effort` (Ollama /v1/chat/completions, OpenAI
+      # reasoning models, xAI Grok, OpenRouter). Бот шлёт
+      # `reasoning_effort: "none"`.
+      # Без этого модель тратит 30-60 секунд на размышления и
+      # шлёт пустые delta.content — оператор видит зависший "…".
+      # Default false (провайдер сам решает).
+      # Для GPT-OSS установи `reasoning_effort: "low"` —
+      # GPT-OSS отвергает "none".
+      disable_thinking: true
+      # reasoning_effort: явный уровень (none|low|medium|high).
+      # Если задан — имеет приоритет над disable_thinking.
+      # Используй для моделей, которые не понимают "none"
+      # (GPT-OSS) — для них передай "low".
+      # reasoning_effort: ""
 
     # --------------------------------------------------------------------
     # summary: дешёвая модель для сжатия диалогов при компактинге.
@@ -145,9 +167,19 @@ llm:
       api_url: "http://localhost:11434/v1"
       api_key: "ollama"
       model: "deepseek-v4-flash"
-      system_prompt_path: "prompts/summary.md"
+      system_prompt_path: ""
       max_tokens: 500
       temperature: 0.2
+      request_timeout_seconds: 60
+      context_window: 16000
+      compaction_threshold: 0.5
+      compaction_keep_recent: 3
+      # Та же логика, что у narrative: бот шлёт
+      # `reasoning_effort: "none"` в /v1/chat/completions.
+      # Для summary это критично — нам нужен короткий видимый
+      # результат 200-400 токенов, а не 60-секундная пауза.
+      # Default true.
+      disable_thinking: true
 
 # ----------------------------------------------------------------------------
 # slowlog: покадровый аудит сессии. По умолчанию выключен — при включении

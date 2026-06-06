@@ -26,6 +26,7 @@ func NewResponseFormat(wordLimit int, language string) *ResponseFormat {
 type Validation struct {
 	HasDialogue       bool
 	HasContextBlock   bool
+	HasFutureBlock    bool
 	HasValidationBlk  bool
 	WordCount         int
 	OverLimit         bool
@@ -35,6 +36,13 @@ type Validation struct {
 
 // Validate checks structural compliance. It is intentionally lenient:
 // "over limit" only reports a warning unless caller asks to enforce.
+// The four block markers correspond to the four sections of the
+// "RESPONSE FORMAT" rule in prompts/narrative.md:
+//
+//	**диалоги и действия**      — narrative prose
+//	**КОНТЕКСТ И ИЗМЕНЕНИЯ**     — what files were touched
+//	**БУДУЩЕЕ**                  — 1-2 lines from plan.md
+//	**ВАЛИДАЦИЯ ПРАВИЛ**         — self-check
 func (r *ResponseFormat) Validate(body string) Validation {
 	v := Validation{
 		WordCount: wordCount(body),
@@ -45,6 +53,7 @@ func (r *ResponseFormat) Validate(body string) Validation {
 	}
 	v.HasDialogue = containsBlock(body, "**диалоги и действия**")
 	v.HasContextBlock = containsBlock(body, "**КОНТЕКСТ И ИЗМЕНЕНИЯ**")
+	v.HasFutureBlock = containsBlock(body, "**БУДУЩЕЕ**")
 	v.HasValidationBlk = containsBlock(body, "**ВАЛИДАЦИЯ ПРАВИЛ**")
 	v.ForbiddenForms = scanForbiddenForms(body)
 	return v

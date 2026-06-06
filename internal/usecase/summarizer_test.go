@@ -56,6 +56,39 @@ func TestSummarizer_HappyPath(t *testing.T) {
 	assert.Contains(t, res.Text, "Хокаге")
 }
 
+func TestSummarizer_FallbackMode(t *testing.T) {
+	fake := &fakeLLM{}
+	fake.rounds = [][]fakeChunk{
+		{{content: "- compact summary", finish: "stop"}},
+	}
+	// Build a fallback summarizer on top of a narrative-like
+	// role with high temperature and big max_tokens. The
+	// fallback constructor must clamp both.
+	s := NewFallbackSummarizer(fake, llm.RoleConfig{
+		Model: "narrative", MaxTokens: 4000, Temperature: 0.9,
+	}, "system-prompt", slowlog.Discard(), discardLogger())
+	assert.True(t, s.IsFallback())
+	assert.Equal(t, 500, s.role.MaxTokens, "fallback must clamp max_tokens")
+	assert.Equal(t, 0.2, s.role.Temperature, "fallback must clamp temperature")
+
+	res, err := s.SummarizeOldTurns(context.Background(), []llm.Message{
+		{Role: "user", Content: "hello"},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "summary-fallback", res.Source)
+}
+
+func TestSummarizer_FallbackKeepsLowValues(t *testing.T) {
+	// If the operator already configured a tame narrative
+	// role (low temp, small max_tokens) the fallback
+	// constructor should not inflate them.
+	s := NewFallbackSummarizer(&fakeLLM{}, llm.RoleConfig{
+		Model: "narrative", MaxTokens: 200, Temperature: 0.3,
+	}, "system", slowlog.Discard(), discardLogger())
+	assert.Equal(t, 200, s.role.MaxTokens)
+	assert.Equal(t, 0.3, s.role.Temperature, "fallback should not lower a temperature that is already in the safe range")
+}
+
 func TestSummarizer_StreamErrorReturned(t *testing.T) {
 	// Empty rounds means fakeLLM fires no chunks and returns
 	// nil — our summarizer treats empty response as error.

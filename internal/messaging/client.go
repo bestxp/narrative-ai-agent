@@ -58,6 +58,17 @@ type StreamSession interface {
 	Final(ctx context.Context, text string) error
 }
 
+// BotCommand is the transport-agnostic description of a single
+// command hint. The Description is what the user sees in the
+// platform's native command picker (Telegram: the menu that
+// pops up when "/" is typed in the chat input). Keeping it
+// short (≤256 chars per Telegram) is the caller's job; the
+// transport is free to truncate or reject longer strings.
+type BotCommand struct {
+	Command     string
+	Description string
+}
+
 // Client is the abstraction every transport implements. It is
 // deliberately small: receive a message, send a reply, stream a
 // reply, and ask whether a sender is on the allow list.
@@ -87,6 +98,12 @@ type Client interface {
 	// IsAllowed reports whether the sender id is permitted to drive
 	// the GM (per-messenger allow list lives in config).
 	IsAllowed(senderID string) bool
+
+	// SetCommands registers the bot's command hints with the
+	// transport. Telegram translates this to the native menu
+	// shown when the user types "/". Transports that don't
+	// support command hints may implement this as a no-op.
+	SetCommands(ctx context.Context, cmds []BotCommand) error
 }
 
 // MultiClient fans a single IncomingMessage channel out to many
