@@ -75,6 +75,13 @@ type TelegramConfig struct {
 	// AllowedUserIDs is the access control list. Messages from any
 	// user not on this list are silently dropped. Keep it small.
 	AllowedUserIDs []int `yaml:"allowed_user_ids"`
+	// ReplyToUser, when true, threads every bot reply as a
+	// Telegram reply to the originating user message. Streaming
+	// placeholders, command responses, and the final narrative
+	// all carry reply_to_message_id. Standalone notifications
+	// (auto-save, compaction, errors) explicitly set the field
+	// to 0 so they appear as their own bubbles.
+	ReplyToUser bool `yaml:"reply_to_user"`
 }
 
 // PathsConfig controls where the bot stores and looks for files.
@@ -151,6 +158,25 @@ type NarrativeConfig struct {
 	// production play (default off) vs. debugging (turn on to
 	// see what the model is reporting about itself).
 	RulesCheckBlock bool `yaml:"rules_check_block"`
+	// IncludeSystemStateInPrompt, when true, includes a small
+	// summary of system_state.md (last compaction, session
+	// metrics) in the LLM system prompt. Off by default — the
+	// file is intended as an operator-facing diagnostic and
+	// shipping it to the LLM wastes tokens. Turn on only if a
+	// specific bug requires the model to know about its own
+	// context-window pressure.
+	IncludeSystemStateInPrompt bool `yaml:"include_system_state_in_prompt"`
+	// CompactionNotify, when true, sends a Telegram message to
+	// the player whenever the bot drops old conversation turns
+	// to stay under the configured context window. The default
+	// short form is one line ("🔄 компактирую историю (22k →
+	// 5.5k tok, −23 хода)"); set CompactionNotifyVerbose to true
+	// to also break down before/after tokens per round.
+	CompactionNotify bool `yaml:"compaction_notify"`
+	// CompactionNotifyVerbose switches the compaction notice
+	// from one line to a multi-line breakdown. Honoured only
+	// when CompactionNotify is true.
+	CompactionNotifyVerbose bool `yaml:"compaction_notify_verbose"`
 }
 
 // LLMConfig is a registry of named LLM roles. A role is a single
@@ -222,6 +248,30 @@ type LLMRoleConfig struct {
 	// RequestTimeoutSeconds is the HTTP timeout for this role's
 	// calls. Falls back to LLMConfig.DefaultTimeoutSeconds when 0.
 	RequestTimeoutSeconds int `yaml:"request_timeout_seconds"`
+	// ContextWindow is the soft cap on the input side of a
+	// single chat-completion request for this role. When the
+	// accumulated history plus the static system prompt grows
+	// past CompactionThreshold * ContextWindow tokens, the bot
+	// triggers a compaction: it drops the oldest conversation
+	// turns down to CompactionKeepRecent and reissues the
+	// request. Set 0 to disable compaction entirely; the bot
+	// will then refuse to issue requests larger than
+	// ContextWindow as a hard cap to avoid runaway cost.
+	ContextWindow int `yaml:"context_window"`
+	// CompactionThreshold is the fraction of ContextWindow at
+	// which compaction is triggered. 0.7 means "compact when
+	// the prompt reaches 70% of the cap"; 1.0 means "compact
+	// only when we hit the cap" (more aggressive, but the
+	// compaction itself may push us over for one round).
+	// Default 0.7.
+	CompactionThreshold float64 `yaml:"compaction_threshold"`
+	// CompactionKeepRecent is the number of freshest
+	// conversation turns (user+assistant+tool, counted as one
+	// each) that survive a compaction. Older turns are dropped
+	// from conversations[]; their facts are expected to live in
+	// state.md and memorise.md which the LLM re-reads every
+	// turn via the system prompt. Default 5.
+	CompactionKeepRecent int `yaml:"compaction_keep_recent"`
 }
 
 // SlowlogConfig configures the audit log that records every LLM
@@ -348,6 +398,8 @@ func (c *Config) Validate() error {
 		role.RequestTimeoutSeconds = nonZero(role.RequestTimeoutSeconds, c.LLM.DefaultTimeoutSeconds)
 		role.MaxTokens = nonZero(role.MaxTokens, 1500)
 		role.Temperature = nonZeroFloat(role.Temperature, 0.8)
+		role.CompactionThreshold = nonZeroFloat(role.CompactionThreshold, 0.7)
+		role.CompactionKeepRecent = nonZero(role.CompactionKeepRecent, 5)
 		if role.SystemPromptPath == "" {
 			role.SystemPromptPath = "prompts/" + name + ".md"
 		}

@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/rs/zerolog"
 
@@ -30,6 +31,15 @@ type LLMClient interface {
 // dots. StatusFunc may be nil; in that case GM skips the calls.
 type StatusFunc func(phase string, details map[string]any)
 
+// OnCompactionFunc is called after the bot trims old
+// conversation turns to fit under the configured context
+// window. The transport layer uses it to surface a one-line
+// notice ("🔄 компактирую историю...") as a separate Telegram
+// message — the player gets confirmation that the context
+// reset just happened and the model is reasoning with a
+// tighter window. May be nil.
+type OnCompactionFunc func(result CompactionResult)
+
 // Callbacks groups the per-stream transport hooks. A zero value
 // is valid — every field is optional and silently skipped when
 // nil. Keeping them on a struct (rather than four positional
@@ -51,6 +61,11 @@ type Callbacks struct {
 	// numbers are the ones the transport appends to the reply if
 	// the operator enabled `llm.include_in_reply`.
 	OnTokens func(llm.Usage)
+	// OnCompaction is called once per Reply, after the bot has
+	// trimmed old conversation turns to stay under the context
+	// window. The transport layer surfaces a one-line notice so
+	// the player sees the context reset. Nil is safe.
+	OnCompaction OnCompactionFunc
 }
 
 // TokenUsage is the summary the GM emits at the end of a Reply.
@@ -71,6 +86,7 @@ type GM struct {
 	fs           *storage.FileStore
 	llm          LLMClient
 	role         llm.RoleConfig
+	compaction   CompactionConfig
 	staticPrompt string
 	ss           *SessionStart
 	mt           *Maintenance
@@ -78,6 +94,8 @@ type GM struct {
 	npcm         *NPCManager
 	wt           *WorldTransition
 	cu           *CharacterUpdate
+	summarizer   *Summarizer
+	sysSt        *SystemState
 	slow         *slowlog.Logger
 	tracking     string // "off" | "estimate" | "usage"
 	includeReply bool
@@ -93,13 +111,32 @@ type GM struct {
 type GMConfig struct {
 	Role         llm.RoleConfig
 	SystemPrompt string // raw text loaded from prompts/narrative.md
+	// Compaction is the role's context-window policy. The same
+	// struct is in config.LLMRoleConfig; the GM receives its own
+	// copy to keep the usecase layer independent of the config
+	// package.
+	Compaction CompactionConfig
+}
+
+// CompactionConfig is the slice of config.LLMRoleConfig the
+// GM actually uses. Kept local so the usecase package can be
+// tested without dragging in yaml.v3 dependencies.
+type CompactionConfig struct {
+	// ContextWindow is the soft cap on input tokens. 0 disables.
+	ContextWindow int
+	// Threshold is the fraction of ContextWindow at which the
+	// preflight fires. 0.7 is the operator-friendly default.
+	Threshold float64
+	// KeepRecent is the number of freshest turns that survive
+	// a compaction. 5 is the operator-friendly default.
+	KeepRecent int
 }
 
 // NewGM constructs the GM. The supplied system prompt is sent as
 // the first "system" message on every turn. The conversation state
 // (per ChatID) is kept in a sync.Map; the GM is therefore safe to
 // call from multiple goroutines.
-func NewGM(cfg GMConfig, fs *storage.FileStore, llmCli LLMClient, ss *SessionStart, mt *Maintenance, fl *FirstLaunch, npcm *NPCManager, wt *WorldTransition, cu *CharacterUpdate, slow *slowlog.Logger, tracking string, includeReply bool, log zerolog.Logger) *GM {
+func NewGM(cfg GMConfig, fs *storage.FileStore, llmCli LLMClient, ss *SessionStart, mt *Maintenance, fl *FirstLaunch, npcm *NPCManager, wt *WorldTransition, cu *CharacterUpdate, summarizer *Summarizer, sysSt *SystemState, slow *slowlog.Logger, tracking string, includeReply bool, log zerolog.Logger) *GM {
 	log = log.With().Str("component", "gm").Logger()
 	tools := make([]llm.ToolSchema, 0, len(domain.Tools()))
 	for _, t := range domain.Tools() {
@@ -118,6 +155,7 @@ func NewGM(cfg GMConfig, fs *storage.FileStore, llmCli LLMClient, ss *SessionSta
 		fs:           fs,
 		llm:          llmCli,
 		role:         cfg.Role,
+		compaction:   cfg.Compaction,
 		staticPrompt: cfg.SystemPrompt,
 		ss:           ss,
 		mt:           mt,
@@ -125,6 +163,8 @@ func NewGM(cfg GMConfig, fs *storage.FileStore, llmCli LLMClient, ss *SessionSta
 		npcm:         npcm,
 		wt:           wt,
 		cu:           cu,
+		summarizer:   summarizer,
+		sysSt:        sysSt,
 		slow:         slow,
 		tracking:     tracking,
 		includeReply: includeReply,
@@ -184,6 +224,77 @@ func (g *GM) Reply(ctx context.Context, chatID, userText string, cb Callbacks) (
 
 	if cb.OnStatus != nil {
 		cb.OnStatus("request_received", map[string]any{"text_len": len(userText)})
+	}
+
+	// Compaction preflight: if the conversation history has
+	// grown past context_window * compaction_threshold, drop
+	// the oldest turns. We run this once per Reply (not per
+	// tool round) so the operator gets exactly one compaction
+	// notice per user turn regardless of how many tool rounds
+	// the model ran. The OnCompaction callback is the only
+	// place the player sees the notice; system_state.md also
+	// gets the row.
+	//
+	// When a summarizer role is configured, the dropped turns
+	// are first compressed to a 200-400 token fact log and
+	// appended to state.md so the next system prompt still
+	// sees them. Without a summarizer we just drop (the
+	// facts live in state.md/memorise.md/SOUL.md anyway,
+	// and the operator sees a "🔄" notice all the same).
+	if g.compaction.ContextWindow > 0 {
+		ctxChars := len(g.staticPrompt)
+		if NeedsCompaction(history, ctxChars, g.compaction.ContextWindow, g.compaction.Threshold) {
+			dropCount := len(history) - g.compaction.KeepRecent
+			if dropCount < 0 {
+				dropCount = 0
+			}
+			var droppedTurns []llm.Message
+			if dropCount > 0 {
+				droppedTurns = history[:dropCount]
+			}
+			kept, res := CompactConversations(history, g.compaction.KeepRecent)
+			if res.DroppedTurns > 0 {
+				conv.mu.Lock()
+				conv.messages = kept
+				conv.mu.Unlock()
+				history = kept
+				now := time.Now().UTC()
+				// Best-effort summary. The summarizer may be
+				// unconfigured (single-role deployment) — in
+				// that case the role call is skipped and we
+				// still drop, just without a written fact
+				// log. The "🔄" notice still fires.
+				if g.summarizer != nil && g.summarizer.IsConfigured() && len(droppedTurns) > 0 {
+					sumRes, sumErr := g.summarizer.SummarizeOldTurns(ctx, droppedTurns)
+					if sumErr != nil {
+						g.log.Warn().Err(sumErr).Msg("summary failed; dropping turns without state.md append")
+					} else if sumRes.Text != "" {
+						if err := g.mt.AppendHistoryToState(currentWorldName(g.fs), sumRes.Text, now); err != nil {
+							g.log.Warn().Err(err).Msg("append history to state.md failed")
+						} else {
+							g.log.Info().Int("summary_chars", len(sumRes.Text)).Msg("summary appended to state.md")
+						}
+					}
+				}
+				if g.sysSt != nil {
+					_, _ = g.sysSt.AppendCompaction(NewCompactionEvent(
+						"narrative",
+						res.BeforeTokens, res.AfterTokens,
+						res.DroppedTurns, res.KeptRecent,
+						now,
+					))
+				}
+				if cb.OnCompaction != nil {
+					cb.OnCompaction(res)
+				}
+				g.log.Info().
+					Int("before", res.BeforeTokens).
+					Int("after", res.AfterTokens).
+					Int("dropped", res.DroppedTurns).
+					Int("kept", res.KeptRecent).
+					Msg("compaction fired")
+			}
+		}
 	}
 
 	for round := 0; round < maxToolRounds; round++ {

@@ -1,6 +1,7 @@
 package usecase
 
 import (
+	"errors"
 	"regexp"
 	"strconv"
 	"strings"
@@ -42,11 +43,17 @@ type Report struct {
 }
 
 // StateSnapshot is the trimmed "here and now" written to state.md.
+// AppendEvents is the хронология дня section: each entry is
+// appended on every UpdateState call (and the section is
+// cleared on ArchiveDay).
 type StateSnapshot struct {
-	Day      int
-	InFlight bool
-	Moment   string
-	NPCs     []string
+	World        string
+	Day          int
+	InFlight     bool
+	Location     string
+	Moment       string
+	NPCs         []string
+	AppendEvents []string
 }
 
 // CompactRule describes when an NPC file should be condensed.
@@ -61,22 +68,91 @@ func StateHeader(day int, inFlight bool) string {
 	return "День " + strconv.Itoa(day) + " (" + marker + ")."
 }
 
-// UpdateState writes a trimmed "here and now" snapshot.
+// UpdateState writes a trimmed "here and now" snapshot. The
+// хронология дня section grows by appending AppendEvents —
+// one entry per call. StateSnapshot.AppendEvents is a delta,
+// not a replacement, so concurrent /leave doesn't clobber the
+// running log of the day.
 func (m *Maintenance) UpdateState(snap StateSnapshot) error {
-	var b strings.Builder
-	b.WriteString(StateHeader(snap.Day, snap.InFlight))
-	b.WriteString("\n")
-	b.WriteString(strings.TrimSpace(snap.Moment))
-	if b.Len() > 0 && !strings.HasSuffix(b.String(), "\n") {
-		b.WriteString("\n")
+	if snap.World == "" {
+		snap.World = currentWorld(m.fs)
 	}
-	if len(snap.NPCs) > 0 {
-		b.WriteString("\nАктивные NPC прямо сейчас: ")
-		b.WriteString(strings.Join(snap.NPCs, ", "))
-		b.WriteString("\n")
+	// Load the existing state to preserve the chronology.
+	rel := "worlds/" + snap.World + "/state.md"
+	cur, _ := m.fs.ReadRaw(rel)
+	existing := parseStateMD(cur)
+	existing.World = snap.World
+	existing.Day = snap.Day
+	existing.InFlight = snap.InFlight
+	existing.Location = snap.Location
+	existing.Moment = snap.Moment
+	if snap.NPCs != nil {
+		existing.NPCs = snap.NPCs
 	}
-	m.log.Info().Int("day", snap.Day).Bool("in_flight", snap.InFlight).Int("npcs", len(snap.NPCs)).Msg("update_state")
-	return m.fs.WriteRawAtomic("worlds/"+currentWorld(m.fs)+"/state.md", b.String())
+	if len(snap.AppendEvents) > 0 {
+		existing.Events = append(existing.Events, snap.AppendEvents...)
+	}
+	body := domain.BuildStateMarkdown(existing)
+	m.log.Info().
+		Int("day", snap.Day).
+		Bool("in_flight", snap.InFlight).
+		Int("npcs", len(snap.NPCs)).
+		Int("events", len(existing.Events)).
+		Msg("update_state")
+	return m.fs.WriteRawAtomic(rel, body)
+}
+
+// parseStateMD is the inverse of BuildStateMarkdown — it
+// recovers the StateSnapshot from a state.md body so UpdateState
+// can append to the chronology without clobbering earlier events.
+// We tolerate a missing "## Хронология дня" section (returns
+// empty Events).
+func parseStateMD(body string) domain.StateSnapshot {
+	out := domain.StateSnapshot{}
+	if body == "" {
+		return out
+	}
+	lines := strings.Split(body, "\n")
+	inEvents := false
+	for _, ln := range lines {
+		trim := strings.TrimSpace(ln)
+		switch {
+		case strings.HasPrefix(trim, "# Состояние мира:"):
+			out.World = strings.TrimSpace(strings.TrimPrefix(trim, "# Состояние мира:"))
+		case strings.HasPrefix(trim, "## Текущий момент"):
+			inEvents = false
+		case strings.HasPrefix(trim, "## Хронология дня"):
+			inEvents = true
+		case inEvents && strings.HasPrefix(trim, "- "):
+			out.Events = append(out.Events, strings.TrimSpace(strings.TrimPrefix(trim, "- ")))
+		case strings.HasPrefix(trim, "День "):
+			// "День N (в процессе|завершён)."
+			parts := strings.SplitN(trim, " ", 3)
+			if len(parts) >= 2 {
+				if d, err := strconv.Atoi(parts[1]); err == nil {
+					out.Day = d
+				}
+			}
+			out.InFlight = strings.Contains(trim, "в процессе")
+		case strings.HasPrefix(trim, "Локация:"):
+			out.Location = strings.TrimSpace(strings.TrimPrefix(trim, "Локация:"))
+			out.Location = strings.TrimSuffix(out.Location, ".")
+		case strings.HasPrefix(trim, "NPC:"):
+			raw := strings.TrimSpace(strings.TrimPrefix(trim, "NPC:"))
+			raw = strings.TrimSuffix(raw, ".")
+			if raw != "" {
+				for _, p := range strings.Split(raw, ",") {
+					if n := strings.TrimSpace(p); n != "" {
+						out.NPCs = append(out.NPCs, n)
+					}
+				}
+			}
+		case strings.HasPrefix(trim, "Момент:"):
+			out.Moment = strings.TrimSpace(strings.TrimPrefix(trim, "Момент:"))
+			out.Moment = strings.TrimSuffix(out.Moment, ".")
+		}
+	}
+	return out
 }
 
 // RotatePlan replaces plan.md content. The "rotate" step means: caller
@@ -105,8 +181,11 @@ func (e *PlanRangeError) Error() string {
 	return "plan.md must contain 3-5 events, got " + strconv.Itoa(e.Given)
 }
 
-// ArchiveDay appends a new day entry to memorise.md (and compresses
-// 30-day windows per the skill rules).
+// ArchiveDay appends a new day entry to memorise.md (and
+// compresses 30-day windows per the skill rules) and resets
+// the state's хронология дня for the new day. The moment
+// (current narrative beat) is left intact — only the
+// day-by-day log moves to memorise.
 func (m *Maintenance) ArchiveDay(world string, day int, summary string) error {
 	if strings.TrimSpace(summary) == "" {
 		m.log.Debug().Int("day", day).Msg("archive_day: empty summary, skipping")
@@ -128,7 +207,24 @@ func (m *Maintenance) ArchiveDay(world string, day int, summary string) error {
 	next := current + line + "\n"
 	next = m.compressIfNeeded(next)
 	m.log.Info().Str("world", world).Int("day", day).Msg("archive_day")
-	return m.fs.WriteRawAtomic(rel, next)
+	if err := m.fs.WriteRawAtomic(rel, next); err != nil {
+		return err
+	}
+	// Reset state's day chronology: day = day+1, in_flight = true,
+	// events cleared. The "Момент" stays — the player just woke up
+	// somewhere.
+	if world != "" {
+		st, _ := m.fs.ReadRaw("worlds/" + world + "/state.md")
+		parsed := parseStateMD(st)
+		parsed.Day = day + 1
+		parsed.InFlight = true
+		parsed.Events = nil
+		body := domain.BuildStateMarkdown(parsed)
+		if err := m.fs.WriteRawAtomic("worlds/"+world+"/state.md", body); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // compressIfNeeded collapses 30-entry windows into a single block.
@@ -151,6 +247,24 @@ func (m *Maintenance) compressIfNeeded(body string) string {
 		b.WriteString("\n")
 	}
 	return b.String()
+}
+
+// AppendEvent is a one-line wrapper that the dispatcher / GM
+// can call instead of going through UpdateState when all it
+// needs is to grow the хронология дня. The world is read
+// from the registry; the day and moment are preserved.
+func (m *Maintenance) AppendEvent(text string) error {
+	world := currentWorld(m.fs)
+	if world == "" {
+		return errors.New("maintenance: no active world")
+	}
+	rel := "worlds/" + world + "/state.md"
+	cur, _ := m.fs.ReadRaw(rel)
+	parsed := parseStateMD(cur)
+	parsed.World = world
+	parsed.Events = append(parsed.Events, text)
+	body := domain.BuildStateMarkdown(parsed)
+	return m.fs.WriteRawAtomic(rel, body)
 }
 
 // AppendLore appends a new deviation entry to lore.md.

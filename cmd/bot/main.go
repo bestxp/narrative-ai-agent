@@ -98,10 +98,44 @@ func main() {
 	fl := usecase.NewFirstLaunchWithLogger(fs, log)
 	npcm := usecase.NewNPCManagerWithLogger(fs, log)
 	wt := usecase.NewWorldTransitionWithLogger(fs, log)
+	sysSt := usecase.NewSystemState(fs, log, slow)
+
+	// summarizer is optional: if no `summary` role is configured
+	// the bot runs drop-only compaction. With a summary role the
+	// dropped turns are compressed to a 200-400 tok fact log and
+	// appended to state.md before the next system prompt sees them.
+	var summarizer *usecase.Summarizer
+	if sumRole, ok := cfg.Role("summary"); ok {
+		sumPrompt, err := os.ReadFile(sumRole.SystemPromptPath)
+		if err != nil {
+			log.Warn().Err(err).Str("path", sumRole.SystemPromptPath).Msg("summary system prompt unreadable; dropping summarizer")
+		} else {
+			sumLLM := llm.New(llm.RoleConfig{
+				APIURL:                sumRole.APIURL,
+				APIKey:                sumRole.APIKey,
+				Model:                 sumRole.Model,
+				MaxTokens:             sumRole.MaxTokens,
+				Temperature:           sumRole.Temperature,
+				RequestTimeoutSeconds: sumRole.RequestTimeoutSeconds,
+			}, log)
+			summarizer = usecase.NewSummarizer(sumLLM, llm.RoleConfig{
+				Model:       sumRole.Model,
+				MaxTokens:   sumRole.MaxTokens,
+				Temperature: sumRole.Temperature,
+			}, string(sumPrompt), slow, log)
+			log.Info().Str("model", sumRole.Model).Str("url", sumRole.APIURL).Msg("summarizer role attached")
+		}
+	}
+
 	gm := usecase.NewGM(usecase.GMConfig{
 		Role:         llm.RoleConfig{Model: role.Model, MaxTokens: role.MaxTokens, Temperature: role.Temperature},
 		SystemPrompt: string(systemPrompt),
-	}, fs, llmCli, ss, mt, fl, npcm, wt, cu, slow, cfg.LLM.TokenTracking, cfg.LLM.IncludeInReply, log)
+		Compaction: usecase.CompactionConfig{
+			ContextWindow: role.ContextWindow,
+			Threshold:     role.CompactionThreshold,
+			KeepRecent:    role.CompactionKeepRecent,
+		},
+	}, fs, llmCli, ss, mt, fl, npcm, wt, cu, summarizer, sysSt, slow, cfg.LLM.TokenTracking, cfg.LLM.IncludeInReply, log)
 	if !*disableLLM {
 		disp.AttachGM(gm)
 		log.Info().Str("model", role.Model).Str("url", role.APIURL).Msg("gm attached")
@@ -165,7 +199,14 @@ func main() {
 					if !ok {
 						return
 					}
-					handleIncoming(ctx, log, c, disp, cfg.Messaging.Telegram.ParseMode, cfg.LLM.IncludeInReply, cfg.Narrative.RulesCheckBlock, msg)
+					handleIncoming(ctx, log, c, disp,
+						cfg.Messaging.Telegram.ParseMode,
+						cfg.LLM.IncludeInReply,
+						cfg.Narrative.RulesCheckBlock,
+						cfg.Messaging.Telegram.ReplyToUser,
+						cfg.Narrative.CompactionNotify,
+						cfg.Narrative.CompactionNotifyVerbose,
+						msg)
 					// Auto-save counter increments on every
 					// freeform reply only — commands don't
 					// count because they're usually a quick
@@ -174,6 +215,10 @@ func main() {
 						if n := replyCount.Add(1); autoSave > 0 && int(n)%autoSave == 0 && gitOp != nil {
 							notify := runAutoSave(ctx, log, c, gitOp, msg.ChatID, cfg.Git.VerboseSave)
 							if notify != "" {
+								// Auto-save notify is its own bubble
+								// (ReplyToMessageID=0) so it appears
+								// as a meta-event, not as a reply
+								// to the player's last turn.
 								if err := c.Send(ctx, messaging.OutgoingMessage{ChatID: msg.ChatID, Text: notify, ParseMode: cfg.Messaging.Telegram.ParseMode}); err != nil {
 									log.Error().Err(err).Str("chat", msg.ChatID).Msg("auto-save notify failed")
 								}
@@ -186,6 +231,17 @@ func main() {
 	}
 
 	wg.Wait()
+}
+
+// chatMu serialises handleIncoming per chatID so two messages
+// from the same player — or from a Telegram + Discord client
+// pointing at the same logical chat — are processed strictly
+// one at a time. The map is grown on demand; load is atomic.
+var chatMu sync.Map // map[chatID]*sync.Mutex
+
+func chatLock(chatID string) *sync.Mutex {
+	v, _ := chatMu.LoadOrStore(chatID, &sync.Mutex{})
+	return v.(*sync.Mutex)
 }
 
 // handleIncoming is the per-message dispatch loop. It uses streaming
@@ -206,13 +262,40 @@ func main() {
 //   - OnTokens accumulates per-round token usage. The final
 //     numbers are appended to the reply when the operator
 //     enabled llm.include_in_reply.
-func handleIncoming(ctx context.Context, log zerolog.Logger, c messaging.Client, disp *dispatcher.Dispatcher, parseMode string, includeTokens, rulesCheckBlock bool, msg messaging.IncomingMessage) {
+//   - OnCompaction fires after the bot trims old conversation
+//     turns. We surface a one-line notice as a SEPARATE
+//     Telegram message (no reply_to threading) so it appears
+//     as its own bubble rather than riding the player's
+//     message thread.
+//
+// Per-chatID serialisation: the entire body of handleIncoming
+// is wrapped in chatLock(chatID) so a second freeform
+// message from the same player (or a parallel Discord client
+// pointing at the same chat) waits for the first to finish
+// Final. This keeps the conversation thread clean and the
+// reply_to threading correct.
+func handleIncoming(ctx context.Context, log zerolog.Logger, c messaging.Client, disp *dispatcher.Dispatcher, parseMode string, includeTokens, rulesCheckBlock, replyTo, compactionNotify, compactionNotifyVerbose bool, msg messaging.IncomingMessage) {
+	mu := chatLock(msg.ChatID)
+	mu.Lock()
+	defer mu.Unlock()
+
+	// replyToMessageID is 0 when the operator disabled threading
+	// or when this transport does not carry an id. Both cases
+	// collapse to "send a standalone message".
+	replyToID := 0
+	if replyTo {
+		replyToID = msg.MessageID
+	}
+
+	// Stream-capable transports (Telegram) get a throttled edit
+	// session. Others receive a single Send.
 	streamer, ok := c.(interface {
-		StartStream(ctx context.Context, chatID string) (messaging.StreamSession, error)
+		StartStream(ctx context.Context, chatID string, replyToMessageID int) (messaging.StreamSession, error)
 	})
+	_ = streamer
 	var session messaging.StreamSession
 	if ok {
-		s, err := streamer.StartStream(ctx, msg.ChatID)
+		s, err := c.StartStream(ctx, msg.ChatID, replyToID)
 		if err != nil {
 			log.Warn().Err(err).Str("chat", msg.ChatID).Msg("stream start failed, falling back to Send")
 		} else {
@@ -270,12 +353,40 @@ func handleIncoming(ctx context.Context, log zerolog.Logger, c messaging.Client,
 			}
 			tokMu.Unlock()
 		},
+		OnCompaction: func(r usecase.CompactionResult) {
+			// Compaction notice is its own bubble (no reply_to)
+			// so the player sees it as a meta-event, not as the
+			// answer to their message. The handler is called
+			// after stream Final so the message ordering is:
+			//   1. player text + streaming answer
+			//   2. 🔄 компактирую...
+			if !compactionNotify {
+				return
+			}
+			notice := usecase.DescribeCompaction(r, "narrative", compactionNotifyVerbose)
+			if notice == "" {
+				return
+			}
+			if err := c.Send(ctx, messaging.OutgoingMessage{
+				ChatID:           msg.ChatID,
+				Text:             notice,
+				ParseMode:        parseMode,
+				ReplyToMessageID: 0, // standalone
+			}); err != nil {
+				log.Error().Err(err).Str("chat", msg.ChatID).Msg("compaction notify send failed")
+			}
+		},
 	}
 
 	if err := disp.HandleStream(ctx, msg, cb); err != nil {
 		log.Error().Err(err).Str("chat", msg.ChatID).Msg("dispatch error")
 		if session == nil {
-			_ = c.Send(ctx, messaging.OutgoingMessage{ChatID: msg.ChatID, Text: "⚠️ " + err.Error(), ParseMode: parseMode})
+			_ = c.Send(ctx, messaging.OutgoingMessage{
+				ChatID:           msg.ChatID,
+				Text:             "⚠️ " + err.Error(),
+				ParseMode:        parseMode,
+				ReplyToMessageID: 0,
+			})
 		} else {
 			_ = session.Final(ctx, "⚠️ "+err.Error())
 		}
@@ -298,11 +409,11 @@ func handleIncoming(ctx context.Context, log zerolog.Logger, c messaging.Client,
 	if session != nil {
 		if err := session.Final(ctx, final); err != nil {
 			log.Error().Err(err).Str("chat", msg.ChatID).Msg("stream final failed, retrying via Send")
-			_ = c.Send(ctx, messaging.OutgoingMessage{ChatID: msg.ChatID, Text: final, ParseMode: parseMode})
+			_ = c.Send(ctx, messaging.OutgoingMessage{ChatID: msg.ChatID, Text: final, ParseMode: parseMode, ReplyToMessageID: replyToID})
 		}
 		return
 	}
-	if err := c.Send(ctx, messaging.OutgoingMessage{ChatID: msg.ChatID, Text: final, ParseMode: parseMode}); err != nil {
+	if err := c.Send(ctx, messaging.OutgoingMessage{ChatID: msg.ChatID, Text: final, ParseMode: parseMode, ReplyToMessageID: replyToID}); err != nil {
 		log.Error().Err(err).Msg("send error")
 	}
 }

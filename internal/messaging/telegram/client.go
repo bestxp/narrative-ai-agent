@@ -118,8 +118,9 @@ func (c *Client) Run(ctx context.Context) error {
 					ID:   strconv.Itoa(upd.Message.From.ID),
 					Name: upd.Message.From.UserName,
 				},
-				ChatID: strconv.FormatInt(upd.Message.Chat.ID, 10),
-				Text:   text,
+				ChatID:    strconv.FormatInt(upd.Message.Chat.ID, 10),
+				Text:      text,
+				MessageID: upd.Message.MessageID,
 			}
 			if strings.HasPrefix(text, "/") {
 				parts := strings.Fields(text)
@@ -141,17 +142,27 @@ func (c *Client) Send(ctx context.Context, msg messaging.OutgoingMessage) error 
 	} else if c.cfg.ParseMode != "" {
 		m.ParseMode = c.cfg.ParseMode
 	}
+	if msg.ReplyToMessageID > 0 {
+		m.ReplyToMessageID = msg.ReplyToMessageID
+	}
 	_, err := c.api.Send(m)
 	return err
 }
 
 // StartStream implements messaging.Client.
-func (c *Client) StartStream(ctx context.Context, chatID string) (messaging.StreamSession, error) {
+func (c *Client) StartStream(ctx context.Context, chatID string, replyToMessageID int) (messaging.StreamSession, error) {
+	return c.startStream(ctx, chatID, replyToMessageID)
+}
+
+func (c *Client) startStream(ctx context.Context, chatID string, replyToMessageID int) (messaging.StreamSession, error) {
 	chat := parseChatID(chatID)
 	if chat == 0 {
 		return nil, fmt.Errorf("telegram: invalid chat id %q", chatID)
 	}
 	m := tg.NewMessage(chat, "…")
+	if replyToMessageID > 0 {
+		m.ReplyToMessageID = replyToMessageID
+	}
 	sent, err := c.api.Send(m)
 	if err != nil {
 		c.log.Error().Err(err).Str("chat", chatID).Int64("chat_int", chat).Msg("telegram: stream start failed")

@@ -24,6 +24,12 @@ messaging:
     # Whitelist Telegram user_id. Сообщения от всех, кто не в списке, дропаются. @userinfobot
     allowed_user_ids:
       - 123456789
+    # reply_to_user: каждое сообщение бота (нарратив, /команды)
+    # шлётся как reply на сообщение игрока — чат выглядит как
+    # thread. Уведомления (auto-save ✅, compaction 🔄, ошибки ⚠️)
+    # идут отдельными bubble'ами (без reply) чтобы не путать
+    # с нарративом.
+    reply_to_user: true
 
 # ----------------------------------------------------------------------------
 # paths: где бот хранит данные и в каком каталоге выполняет git-команды.
@@ -67,6 +73,18 @@ narrative:
   # стрипает блок на выходе. Default false: production-режим.
   # Подробное обоснование — в README.md, секция "rules_check_block".
   rules_check_block: false
+  # compaction_notify: слать ли игроку уведомление когда бот
+  # дропнул старые turn'ы чтобы уложиться в context_window.
+  # Сообщение идёт ОТДЕЛЬНЫМ bubble'ом (не reply) чтобы не
+  # путать с нарративом. Default true.
+  compaction_notify: true
+  # compaction_notify_verbose: вместо одной строки "🔄 22k → 5k"
+  # давать многострочную разбивку с before/after/dropped/kept.
+  compaction_notify_verbose: false
+  # include_system_state_in_prompt: отдавать ли LLM сводку
+  # system_state.md (компакции, last autosave hash). Default false —
+  # это операторский диагностический файл, в промпт не нужен.
+  include_system_state_in_prompt: false
 
 # ----------------------------------------------------------------------------
 # llm: реестр LLM-ролей. Каждая роль — отдельная задача со своей моделью
@@ -105,22 +123,31 @@ llm:
       max_tokens: 1500
       # 0.7-0.9 — нарративная проза. Для сжатия лучше 0.2-0.3.
       temperature: 0.8
-      # Per-role override. 0 = взять default_timeout_seconds.
-      request_timeout_seconds: 120
+    # Per-role override. 0 = взять default_timeout_seconds.
+    request_timeout_seconds: 120
+    # context_window: жёсткий лимит input-токенов для одной
+    # chat-completion request. Когда разговор растёт за
+    # compaction_threshold × context_window, бот дропает
+    # самые старые turn'ы (до compaction_keep_recent) и шлёт
+    # уведомление. 0 = выключить компактинг.
+    # Default: 32000 для мощных моделей вроде minimax-m3.
+    context_window: 32000
+    compaction_threshold: 0.7
+    compaction_keep_recent: 5
 
     # --------------------------------------------------------------------
-    # summary: дешёвая фоновая модель для сжатия NPC-файлов, lore.md,
-    # memory.md. Не доверяем дорогой модели рутину.
-    # Зарезервировано — ещё не используется; раскомментировать, когда
-    # появится вызов из usecase/maintenance.go.
-    # --------------------------------------------------------------------
-    # summary:
-    #   api_url: "http://localhost:11434/v1"
-    #   api_key: "ollama"
-    #   model: "qwen2.5:1.5b-instruct"
-    #   system_prompt_path: "prompts/summary.md"
-    #   max_tokens: 500
-    #   temperature: 0.3
+    # summary: дешёвая модель для сжатия диалогов при компактинге.
+    # Когда narrative сессия длинная, summary role сжимает
+    # дропнутые turn'ы в 200-400 токеновый лог фактов и
+    # дописывает в state.md секцию "История (сжато)".
+    # 0 = выключено (только drop, без summary).
+    summary:
+      api_url: "http://localhost:11434/v1"
+      api_key: "ollama"
+      model: "deepseek-v4-flash"
+      system_prompt_path: "prompts/summary.md"
+      max_tokens: 500
+      temperature: 0.2
 
 # ----------------------------------------------------------------------------
 # slowlog: покадровый аудит сессии. По умолчанию выключен — при включении

@@ -34,7 +34,7 @@ func TestUpdateState_HeaderAndMoment(t *testing.T) {
 	})
 	require.NoError(t, err)
 	got, _ := fs.ReadRaw("worlds/naruto/state.md")
-	assert.True(t, strings.HasPrefix(got, "День 1 (в процессе)."), "header missing in: %q", got)
+	assert.Contains(t, got, "День 1 (в процессе)")
 	assert.Contains(t, got, "Саске, Какаши")
 }
 
@@ -44,7 +44,7 @@ func TestUpdateState_HeaderDayFinished(t *testing.T) {
 	m := NewMaintenance(fs)
 	require.NoError(t, m.UpdateState(StateSnapshot{Day: 2, InFlight: false, Moment: "x"}))
 	got, _ := fs.ReadRaw("worlds/naruto/state.md")
-	assert.True(t, strings.HasPrefix(got, "День 2 (завершён)."), "got %q", got)
+	assert.Contains(t, got, "День 2 (завершён)")
 }
 
 func TestRotatePlan_RejectsBadRange(t *testing.T) {

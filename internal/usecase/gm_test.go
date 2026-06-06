@@ -84,7 +84,8 @@ func newGMTestEnv(t *testing.T) (*GM, *storage.FileStore, *fakeLLM) {
 	g := NewGM(GMConfig{
 		Role:         llm.RoleConfig{Model: "test", MaxTokens: 100, Temperature: 0.5},
 		SystemPrompt: "# rules",
-	}, fs, fake, ss, mt, fl, npcm, wt, cu, slowlog.Discard(), "off", false, log)
+		Compaction:   CompactionConfig{ContextWindow: 0, Threshold: 0.7, KeepRecent: 5},
+	}, fs, fake, ss, mt, fl, npcm, wt, cu, nil, NewSystemState(fs, discardLogger(), slowlog.Discard()), slowlog.Discard(), "off", false, log)
 	return g, fs, fake
 }
 
@@ -256,6 +257,75 @@ func TestMergeToolCalls_ContinuationsAccumulate(t *testing.T) {
 	}})
 	require.Len(t, out, 1)
 	assert.Equal(t, `{"day":1}`, out[0].Function.Arguments)
+}
+
+func TestGM_CompactionFiresOnLongHistory(t *testing.T) {
+	g, _, fake := newGMTestEnv(t)
+	g.compaction = CompactionConfig{ContextWindow: 100, Threshold: 0.5, KeepRecent: 2}
+	// Inject a long history (60 messages) directly so the
+	// preflight sees ~5000 chars of input → ~1250 tokens,
+	// well past the 50-token threshold.
+	conv := g.getConversation("chat1")
+	conv.mu.Lock()
+	for i := 0; i < 30; i++ {
+		conv.messages = append(conv.messages,
+			llm.Message{Role: "user", Content: "user message " + string(rune('a'+i%26)) + " with extra padding to make this longer"},
+			llm.Message{Role: "assistant", Content: "assistant reply " + string(rune('a'+i%26)) + " with even more padding to push the count up"},
+		)
+	}
+	conv.mu.Unlock()
+
+	fake.rounds = [][]fakeChunk{{{content: "final", finish: "stop"}}}
+	var compacted CompactionResult
+	var compactedMu sync.Mutex
+	cb := Callbacks{
+		OnDelta: func(s string) error { return nil },
+		OnCompaction: func(r CompactionResult) {
+			compactedMu.Lock()
+			compacted = r
+			compactedMu.Unlock()
+		},
+	}
+	_, err := g.Reply(context.Background(), "chat1", "ping", cb)
+	require.NoError(t, err)
+	compactedMu.Lock()
+	defer compactedMu.Unlock()
+	assert.Greater(t, compacted.DroppedTurns, 0, "compaction should have fired on long history (got %d dropped, before=%d after=%d)", compacted.DroppedTurns, compacted.BeforeTokens, compacted.AfterTokens)
+	assert.LessOrEqual(t, len(g.getConversation("chat1").messages), 2*g.compaction.KeepRecent)
+}
+
+func TestGM_CompactionWithSummarizer_WritesToState(t *testing.T) {
+	g, fs, fake := newGMTestEnv(t)
+	g.compaction = CompactionConfig{ContextWindow: 100, Threshold: 0.5, KeepRecent: 2}
+	// Wire a summarizer that responds with a short fact list.
+	summaryLLM := &fakeLLM{}
+	summaryLLM.rounds = [][]fakeChunk{
+		{{content: "- Акацуки собраны (день 5)\n- Хокаге вызвал к себе", finish: "stop"}},
+	}
+	g.summarizer = NewSummarizer(summaryLLM,
+		llm.RoleConfig{Model: "summary", MaxTokens: 500, Temperature: 0.2},
+		"system-prompt", slowlog.Discard(), discardLogger())
+
+	// Long history.
+	conv := g.getConversation("chat1")
+	conv.mu.Lock()
+	for i := 0; i < 30; i++ {
+		conv.messages = append(conv.messages,
+			llm.Message{Role: "user", Content: "long user message " + string(rune('a'+i%26)) + " with padding"},
+			llm.Message{Role: "assistant", Content: "long assistant reply " + string(rune('a'+i%26)) + " with even more padding"},
+		)
+	}
+	conv.mu.Unlock()
+
+	fake.rounds = [][]fakeChunk{{{content: "ok", finish: "stop"}}}
+	_, err := g.Reply(context.Background(), "chat1", "ping", Callbacks{OnDelta: func(s string) error { return nil }})
+	require.NoError(t, err)
+
+	// state.md should have the new history section appended.
+	state, _ := fs.ReadRaw("worlds/naruto/state.md")
+	assert.Contains(t, state, "[history сжато", "summarizer should have appended a history block")
+	assert.Contains(t, state, "Акацуки собраны")
+	assert.Contains(t, state, "Хокаге вызвал")
 }
 
 type captureLLM struct {

@@ -19,20 +19,31 @@ type Sender struct {
 // IncomingMessage is the platform-agnostic representation of a user
 // message arriving at the bot.
 type IncomingMessage struct {
-	Sender  Sender
-	ChatID  string
-	Text    string
-	Command string
-	Args    []string
+	Sender Sender
+	ChatID string
+	Text   string
+	// MessageID is the platform-native id of the message. Used to
+	// thread bot replies back to the originating message on
+	// transports that support it (Telegram: reply_to_message_id).
+	// Zero on platforms that don't carry an id.
+	MessageID int
+	Command   string
+	Args      []string
 }
 
 // OutgoingMessage is what the bot wants to deliver to a chat. Edit
 // replaces the original message (used for streaming), Send posts a
 // new one.
 type OutgoingMessage struct {
-	ChatID  string
-	Text    string
+	ChatID    string
+	Text      string
 	ParseMode string
+	// ReplyToMessageID, when > 0, threads the outgoing message as
+	// a reply to the originating user message. Set to 0 for
+	// standalone messages (auto-save notifications, compaction
+	// notices, error pop-ups) that should appear as their own
+	// bubbles rather than riding the user's message thread.
+	ReplyToMessageID int
 }
 
 // StreamSession is opened by Edit and yields the chat id the bot can
@@ -66,8 +77,12 @@ type Client interface {
 
 	// StartStream opens a streaming session to the chat. The first
 	// call posts an empty placeholder; subsequent Append calls edit
-	// it. Final must be called exactly once.
-	StartStream(ctx context.Context, chatID string) (StreamSession, error)
+	// it. Final must be called exactly once. replyToMessageID,
+	// when > 0, threads the placeholder as a reply to the user's
+	// message on transports that support it (Telegram). Pass 0
+	// for transports that don't carry an originating id or when
+	// the operator disabled reply threading.
+	StartStream(ctx context.Context, chatID string, replyToMessageID int) (StreamSession, error)
 
 	// IsAllowed reports whether the sender id is permitted to drive
 	// the GM (per-messenger allow list lives in config).

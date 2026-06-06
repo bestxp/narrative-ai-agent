@@ -42,7 +42,7 @@ func (f *fakeClient) Send(ctx context.Context, msg OutgoingMessage) error {
 	return nil
 }
 
-func (f *fakeClient) StartStream(ctx context.Context, chatID string) (StreamSession, error) {
+func (f *fakeClient) StartStream(ctx context.Context, chatID string, replyToMessageID int) (StreamSession, error) {
 	return nil, nil
 }
 
