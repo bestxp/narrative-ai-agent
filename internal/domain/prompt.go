@@ -16,6 +16,14 @@ type PromptContext struct {
 	CharacterSOUL     string
 	CharacterSKILL    string
 	CharacterMemory   string
+	// CharacterSections lists `## <name>` headers
+	// currently present in the character's three
+	// files. Rendered into the system prompt so
+	// the model picks an existing section name
+	// (no guessing, no duplicates) when issuing
+	// `update_character`. Empty until the
+	// character has at least one file body.
+	CharacterSections string
 	World             string
 	WorldCanon        string
 	WorldState        string
@@ -76,6 +84,11 @@ func BuildSystemPrompt(staticRules string, ctx PromptContext, disableThinking ..
 		if ctx.CharacterMemory != "" {
 			b.WriteString("### Межмировые воспоминания\n")
 			b.WriteString(ctx.CharacterMemory)
+			b.WriteString("\n\n")
+		}
+		if ctx.CharacterSections != "" {
+			b.WriteString("### Доступные секции для `update_character`\n")
+			b.WriteString(ctx.CharacterSections)
 			b.WriteString("\n\n")
 		}
 	}

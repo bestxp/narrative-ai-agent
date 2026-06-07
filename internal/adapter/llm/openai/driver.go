@@ -159,7 +159,7 @@ func (d *Driver) Stream(ctx context.Context, req llm.ChatRequest, onChunk func(l
 	// complete ToolCall entries. OpenAI streams a function
 	// name on the first delta and arguments incrementally;
 	// downstream code expects the final, merged form.
-	acc := newToolAccumulator()
+	acc := newToolAccumulator(d.log)
 
 	for stream.Next() {
 		chunk := stream.Current()
@@ -396,10 +396,14 @@ type toolAccumulator struct {
 	// legacy driver only ever sees int, so we cast
 	// once on store.
 	buf map[int64]*llm.ToolCall
+	// log receives a warn line every time we drop
+	// a tool call whose accumulated Arguments are
+	// not a valid JSON object. nil disables the log.
+	log zerolog.Logger
 }
 
-func newToolAccumulator() *toolAccumulator {
-	return &toolAccumulator{buf: make(map[int64]*llm.ToolCall)}
+func newToolAccumulator(log zerolog.Logger) *toolAccumulator {
+	return &toolAccumulator{buf: make(map[int64]*llm.ToolCall), log: log}
 }
 
 func (a *toolAccumulator) merge(deltas []openaisdk.ChatCompletionChunkChoiceDeltaToolCall) []llm.ToolCall {
@@ -437,6 +441,48 @@ func (a *toolAccumulator) merge(deltas []openaisdk.ChatCompletionChunkChoiceDelt
 		changed = true
 	}
 	if !changed {
+		return nil
+	}
+	// Post-merge validation: a fully-accumulated
+	// tool call's Arguments field must be a valid
+	// JSON object (or null/empty for parameter-less
+	// tools). Ollama Cloud occasionally streams a
+	// double-wrapped or truncated value (e.g.
+	// `{"x": ...}{"y":...}` or `{"x": }`) which
+	// passes the per-delta filter above but blows
+	// up the openai-go SDK on the next turn when it
+	// tries to re-serialise the call into the
+	// conversation history. We drop the call here
+	// and surface a warning so the GM can fall back
+	// to the КОНТЕКСТ-директивы path. Only objects
+	// (and the literal "null") are accepted — a
+	// truncated or duplicated JSON is a hard
+	// reject, never a partial rescue.
+	dropped := 0
+	for idx, e := range a.buf {
+		if e.Function.Arguments == "" {
+			continue
+		}
+		var probe map[string]any
+		if err := json.Unmarshal([]byte(e.Function.Arguments), &probe); err != nil {
+			delete(a.buf, idx)
+			dropped++
+		}
+	}
+	if dropped > 0 {
+		if l := a.log; l.GetLevel() != zerolog.Disabled {
+			// One line per dropped call is enough —
+			// the operator can rerun the same prompt
+			// against the slowlog to inspect the
+			// raw deltas. We do not include the
+			// arguments because they may contain
+			// PII the model was relaying.
+			l.Warn().
+				Int("dropped", dropped).
+				Msg("openai.llm: dropped tool calls with invalid arguments JSON (Ollama double-wrap / truncation)")
+		}
+	}
+	if len(a.buf) == 0 {
 		return nil
 	}
 	out := make([]llm.ToolCall, 0, len(a.buf))

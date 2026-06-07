@@ -484,3 +484,55 @@ func TestGM_EmptyContentRetryDisabled(t *testing.T) {
 	assert.Equal(t, 1, fake.calls, "MaxEmptyRetries=0 disables auto-retry")
 	assert.Equal(t, "⚠️ модель не вернула ответ — попробуй ещё раз", got.String())
 }
+
+// TestGM_RetryWithToolCallsNudge covers the
+// minimax-m3:cloud "broken tool_calls" recovery path:
+// the first round finishes with finish="tool_calls"
+// but the dropped accumulator leaves us with no
+// surviving tool calls and no visible content. The
+// retry must append a synthetic user message
+// nudging the model to skip native tool calls and
+// use the КОНТЕКСТ-директивы path instead. We assert
+// the second Stream call's messages slice contains
+// the nudge text.
+func TestGM_RetryWithToolCallsNudge(t *testing.T) {
+	g, _, fake := newGMTestEnv(t)
+	// Round 0: headless tool call (broken stream) +
+	// finish="tool_calls". allToolCallsBroken trips,
+	// toolCalls reset to nil, content buffer is empty,
+	// finish reason is "tool_calls" — the nudge flag
+	// is set for the retry.
+	fake.rounds = [][]fakeChunk{
+		{
+			{toolID: "call_X", toolName: "", toolArgs: `{`, finish: "tool_calls"},
+		},
+		// Round 1: model recovers with a proper reply.
+		{
+			{content: "**диалоги и действия**\nok\n\n**КОНТЕКСТ И ИЗМЕНЕНИЯ**\nбез изменений\n\n**БУДУЩЕЕ**\n- продолжение\n\n**ВАЛИДАЦИЯ ПРАВИЛ**\n- ok"},
+			{finish: "stop"},
+		},
+	}
+	// Use captureLLM so we can inspect the second-call
+	// messages slice for the nudge.
+	var firstMsgs, secondMsgs []llm.Message
+	captured := &captureLLM{run: func(req llm.ChatRequest, onChunk func(llm.Chunk) error) error {
+		if len(firstMsgs) == 0 {
+			firstMsgs = req.Messages
+		} else {
+			secondMsgs = req.Messages
+		}
+		return fake.Stream(context.Background(), req, onChunk)
+	}}
+	g.llm = captured
+	var got strings.Builder
+	_, err := g.Reply(context.Background(), "chat1", "ping", deltaOnly(&got))
+	require.NoError(t, err)
+	require.NotEmpty(t, secondMsgs, "second round must have been issued")
+	// The second round's last message is the nudge.
+	last := secondMsgs[len(secondMsgs)-1]
+	assert.Equal(t, "user", last.Role)
+	assert.Contains(t, last.Content, "Предыдущий вызов tool_calls не прошёл парсинг")
+	assert.Contains(t, last.Content, "КОНТЕКСТ")
+	// And the visible reply must have been recovered.
+	assert.Contains(t, got.String(), "ответ восстановлен после повтора")
+}

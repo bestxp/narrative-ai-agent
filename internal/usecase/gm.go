@@ -16,6 +16,7 @@ import (
 	"narrative/internal/domain"
 	"narrative/internal/slowlog"
 	"narrative/internal/structured"
+	"narrative/internal/usecase/tools/files"
 )
 
 // LLMClient is the minimal surface GM needs from the LLM. It
@@ -545,7 +546,21 @@ func (g *GM) Reply(ctx context.Context, chatID, userText string, cb Callbacks) (
 					return totals, nil
 				}
 				for attempt := 1; attempt <= g.role.MaxEmptyRetries; attempt++ {
-					retryText, retryUsage, retryRawTrace, retryErr := g.retryEmptyOnce(ctx, messages, g.role.EmptyRetryTimeoutSeconds)
+					// If the first round's finish reason
+					// was "tool_calls" the model did
+					// intend to act — likely a broken
+					// JSON in the arguments. Pass a
+					// nudge so the retry steers the
+					// model back to the КОНТЕКСТ-
+					// директивы path (which the parser
+					// also handles) instead of repeating
+					// the same broken tool call. We only
+					// nudge once (attempt==1); if the
+					// nudge itself comes back empty we
+					// fall through to the placeholder
+					// rather than accumulating hints.
+					nudge := attempt == 1 && finishReason == "tool_calls"
+					retryText, retryUsage, retryRawTrace, retryErr := g.retryEmptyOnce(ctx, messages, g.role.EmptyRetryTimeoutSeconds, nudge)
 					totals.PromptTokens += retryUsage.PromptTokens
 					totals.CompletionTokens += retryUsage.CompletionTokens
 					totals.TotalTokens += retryUsage.TotalTokens
@@ -1030,9 +1045,17 @@ func parseDirectiveLine(line string) (extractedCommand, bool) {
 		}, true
 	case strings.HasPrefix(lower, "update_character:"):
 		body := strings.TrimSpace(stripped[len("update_character:"):])
+		// "file=SOUL, section=внешность, append=..." — the
+		// comma form is what the prompt recommends
+		// (short, one fact per directive, three keys).
+		// We also accept the semicolon form for
+		// robustness, since older turns may have used
+		// it. parseMixedPairs tries ";" first, then
+		// "," — whichever gives us all three keys wins.
+		args := parseMixedPairs(body)
 		return extractedCommand{
 			Kind: "update_character",
-			Args: parseSemicolonPairs(body),
+			Args: args,
 		}, true
 	case strings.HasPrefix(lower, "create_npc:"):
 		body := strings.TrimSpace(stripped[len("create_npc:"):])
@@ -1148,52 +1171,98 @@ func splitOnColon(s string) (string, string, bool) {
 // parseSemicolonPairs reads "k1=v1; k2=v2" into a map.
 // Keys are lower-cased and trimmed. Empty entries are
 // dropped. Quoted values have the quotes stripped.
+// parseSemicolonPairs splits `s` on ";" and
+// interprets each chunk as a `key=value` pair. Chunks
+// without an "=" are treated as a continuation of
+// the previous pair's value (joined with the same
+// separator) so that a model can write
+// "append=киокушинкай, муай-тай" with a comma inside
+// the value without breaking the split. Keys are
+// lower-cased; surrounding quotes are stripped from
+// values.
 func parseSemicolonPairs(s string) map[string]string {
-	out := map[string]string{}
-	for _, part := range strings.Split(s, ";") {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			continue
-		}
-		idx := strings.Index(part, "=")
-		if idx < 0 {
-			continue
-		}
-		key := strings.ToLower(strings.TrimSpace(part[:idx]))
-		val := strings.TrimSpace(part[idx+1:])
-		val = strings.Trim(val, "\"'«»")
-		if key != "" {
-			out[key] = val
-		}
-	}
-	return out
+	return parseKeyValuePairs(s, ";")
 }
 
 // parseCommaPairs is the comma-separated sibling of
 // parseSemicolonPairs. Used for append_lore where the
 // model writes "header=X, bullet=Y" rather than the
-// semicolon form. Same rules apply (lower-case keys,
-// strip quotes). Empty values are kept (the model may
-// use a placeholder we want to surface as a warning).
+// semicolon form. Same continuation rule as
+// parseSemicolonPairs: chunks without "=" join the
+// previous value with the same separator, so a
+// comma inside the value (e.g.
+// "append=рамен, суши") is preserved verbatim.
 func parseCommaPairs(s string) map[string]string {
+	return parseKeyValuePairs(s, ",")
+}
+
+// parseKeyValuePairs is the shared backend for the
+// two separators. The "continuation" behaviour is
+// what makes this robust against values that happen
+// to contain the separator character: a bare chunk
+// (no "=") is appended to the most recent value with
+// the separator re-inserted, instead of being
+// silently dropped. Empty chunks are skipped.
+func parseKeyValuePairs(s, sep string) map[string]string {
 	out := map[string]string{}
-	for _, part := range strings.Split(s, ",") {
+	var lastKey string
+	for _, part := range strings.Split(s, sep) {
 		part = strings.TrimSpace(part)
 		if part == "" {
 			continue
 		}
 		idx := strings.Index(part, "=")
 		if idx < 0 {
+			// Bare chunk — append to previous value
+			// if we have one. We re-insert the
+			// separator (with surrounding spaces)
+			// so the original phrasing survives.
+			if lastKey == "" {
+				continue
+			}
+			out[lastKey] = out[lastKey] + sep + " " + part
 			continue
 		}
 		key := strings.ToLower(strings.TrimSpace(part[:idx]))
 		val := strings.TrimSpace(part[idx+1:])
 		val = strings.Trim(val, "\"'«»")
-		if key != "" {
-			out[key] = val
+		if key == "" {
+			continue
 		}
+		out[key] = val
+		lastKey = key
 	}
 	return out
+}
+
+// parseMixedPairs tries both separators and returns
+// whichever yields more recognised keys. Used for
+// update_character, where the prompt's recommended
+// form is comma-separated ("file=SOUL, section=внешность,
+// append=...") but older turns may have used the
+// semicolon form ("file=SOUL; section=внешность;
+// append=..."). Picking the side with more populated
+// keys avoids the trap where a single value contains
+// both separators (e.g. an "append" text with a
+// comma) and the wrong split eats the value. An
+// empty parse result never wins over a non-empty
+// one — otherwise a ";"-less body that contains
+// only "," would collapse to an empty semicolon
+// split (zero keys) and "beat" the comma split
+// (three keys) under a naive >= comparison.
+func parseMixedPairs(s string) map[string]string {
+	semi := parseSemicolonPairs(s)
+	comma := parseCommaPairs(s)
+	if len(semi) == 0 {
+		return comma
+	}
+	if len(comma) == 0 {
+		return semi
+	}
+	if len(semi) >= len(comma) {
+		return semi
+	}
+	return comma
 }
 
 // executeExtractedCommands runs every directive the parser
@@ -1449,6 +1518,19 @@ func (g *GM) buildContextPrompt() (string, error) {
 		CharacterSOUL:     safeRead(g.fs, "characters/"+sc.Character+"/SOUL.md"),
 		CharacterSKILL:    safeRead(g.fs, "characters/"+sc.Character+"/SKILL.md"),
 		CharacterMemory:   safeRead(g.fs, "characters/"+sc.Character+"/memory.md"),
+		// Inject the operator's actual section
+		// vocabulary into the prompt so the model
+		// picks an existing `## <name>` rather
+		// than inventing one. Without this block
+		// the model guesses ("внешность",
+		// "ресурсы") and Append happily creates a
+		// new header next to the existing
+		// "Истинная сущность" / "Философия" one.
+		CharacterSections: files.FormatSectionList(
+			safeRead(g.fs, "characters/"+sc.Character+"/SOUL.md"),
+			safeRead(g.fs, "characters/"+sc.Character+"/SKILL.md"),
+			safeRead(g.fs, "characters/"+sc.Character+"/memory.md"),
+		),
 		WorldCanon:        safeRead(g.fs, "worlds/"+sc.World+"/canon.md"),
 		WorldState:        safeRead(g.fs, "worlds/"+sc.World+"/state.md"),
 		WorldLore:         safeRead(g.fs, "worlds/"+sc.World+"/lore.md"),
@@ -1893,22 +1975,29 @@ func (g *GM) missingFormatHeaders(text string) []string {
 	return missing
 }
 
-// retryEmptyOnce re-issues the exact same LLM request that
-// just produced 0 content. The two cloud-Ollama cases that
-// motivated this — the minimax-m3:cloud deployment returning
-// 4 chunks of `delta.content: ""` and then `finish_reason:
-// stop`, and the o1 family occasionally returning an empty
-// stop frame after a long thinking phase — both recover on
-// the second attempt. The retry is byte-for-byte identical
-// to the original (same messages, same temperature, same
-// tools); the only thing that changes is the model gets
-// another chance to emit visible text.
+// retryEmptyOnce re-issues the LLM request that just
+// produced 0 content (and 0 surviving tool calls).
+// Two cases motivate this:
 //
-// Returned: the assistant text (may still be empty), the
-// token usage, the raw SSE trace (so the slowlog can
-// diagnose a second empty round), and the stream error if
-// any.
-func (g *GM) retryEmptyOnce(ctx context.Context, messages []llm.Message, timeoutSec int) (string, TokenUsage, []string, error) {
+//  1. The cloud-Ollama deployment returning 4 chunks
+//     of `delta.content: ""` and then `finish_reason:
+//     stop` — recovers on the second attempt.
+//  2. minimax-m3:cloud emitting a native `tool_calls`
+//     round whose arguments are not valid JSON (Ollama
+//     double-wrap / truncation). The driver drops the
+//     broken calls, the GM is left with an empty
+//     content, and re-issuing the SAME prompt yields
+//     the same broken calls. We nudge the model by
+//     appending a synthetic user message asking it to
+//     skip tool calls and write the directives inline
+//     in the КОНТЕКСТ block instead — the parser picks
+//     them up the same way.
+//
+// Returned: the assistant text (may still be empty),
+// the token usage, the raw SSE trace (so the slowlog
+// can diagnose a second empty round), and the stream
+// error if any.
+func (g *GM) retryEmptyOnce(ctx context.Context, messages []llm.Message, timeoutSec int, nudgeToolCallsOff bool) (string, TokenUsage, []string, error) {
 	var (
 		buf          strings.Builder
 		usageFromAPI llm.Usage
@@ -1921,9 +2010,28 @@ func (g *GM) retryEmptyOnce(ctx context.Context, messages []llm.Message, timeout
 	if g.tracking == "" || g.tracking == "off" {
 		totals.Source = "off"
 	}
+	outMsgs := messages
+	if nudgeToolCallsOff {
+		// Append (do not replace) a synthetic user
+		// turn that asks the model to skip native
+		// tool calls on this retry. We add a
+		// distinct marker in the prompt so the
+		// model treats it as a one-shot hint rather
+		// than a system rule. The parser does not
+		// see this — it never touches a messages
+		// slice, only the rendered content.
+		hint := "[system note] Предыдущий вызов tool_calls не прошёл парсинг аргументов " +
+			"на стороне драйвера. На этой попытке НЕ используй native tool_calls — " +
+			"верни только текстовый ответ: 4-блочный markdown (Режим B) или JSON " +
+			"с полями narration/context/future/validation (Режим A). Если нужно " +
+			"обновить character-файлы — пиши маркеры в поле `context` или в блок " +
+			"**КОНТЕКСТ И ИЗМЕНЕНИЯ**: ⦁ update_character: file=SOUL, section=..., " +
+			"append=..."
+		outMsgs = append(outMsgs, llm.Message{Role: "user", Content: hint})
+	}
 	streamErr := g.llm.Stream(ctx, llm.ChatRequest{
 		Model:          g.role.Model,
-		Messages:       messages,
+		Messages:       outMsgs,
 		Tools:          g.toolSpecs,
 		Temperature:    g.role.Temperature,
 		MaxTokens:      g.role.MaxTokens,

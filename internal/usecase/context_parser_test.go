@@ -188,6 +188,46 @@ func TestExtractContextCommands_UpdateCharacter(t *testing.T) {
 	assert.Equal(t, "киокушинкай, муай-тай", cmds[0].Args["append"])
 }
 
+// TestExtractContextCommands_UpdateCharacterCommaForm
+// covers the comma-separated shape the prompt
+// recommends. parseMixedPairs must pick the comma
+// split when the body uses commas (otherwise the
+// whole thing collapses into one key with the rest
+// as its value, which is exactly the bug the mixed
+// parser was introduced to fix).
+func TestExtractContextCommands_UpdateCharacterCommaForm(t *testing.T) {
+	body := `**КОНТЕКСТ И ИЗМЕНЕНИЯ**
+⦁ update_character: file=SOUL, section=внешность, append=стандартная форма шиноби Конохи, сидит по фигуре`
+	cmds := extractContextCommands(body)
+	require.Len(t, cmds, 1)
+	assert.Equal(t, "update_character", cmds[0].Kind)
+	assert.Equal(t, "SOUL", cmds[0].Args["file"])
+	assert.Equal(t, "внешность", cmds[0].Args["section"])
+	assert.Equal(t, "стандартная форма шиноби Конохи, сидит по фигуре", cmds[0].Args["append"])
+}
+
+// TestExtractContextCommands_UpdateCharacterMultiple
+// covers the recommended pattern from the strengthened
+// prompt: one player fact (outfit + spended + emotions)
+// → multiple update_character directives in one
+// КОНТЕКСТ block. All must be parsed, in order, with
+// the comma form.
+func TestExtractContextCommands_UpdateCharacterMultiple(t *testing.T) {
+	body := `**КОНТЕКСТ И ИЗМЕНЕНИЯ**
+⦁ update_character: file=SOUL, section=внешность, append=одет в форму шиноби
+⦁ update_character: file=SKILL, section=снаряжение, append=2 куная в кобуре
+⦁ update_character: file=SKILL, section=ресурсы, append=потрачено 540 рё из 5000
+⦁ update_character: file=memory, section=эмоции, append=костюм нравится`
+	cmds := extractContextCommands(body)
+	require.Len(t, cmds, 4)
+	assert.Equal(t, []string{"SOUL", "SKILL", "SKILL", "memory"},
+		[]string{cmds[0].Args["file"], cmds[1].Args["file"], cmds[2].Args["file"], cmds[3].Args["file"]})
+	assert.Equal(t, "одет в форму шиноби", cmds[0].Args["append"])
+	assert.Equal(t, "2 куная в кобуре", cmds[1].Args["append"])
+	assert.Equal(t, "потрачено 540 рё из 5000", cmds[2].Args["append"])
+	assert.Equal(t, "костюм нравится", cmds[3].Args["append"])
+}
+
 func TestExtractContextCommands_RawPreserved(t *testing.T) {
 	body := `**КОНТЕКСТ И ИЗМЕНЕНИЯ**
 ⦁ update_npc: Хината — статус: смущена`
