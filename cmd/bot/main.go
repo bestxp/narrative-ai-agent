@@ -16,6 +16,7 @@ import (
 
 	"narrative/internal/adapter/gitops"
 	"narrative/internal/adapter/llm"
+	llmopenai "narrative/internal/adapter/llm/openai"
 	"narrative/internal/adapter/storage"
 	"narrative/internal/config"
 	"narrative/internal/dispatcher"
@@ -25,6 +26,7 @@ import (
 	"narrative/internal/messaging/telegram"
 	promptpkg "narrative/internal/prompts"
 	"narrative/internal/slowlog"
+	"narrative/internal/structured"
 	"narrative/internal/usecase"
 )
 
@@ -90,18 +92,74 @@ func main() {
 	if err != nil {
 		log.Fatal().Err(err).Str("path", role.SystemPromptPath).Msg("read system prompt")
 	}
-	llmCli := llm.New(llm.RoleConfig{
-		APIURL:                  role.APIURL,
-		APIKey:                  role.APIKey,
-		Model:                   role.Model,
-		MaxTokens:               role.MaxTokens,
-		Temperature:             role.Temperature,
-		RequestTimeoutSeconds:   role.RequestTimeoutSeconds,
-		DisableThinking:         role.DisableThinking,
-		ReasoningEffort:         role.ReasoningEffort,
-		MaxEmptyRetries:         role.MaxEmptyRetries,
-		EmptyRetryTimeoutSeconds: role.EmptyRetryTimeoutSeconds,
-	}, log)
+	// Build the LLM driver. Two implementations are
+	// supported:
+	//   - legacy: custom HTTP+JSON client in
+	//     internal/adapter/llm. The default; used in
+	//     production for months.
+	//   - openai: openai-go v3 SDK
+	//     (github.com/openai/openai-go/v3). Same wire
+	//     format, full feature coverage (strict tools,
+	//     json_schema, reasoning_effort, include_usage
+	//     streaming). The two are interchangeable from
+	//     the GM's point of view because both implement
+	//     llm.Driver.
+	//
+	// The choice is per-process, not per-role: drivers
+	// are constructed at boot and serve every chat
+	// turn for the lifetime of the bot. Per-role
+	// overrides would force us to keep two parallel
+	// driver instances in memory.
+	var driver llm.Driver
+	switch cfg.LLM.Driver {
+	case "", "legacy":
+		driver = llm.New(llm.RoleConfig{
+			APIURL:                  role.APIURL,
+			APIKey:                  role.APIKey,
+			Model:                   role.Model,
+			MaxTokens:               role.MaxTokens,
+			Temperature:             role.Temperature,
+			RequestTimeoutSeconds:   role.RequestTimeoutSeconds,
+			DisableThinking:         role.DisableThinking,
+			ReasoningEffort:         role.ReasoningEffort,
+			MaxEmptyRetries:         role.MaxEmptyRetries,
+			EmptyRetryTimeoutSeconds: role.EmptyRetryTimeoutSeconds,
+		}, log)
+		log.Info().Str("driver", "legacy").Str("model", role.Model).Msg("llm driver ready")
+	case "openai":
+		driver = llmopenai.New(llm.RoleConfig{
+			APIURL:                role.APIURL,
+			APIKey:                role.APIKey,
+			Model:                 role.Model,
+			MaxTokens:             role.MaxTokens,
+			Temperature:           role.Temperature,
+			RequestTimeoutSeconds: role.RequestTimeoutSeconds,
+			DisableThinking:       role.DisableThinking,
+			ReasoningEffort:       role.ReasoningEffort,
+			// MaxEmptyRetries / EmptyRetryTimeoutSeconds
+			// are not relevant to the driver layer —
+			// they are applied by the GM around the
+			// Stream call.
+		}, llm.StructuredOutputConfig{
+			Mode:         cfg.LLM.StructuredOutput.Mode,
+			Schema:       cfg.LLM.StructuredOutput.Schema,
+			SchemaName:   cfg.LLM.StructuredOutput.SchemaName,
+			ToolChoice:   cfg.LLM.StructuredOutput.ToolChoice,
+			StrictTools:  cfg.LLM.StructuredOutput.StrictTools,
+		}, log)
+		log.Info().Str("driver", "openai").Str("model", role.Model).Msg("llm driver ready")
+	default:
+		log.Fatal().Str("driver", cfg.LLM.Driver).Msg("unknown llm.driver; expected legacy|openai")
+	}
+	// The usecase layer (gm, summarizer) depends on a
+	// narrow LLMClient interface that does not include
+	// Close. Wrap the driver in a tiny adapter that
+	// implements just the methods we need; this keeps
+	// the usecase surface stable while the driver
+	// contract grows (openai-go pooled resources live
+	// in main.go's responsibility).
+	llmCli := driverClient{driver: driver}
+	defer driver.Close()
 	ss := usecase.NewSessionStartWithLogger(fs, log)
 	fl := usecase.NewFirstLaunchWithLogger(fs, log)
 	sysSt := usecase.NewSystemState(fs, log, slow)
@@ -379,12 +437,62 @@ func handleIncoming(ctx context.Context, log zerolog.Logger, c messaging.Client,
 		lastTok  usecase.TokenUsage
 		tokMu    sync.Mutex
 		textSeen bool
+		// jsonMode is true once the first chunk looks
+		// like a JSON object (response_format=json_object
+		// path). When set, OnDelta suppresses intermediate
+		// updates because the player should not see raw
+		// JSON streaming in. We accumulate silently and
+		// emit a single rendered 4-block markdown at Final
+		// time (see postStreamRender below).
+		jsonMode bool
 	)
+
+	// postStreamRender converts the accumulated replyBuf
+	// into the 4-block markdown the player sees. For JSON
+	// (jsonObject mode) it parses the model output via
+	// the structured package and re-emits the canonical
+	// "**диалоги и действия** / КОНТЕКСТ / БУДУЩЕЕ /
+	// ВАЛИДАЦИЯ ПРАВИЛ" block layout. For legacy markdown
+	// the buffer is passed through unchanged. The render
+	// never strips rules — that is stripRules' job, the
+	// same way it has been for months.
+	postStreamRender := func() string {
+		raw := replyBuf.String()
+		if jsonMode {
+			n, err := structured.Parse(raw)
+			if err != nil {
+				// Fallback: surface the raw content
+				// so the player still sees something.
+				// The slowlog already records the parse
+				// failure for the operator.
+				log.Warn().Err(err).Int("chars", len(raw)).Msg("json parse failed; sending raw")
+				return raw
+			}
+			return n.Render()
+		}
+		return raw
+	}
 
 	cb := usecase.Callbacks{
 		OnDelta: func(s string) error {
 			textSeen = true
 			replyBuf.WriteString(s)
+			if !jsonMode && structured.LooksLikeJSON(replyBuf.String()) {
+				// First time we see a JSON-looking
+				// payload: switch to silent mode. We
+				// also force a re-render of the
+				// placeholder (a "…" that the player
+				// was seeing becomes a single dot
+				// replaced at Final time).
+				jsonMode = true
+				return nil
+			}
+			if jsonMode {
+				// Silent accumulation. The Final
+				// call below will deliver the
+				// rendered markdown in one shot.
+				return nil
+			}
 			if session != nil {
 				return session.Append(ctx, stripRules(replyBuf.String()))
 			}
@@ -448,7 +556,7 @@ func handleIncoming(ctx context.Context, log zerolog.Logger, c messaging.Client,
 		return
 	}
 
-	final := stripRules(replyBuf.String())
+	final := stripRules(postStreamRender())
 	tokMu.Lock()
 	tok := lastTok
 	tokMu.Unlock()
@@ -589,3 +697,20 @@ func recv(c messaging.Client) <-chan messaging.IncomingMessage {
 }
 
 var _ = fmt.Sprintf
+
+// driverClient adapts an llm.Driver (which has both Stream
+// and Close) to the narrower usecase.LLMClient interface
+// (Stream only). The usecase layer is unaware of driver
+// lifetimes; main.go owns Close and runs it on shutdown via
+// the deferred driver.Close() in main.
+//
+// We keep this in main rather than in internal/adapter/llm
+// because it is a one-line shim and adding a package would
+// be heavier than the problem warrants.
+type driverClient struct {
+	driver llm.Driver
+}
+
+func (d driverClient) Stream(ctx context.Context, req llm.ChatRequest, onChunk func(llm.Chunk) error) error {
+	return d.driver.Stream(ctx, req, onChunk)
+}

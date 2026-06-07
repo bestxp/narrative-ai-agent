@@ -114,6 +114,17 @@ type ChatRequest struct {
 	// rounds when the model is mid-thought and the
 	// provider is slow under load.
 	TimeoutSeconds int `json:"-"`
+	// Extra is an out-of-band bag for per-request
+	// overrides that do not belong on the public
+	// ChatRequest struct (so the legacy wire format
+	// stays unchanged). The openai-go driver reads
+	// fields like "openai.response_format" from here
+	// to wire response_format / tool_choice / strict
+	// tools per call without polluting the request
+	// type with conditional fields. Callers that do
+	// not set Extra have it default to nil and the
+	// driver falls back to its role-level defaults.
+	Extra map[string]any `json:"-"`
 }
 
 // ToolSchema is the public-facing tool declaration. We accept the
@@ -189,6 +200,18 @@ func New(role RoleConfig, log zerolog.Logger) *Client {
 		log:  log.With().Str("component", "llm").Str("model", role.Model).Logger(),
 	}
 }
+
+// Close releases the underlying *http.Client. The legacy
+// transport has no pooled keep-alive connections beyond
+// what *http.Client holds, so Close is a no-op kept for
+// symmetry with the openai-go driver (which has its own
+// connection pool). Calling Close more than once is safe.
+func (c *Client) Close() error { return nil }
+
+// Compile-time guarantee that the legacy *Client satisfies the
+// Driver interface. If we change either signature the build
+// fails here rather than at the call site in cmd/bot/main.go.
+var _ Driver = (*Client)(nil)
 
 // Stream calls /chat/completions with stream=true and invokes onChunk
 // for every parsed SSE delta. The callback returns an error to abort

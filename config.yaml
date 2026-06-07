@@ -68,7 +68,12 @@ git:
 # narrative: поведенческая обёртка GM — лимит слов и язык ответов.
 # ----------------------------------------------------------------------------
 narrative:
-  word_limit: 250   # Мягкий лимит на длину ответа (правило "~200 слов")
+  # Мягкий лимит на размер поля `narration` в JSON-режиме
+  # (или блока "диалоги и действия" в markdown). 250 слов —
+  # комфортный потолок для 2-3 абзацев нарратива. В
+  # narrative.md жёсткий лимит 150, GM-валидатор использует
+  # это число при проверке.
+  word_limit: 250
   language: "ru"    # Язык, на котором GM пишет
   # rules_check_block: показывать ли игроку LLM-генерируемый блок
   # "**ВАЛИДАЦИЯ ПРАВИЛ**" (лимит слов, NPC isolation, обновлённые файлы).
@@ -103,10 +108,70 @@ llm:
   #   "estimate" — грубо: len(text) / 4 (работает на любом API)
   #   "usage"    — брать usage из ответа провайдера; если его нет —
   #                fallback в estimate + warn в slowlog
+  #
+  # С openai-драйвером и stream_options.include_usage=true
+  # (wire default) Ollama Cloud шлёт usage на последнем chunk
+  # → "usage" даёт точные цифры. Legacy driver без
+  # include_usage → usage пустой, fallback в estimate.
+  # Текущее значение "estimate" — универсальный safe default,
+  # можно переключить на "usage" после проверки slow.log.
   token_tracking: "estimate"
   # include_in_reply: дописать "🔢 ~123 tok" в конец ответа GM.
   # Независимо от этого slowlog всё равно пишет фактические числа.
   include_in_reply: true
+  # driver: какую реализацию LLM-клиента использовать.
+  #   "legacy" — самописный HTTP+JSON клиент в internal/adapter/llm.
+  #              Default; без structured output, markdown-режим.
+  #   "openai"  — openai-go v3 SDK (internal/adapter/llm/openai).
+  #               Поддерживает strict tools, response_format,
+  #               reasoning_effort, include_usage streaming.
+  #               Включает автоматический structured output для
+  #               4-блочного narrative (narration/context/future/validation)
+  #               через response_format=json_object.
+  #               Требует narrative.md с описанием JSON-формата
+  #               (Режим A в начале файла).
+  # Обе реализации совместимы по wire-формату; переключение в одно поле.
+  driver: "openai"
+  # structured_output: режим структурированного вывода для openai-драйвера.
+  # legacy-драйвер игнорирует эту секцию.
+  #
+  # Режимы (выбрано по результатам probe на https://ollama.com/v1
+  # на 3 моделях — см. cmd/test-openapi):
+  #
+  #   "off"        — НЕ использовать response_format. Модель пишет
+  #                  markdown как раньше. Fallback для провайдеров
+  #                  без поддержки JSON mode.
+  #
+  #   "json_object" — response_format.type="json_object". Модель
+  #                  выдаёт чистый JSON-объект с 4 полями
+  #                  (narration/context/future/validation),
+  #                  описанными в system prompt. **РАБОТАЕТ
+  #                  стабильно** на Ollama Cloud (minimax-m3:cloud
+  #                  и nemotron-3-ultra:cloud) — модель следует
+  #                  инструкциям из system prompt, выдаёт чистый
+  #                  JSON без fence wrap. GM парсит ответ
+  #                  (internal/structured) и рендерит в тот же
+  #                  4-блочный markdown, что и legacy. Игрок не
+  #                  видит разницы в форматировании.
+  #
+  #   "json_schema" — response_format с strict json_schema.
+  #                  **НЕ РАБОТАЕТ** на Ollama Cloud
+  #                  (minimax-m3:cloud / nemotron-3-ultra:cloud) —
+  #                  модель игнорирует schema, придумывает
+  #                  свою ("title"/"setting"/"characters"/...),
+  #                  иногда оборачивает в ```json fence.
+  #                  Будет работать на OpenAI strict mode
+  #                  (gpt-4o-2024-08-06+) и OpenRouter strict
+  #                  — оставлено для будущей миграции провайдера.
+  #
+  # tool_choice и strict_tools: НЕ работают на Ollama Cloud,
+  # модель полностью игнорирует. Оставлено auto / false —
+  # legacy-путь (парсинг КОНТЕКСТ блока в narrative.md).
+  structured_output:
+    mode: "json_object"        # off | json_object | json_schema
+    schema_name: "narrative_response"
+    tool_choice: "auto"        # auto | required | none | function:<name>
+    strict_tools: false        # Ollama Cloud игнорирует strict tools
 
   roles:
     # --------------------------------------------------------------------
@@ -125,7 +190,11 @@ llm:
       # Укажите путь, чтобы переопределить без пересборки
       # бинаря (полезно для A/B-тестов новых промптов).
       system_prompt_path: ""
-      # Потолок длины ответа. Для нарратива 1200-2000 — комфортно.
+      # Потолок длины ответа. В JSON-режиме это 4 поля
+      # (~150 слов нарратив + 3 коротких служебных блока) =
+      # ~500-700 токенов. 1500 оставлено с запасом на случай
+      # длинных сцен (объединение нескольких ходов в один
+      # ответ) и reasoning-padding у провайдера.
       max_tokens: 1500
       # 0.7-0.9 — нарративная проза. Для сжатия лучше 0.2-0.3.
       temperature: 0.8
@@ -168,7 +237,11 @@ llm:
       # Если задан — имеет приоритет над disable_thinking.
       # Используй для моделей, которые не понимают "none"
       # (GPT-OSS) — для них передай "low".
-      # reasoning_effort: ""
+      # По умолчанию "none" — бот уже отключает thinking
+      # через disable_thinking, но явное поле делает поведение
+      # прозрачным в slow.log и не зависит от default-mapping
+      # в коде.
+      reasoning_effort: "none"
 
     # --------------------------------------------------------------------
     # summary: дешёвая модель для сжатия диалогов при компактинге.

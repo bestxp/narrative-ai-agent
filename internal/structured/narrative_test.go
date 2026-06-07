@@ -1,0 +1,163 @@
+package structured
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+const fullJSON = `{
+  "narration": "Хината вздрогнула, отступила. Уши — алые.",
+  "context": "state.md обновлён; update_npc: Хината — статус: смущена",
+  "future": "Компания доберётся до Ичираку, обед",
+  "validation": "Лимит слов: 80/150, NPC isolation: ок"
+}`
+
+func TestParse_OK(t *testing.T) {
+	n, err := Parse(fullJSON)
+	require.NoError(t, err)
+	assert.Equal(t, "Хината вздрогнула, отступила. Уши — алые.", n.Narration)
+	assert.Equal(t, "state.md обновлён; update_npc: Хината — статус: смущена", n.Context)
+	assert.Equal(t, "Компания доберётся до Ичираку, обед", n.Future)
+	assert.Equal(t, "Лимит слов: 80/150, NPC isolation: ок", n.Validation)
+}
+
+func TestParse_StripsFence(t *testing.T) {
+	fenced := "```json\n" + fullJSON + "\n```"
+	n, err := Parse(fenced)
+	require.NoError(t, err)
+	assert.Equal(t, "Хината вздрогнула, отступила. Уши — алые.", n.Narration)
+}
+
+func TestParse_StripsFenceNoLang(t *testing.T) {
+	fenced := "```\n" + fullJSON + "\n```"
+	n, err := Parse(fenced)
+	require.NoError(t, err)
+	assert.Equal(t, "Хината вздрогнула, отступила. Уши — алые.", n.Narration)
+}
+
+func TestParse_NotJSON(t *testing.T) {
+	_, err := Parse("**диалоги и действия**\n— Хината вздрогнула...")
+	assert.ErrorIs(t, err, ErrNotJSON)
+}
+
+func TestParse_Empty(t *testing.T) {
+	_, err := Parse("")
+	assert.ErrorIs(t, err, ErrNotJSON)
+}
+
+func TestParse_Whitespace(t *testing.T) {
+	_, err := Parse("   \n\t  ")
+	assert.ErrorIs(t, err, ErrNotJSON)
+}
+
+func TestParse_InvalidJSON(t *testing.T) {
+	// Looks like JSON (starts with '{') but is malformed.
+	// Should NOT return ErrNotJSON — it should return a
+	// wrapped Unmarshal error so the GM can log it
+	// (versus silently falling back to markdown).
+	_, err := Parse(`{"narration": "broken`)
+	assert.NotNil(t, err)
+	assert.NotErrorIs(t, err, ErrNotJSON)
+}
+
+func TestLooksLikeJSON(t *testing.T) {
+	cases := []struct {
+		in   string
+		want bool
+	}{
+		{`{"a":1}`, true},
+		{"  \n  {\"a\":1}", true},
+		{"```json\n{}\n```", true},
+		{"**диалоги**", false},
+		{"", false},
+		{"hello", false},
+		{"  hello", false},
+	}
+	for _, tc := range cases {
+		assert.Equal(t, tc.want, LooksLikeJSON(tc.in), "input=%q", tc.in)
+	}
+}
+
+func TestMissingFields(t *testing.T) {
+	tests := []struct {
+		name    string
+		body    string
+		missing []string
+	}{
+		{
+			name:    "all present",
+			body:    fullJSON,
+			missing: nil,
+		},
+		{
+			name:    "future empty",
+			body:    `{"narration":"x","context":"y","future":"  ","validation":"z"}`,
+			missing: []string{"future"},
+		},
+		{
+			name:    "all empty",
+			body:    `{"narration":"","context":"","future":"","validation":""}`,
+			missing: []string{"narration", "context", "future", "validation"},
+		},
+		{
+			name:    "context missing entirely",
+			body:    `{"narration":"x","future":"y","validation":"z"}`,
+			missing: []string{"context"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			n, err := Parse(tc.body)
+			require.NoError(t, err)
+			assert.Equal(t, tc.missing, n.MissingFields())
+		})
+	}
+}
+
+func TestRender_4Blocks(t *testing.T) {
+	n, err := Parse(fullJSON)
+	require.NoError(t, err)
+	out := n.Render()
+	// Must contain all 4 expected headers.
+	for _, h := range []string{
+		"**диалоги и действия**",
+		"**КОНТЕКСТ И ИЗМЕНЕНИЯ**",
+		"**БУДУЩЕЕ**",
+		"**ВАЛИДАЦИЯ ПРАВИЛ**",
+	} {
+		assert.True(t, strings.Contains(out, h), "missing header %q in:\n%s", h, out)
+	}
+	// Order matters — block 1 must precede block 4.
+	idx1 := strings.Index(out, "**диалоги и действия**")
+	idx4 := strings.Index(out, "**ВАЛИДАЦИЯ ПРАВИЛ**")
+	assert.True(t, idx1 < idx4, "block order broken")
+	// All four narratives must be present.
+	assert.Contains(t, out, "Хината вздрогнула, отступила.")
+	assert.Contains(t, out, "state.md обновлён")
+	assert.Contains(t, out, "Компания доберётся")
+	assert.Contains(t, out, "Лимит слов: 80/150")
+}
+
+func TestRender_TrimsTrailingWhitespace(t *testing.T) {
+	n := &Narrative{
+		Narration:  "  сцена.  ",
+		Context:    "  без изменений.\n\n  ",
+		Future:     " обед  ",
+		Validation: " лимит: 90/150  ",
+	}
+	out := n.Render()
+	// Each block's content should be trimmed of leading
+	// and trailing whitespace. TrimSpace collapses
+	// internal runs too, so we only assert the
+	// canonical clean form: "сцена." (the trailing
+	// double space inside the string is collapsed by
+	// TrimSpace, which is fine for our purposes).
+	assert.True(t, strings.HasPrefix(out, "**диалоги и действия**\nсцена."),
+		"got: %q", out)
+	// No trailing whitespace on the last line.
+	assert.False(t, strings.HasSuffix(out, " \n"), "got: %q", out)
+	assert.False(t, strings.HasSuffix(out, "  "), "got: %q", out)
+}

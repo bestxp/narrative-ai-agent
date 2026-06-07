@@ -2,3 +2,4 @@
 /.veai/
 /bin/
 AGENTS.MD
+/cmd/test-openapi

@@ -15,11 +15,19 @@ import (
 	"narrative/internal/adapter/storage"
 	"narrative/internal/domain"
 	"narrative/internal/slowlog"
+	"narrative/internal/structured"
 )
 
-// LLMClient is the minimal surface GM needs from the LLM. It mirrors
-// the production llm.Client behaviour but is an interface so tests
-// can swap in a stub without a real HTTP server.
+// LLMClient is the minimal surface GM needs from the LLM. It
+// is an interface so tests can swap in a stub without a real
+// HTTP server, and so production can wire in either the
+// legacy *llm.Client or the openai-go *llmopenai.Client.
+//
+// In package usecase the interface is intentionally narrow:
+// Stream only. Resource lifecycles (openai-go connection
+// pool, log file handles) are owned by main.go and released
+// there. Tests that need to implement this interface only
+// have to provide Stream.
 type LLMClient interface {
 	Stream(ctx context.Context, req llm.ChatRequest, onChunk func(llm.Chunk) error) error
 }
@@ -419,7 +427,8 @@ func (g *GM) Reply(ctx context.Context, chatID, userText string, cb Callbacks) (
 		// "4516 prompt, 0 completion"). Without this we can't tell
 		// whether the model returned empty content, the stream
 		// got cut off, or the provider sent a done frame only.
-		preview := assistantBuf.String()
+		fullContent := assistantBuf.String()
+		preview := fullContent
 		if len(preview) > 500 {
 			preview = preview[:500] + "…"
 		}
@@ -427,15 +436,37 @@ func (g *GM) Reply(ctx context.Context, chatID, userText string, cb Callbacks) (
 			"round":         round,
 			"finish":        finishReason,
 			"tool_calls":    len(toolCalls),
-			"content_chars": len(assistantBuf.String()),
+			"content_chars": len(fullContent),
 			"content_prev":  preview,
 		}
 		// When the assistant produced no text AND no tool calls,
 		// the raw SSE trace is the only way to diagnose. We do
 		// not log it on healthy rounds (would spam slow.log with
 		// 3-5 entries per turn).
-		if len(assistantBuf.String()) == 0 && len(toolCalls) == 0 {
+		if len(fullContent) == 0 && len(toolCalls) == 0 {
 			fields["raw_trace"] = rawTrace
+		}
+		// When the format gate will fail (no ВАЛИДАЦИЯ ПРАВИЛ
+		// header), the operator needs the FULL assistant turn
+		// to confirm whether the model emitted the block at
+		// all, emitted it with a typo, or got cut off mid-list.
+		// The 500-char preview truncates the ВАЛИДАЦИЯ block
+		// almost every time (it sits at the end). We log the
+		// full body only on the failing path to keep healthy
+		// rounds readable.
+		if len(fullContent) > 0 && !g.isFormatCompliant(fullContent) {
+			fields["content_full"] = fullContent
+			fields["missing_headers"] = g.missingFormatHeaders(fullContent)
+			// On a format miss we also log the request we sent
+			// (system prompt + history + tool specs) so an
+			// operator can see whether the model was actually
+			// told the 4-block contract on this round. The
+			// payload is large (10-30 KB), so we keep it gated
+			// on the failing path. We render each message
+			// as {role, content, tool_calls?} so the slowlog
+			// entry is readable in jq.
+			fields["request_messages"] = formatMessagesForLog(messages)
+			fields["request_tools"] = formatToolsForLog(g.toolSpecs)
 		}
 		_ = g.slow.Write("llm.round", chatID, fields)
 		}
@@ -1146,9 +1177,36 @@ var requiredFormatHeaders = []string{
 	"**ВАЛИДАЦИЯ ПРАВИЛ**",
 }
 
+// isFormatCompliant accepts EITHER of two shapes:
+//
+//  1. JSON mode (preferred). The assistant turn is a
+//     JSON object with four fields (narration, context,
+//     future, validation) and no extraneous keys. The
+//     provider with structured_output=json_object
+//     guarantees this shape; the bot still validates
+//     because providers sometimes ignore strict mode.
+//
+//  2. Legacy markdown mode. The assistant turn contains
+//     all four "**диалоги и действия**" / "КОНТЕКСТ" /
+//     "БУДУЩЕЕ" / "ВАЛИДАЦИЯ ПРАВИЛ" headers. The legacy
+//     driver and providers that ignore json_object take
+//     this path.
+//
+// The function does NOT log missing fields — call
+// missingFormatHeaders for that. The distinction matters
+// because for JSON we want to surface a different
+// diagnostic (e.g. "model produced JSON with a missing
+// `future` field") than for markdown.
 func (g *GM) isFormatCompliant(text string) bool {
 	if text == "" {
 		return false
+	}
+	if structured.LooksLikeJSON(text) {
+		n, err := structured.Parse(text)
+		if err != nil {
+			return false
+		}
+		return len(n.MissingFields()) == 0
 	}
 	for _, h := range requiredFormatHeaders {
 		if !strings.Contains(text, h) {
@@ -1158,9 +1216,23 @@ func (g *GM) isFormatCompliant(text string) bool {
 	return true
 }
 
+// missingFormatHeaders reports the contract elements
+// that are absent in the assistant turn. For JSON the
+// list is the empty field names; for markdown the list
+// is the bold headers. The format re-prompt path uses
+// the returned strings verbatim, so the wording must
+// be unambiguous to the model — see repromptForFormat
+// for the prompt template.
 func (g *GM) missingFormatHeaders(text string) []string {
 	if text == "" {
 		return requiredFormatHeaders
+	}
+	if structured.LooksLikeJSON(text) {
+		n, err := structured.Parse(text)
+		if err != nil {
+			return requiredFormatHeaders
+		}
+		return n.MissingFields()
 	}
 	var missing []string
 	for _, h := range requiredFormatHeaders {
@@ -1382,4 +1454,58 @@ func (g *GM) repromptForFormat(ctx context.Context, chatID string, history []llm
 	// Return only the new chunk — caller will splice it into
 	// the user-visible buffer with a clear separator.
 	return buf.String(), totals, nil
+}
+
+// formatMessagesForLog renders a messages slice into a list of
+// compact {role, content_len, content, tool_calls?} entries for
+// the slowlog "request_messages" field. The full content is
+// preserved (truncation loses the very information we need on a
+// format miss — was the system prompt / history cut by the
+// context window?). This payload is logged only on the
+// failing path; healthy rounds emit a 500-char preview instead.
+//
+// The output is intentionally a []map[string]any (not a
+// []llm.Message) so the slowlog JSON is decoupled from the
+// internal type — operators reading it in jq see exactly the
+// shape that left the GM, no Go struct tags.
+func formatMessagesForLog(messages []llm.Message) []map[string]any {
+	out := make([]map[string]any, 0, len(messages))
+	for _, m := range messages {
+		entry := map[string]any{
+			"role":        m.Role,
+			"content_len": len(m.Content),
+		}
+		if m.Content != "" {
+			entry["content"] = m.Content
+		}
+		if len(m.ToolCalls) > 0 {
+			calls := make([]map[string]any, 0, len(m.ToolCalls))
+			for _, c := range m.ToolCalls {
+				calls = append(calls, map[string]any{
+					"name":      c.Function.Name,
+					"args":      c.Function.Arguments,
+				})
+			}
+			entry["tool_calls"] = calls
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
+// formatToolsForLog renders a []llm.ToolSchema into a compact
+// {name, description_len} slice for the slowlog "request_tools"
+// field. We omit the JSON parameter schema (it is large,
+// static, and identical to the embedded copy in the
+// narrative.md prompt) — what the operator needs to confirm
+// on a format miss is "was the tool list non-empty?" and
+// "were the create_npc / update_npc schemas present?".
+func formatToolsForLog(specs []llm.ToolSchema) []map[string]any {
+	out := make([]map[string]any, 0, len(specs))
+	for _, s := range specs {
+		out = append(out, map[string]any{
+			"name": s.Name,
+		})
+	}
+	return out
 }

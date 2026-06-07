@@ -209,6 +209,67 @@ type LLMConfig struct {
 	// tok"). Operators who only want the number in slowlog can
 	// flip this off without turning the count itself off.
 	IncludeInReply bool `yaml:"include_in_reply"`
+	// Driver selects the LLM transport implementation. Two
+	// values are recognised:
+	//   - "legacy" (default): the hand-rolled HTTP+JSON
+	//     client in internal/adapter/llm. Stable, used in
+	//     production, supports the full feature set the
+	//     bot needs today (streaming, tool calls, usage,
+	//     reasoning_effort). The wire format is hand-parsed.
+	//   - "openai": the official openai-go v3 SDK
+	//     (github.com/openai/openai-go/v3) wired through
+	//     internal/adapter/llm/openai. Same wire format,
+	//     type-safe params, strict tool schemas,
+	//     response_format.json_schema, etc. Used as a
+	//     drop-in replacement; no config changes beyond
+	//     setting this flag.
+	Driver string `yaml:"driver"`
+	// StructuredOutput is the per-role default capability
+	// hint for the openai driver. The legacy driver
+	// ignores it; on openai, when set, the driver emits
+	// response_format on the wire. See
+	// internal/adapter/llm.StructuredOutputConfig for the
+	// semantic of each sub-field.
+	StructuredOutput StructuredOutputConfig `yaml:"structured_output"`
+}
+
+// StructuredOutputConfig mirrors llm.StructuredOutputConfig
+// (the two structs live in different packages so the config
+// layer does not import the adapter layer; the mapping is
+// done in cmd/bot/main.go when wiring the openai driver).
+type StructuredOutputConfig struct {
+	// Mode is the response_format variant:
+	//   "" or "off"     — no response_format on the wire.
+	//   "json_object"   — response_format.type="json_object"
+	//                     (works on Ollama >= 0.5.0; the
+	//                     model is told to emit JSON but
+	//                     field shape comes from the
+	//                     system prompt).
+	//   "json_schema"   — response_format.json_schema with
+	//                     strict=true. OpenAI strict mode;
+	//                     honoured by some Ollama models
+	//                     (gpt-oss, llama3.1+) but not
+	//                     minimax-m3:cloud.
+	Mode string `yaml:"mode"`
+	// Schema is the JSON Schema body attached to
+	// response_format when Mode="json_schema". Raw YAML;
+	// the driver marshals it as-is into the request.
+	Schema []byte `yaml:"-"`
+	// SchemaName is the identifier the driver emits in
+	// the json_schema wrapper. Defaults to
+	// "narrative_response" in main.go when empty.
+	SchemaName string `yaml:"schema_name"`
+	// ToolChoice is the tool_choice wire value:
+	//   ""                — omit (let the provider decide).
+	//   "auto" | "required" | "none" — standard string values.
+	//   "function:<name>" — force a specific tool.
+	ToolChoice string `yaml:"tool_choice"`
+	// StrictTools flips the strict flag on every tool
+	// declaration. When true, the provider validates the
+	// model's tool arguments against the schema; the
+	// schema must satisfy OpenAI's strict requirements
+	// (additionalProperties=false, closed required list).
+	StrictTools bool `yaml:"strict_tools"`
 }
 
 // TokenTrackingOff / Estimate / Usage are the canonical modes for
