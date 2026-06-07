@@ -177,3 +177,63 @@ func isMessageNotModified(err error) bool {
 	}
 	return strings.Contains(err.Error(), "message is not modified")
 }
+
+// isMessageTooLong reports whether err is the
+// "Bad Request: MESSAGE_TOO_LONG" / "message is too long"
+// reply from Telegram. The cap is 4096 characters per
+// sendMessage / editMessageText; rich-text markup
+// (`<b>`, `<pre>`) counts too. The stream layer detects
+// this and falls back to sending the over-length tail as a
+// fresh message with a "продолжение ↓" header.
+func isMessageTooLong(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "MESSAGE_TOO_LONG") ||
+		strings.Contains(s, "message is too long")
+}
+
+// maxTelegramMessageLen is the per-message cap Telegram
+// enforces for sendMessage / editMessageText. We split long
+// replies at this boundary rather than letting Telegram
+// reject the whole thing with 400 MESSAGE_TOO_LONG.
+const maxTelegramMessageLen = 4096
+
+// splitForTelegram cuts text into chunks each no longer than
+// maxTelegramMessageLen. Splits prefer paragraph boundaries
+// ("\n\n") so the cut does not land mid-sentence; if a single
+// paragraph exceeds the cap (rare; usually only when the LLM
+// emits a giant line of code in <pre>) we fall back to a
+// hard split at the cap.
+//
+// The first chunk is returned as-is (no header) so the first
+// message looks like a normal reply; subsequent chunks are
+// prefixed with a small marker so the player can see "this
+// is a continuation of the previous message".
+func splitForTelegram(text string) []string {
+	if len(text) <= maxTelegramMessageLen {
+		return []string{text}
+	}
+	out := make([]string, 0, 2)
+	rest := text
+	for len(rest) > maxTelegramMessageLen {
+		// Look for a paragraph break within the first cap
+		// characters. If we find one, split right after it.
+		cut := -1
+		head := rest[:maxTelegramMessageLen]
+		if i := strings.LastIndex(head, "\n\n"); i > 0 {
+			cut = i + 2
+		} else if i := strings.LastIndex(head, "\n"); i > 0 {
+			cut = i + 1
+		} else {
+			cut = maxTelegramMessageLen
+		}
+		out = append(out, rest[:cut])
+		rest = rest[cut:]
+	}
+	if rest != "" {
+		out = append(out, rest)
+	}
+	return out
+}

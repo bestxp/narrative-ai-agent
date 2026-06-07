@@ -74,18 +74,23 @@ func newGMTestEnv(t *testing.T) (*GM, *storage.FileStore, *fakeLLM) {
 	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/characters/kakashi.md", "# Какаши\nспокойный"))
 
 	ss := NewSessionStart(fs)
-	mt := NewMaintenance(fs)
 	fl := NewFirstLaunch(fs)
-	npcm := NewNPCManager(fs)
-	wt := NewWorldTransition(fs)
-	cu := NewCharacterUpdate(fs, discardLogger(), slowlog.Discard())
+	// One Tool bundles every concern; the tests use the
+	// file-backed implementation so on-disk state changes
+	// are observable via fs.ReadRaw.
+	tools := NewFileToolset(fs, discardLogger(), slowlog.Discard())
 	fake := &fakeLLM{}
 	log, _ := newBufLogger()
 	g := NewGM(GMConfig{
-		Role:         llm.RoleConfig{Model: "test", MaxTokens: 100, Temperature: 0.5},
+		Role: llm.RoleConfig{
+			Model:           "test",
+			MaxTokens:       100,
+			Temperature:     0.5,
+			MaxEmptyRetries: 2, // mirror config default so old "expect 2 calls" tests keep working
+		},
 		SystemPrompt: "# rules",
 		Compaction:   CompactionConfig{ContextWindow: 0, Threshold: 0.7, KeepRecent: 5},
-	}, fs, fake, ss, mt, fl, npcm, wt, cu, nil, NewSystemState(fs, discardLogger(), slowlog.Discard()), slowlog.Discard(), "off", false, log)
+	}, fs, fake, ss, fl, tools, nil, NewSystemState(fs, discardLogger(), slowlog.Discard()), slowlog.Discard(), "off", false, log)
 	return g, fs, fake
 }
 
@@ -341,35 +346,141 @@ func (c *captureLLM) Stream(_ context.Context, req llm.ChatRequest, onChunk func
 	return c.run(req, onChunk)
 }
 
-func TestGM_EmptyContentSkipsReprompt(t *testing.T) {
+// TestGM_BrokenToolCallsRetryAsEmpty covers the
+// minimax-m3:cloud case: the model decides to call a
+// tool, the stream cuts off before the head lands, we
+// see `delta.tool_calls: [{}]` fragments assembled into
+// one or more headless entries. The bot must (a) NOT
+// dispatch them as "unknown tool:", (b) treat the round
+// as empty, (c) retry once.
+func TestGM_BrokenToolCallsRetryAsEmpty(t *testing.T) {
 	g, _, fake := newGMTestEnv(t)
-	// Round that produces no content at all (model returned
-	// just [DONE] with no deltas). This is the case that
-	// triggered `reprompt_chars: 0` in the wild.
+	// Round 0: headless tool call (broken stream).
+	// Round 1 (retry): proper content + finish.
 	fake.rounds = [][]fakeChunk{
-		{{finish: "stop"}},
+		{
+			// The model "decided" to call a tool, but only
+			// the ID + empty name + partial args made it
+			// through the stream.
+			{toolID: "call_X", toolName: "", toolArgs: `{`, finish: "stop"},
+		},
+		{
+			{content: "**диалоги и действия**\nok\n\n**КОНТЕКСТ И ИЗМЕНЕНИЯ**\nбез изменений\n\n**БУДУЩЕЕ**\n- продолжение\n\n**ВАЛИДАЦИЯ ПРАВИЛ**\n- ok"},
+			{finish: "stop"},
+		},
 	}
 	var got strings.Builder
 	_, err := g.Reply(context.Background(), "chat1", "ping", deltaOnly(&got))
 	require.NoError(t, err)
-	// Critical: only ONE LLM call. A re-prompt would be a
-	// wasted call (no content to fix) and would also need
-	// its own fake round, blowing up `fake.calls`.
-	assert.Equal(t, 1, fake.calls, "should not run a second round for an empty assistant turn")
-	// The player should see *something* — a polite placeholder
-	// so the "…" stream does not stay frozen.
-	assert.Contains(t, got.String(), "не вернула ответ")
+	assert.Equal(t, 2, fake.calls, "broken tool calls must trigger the same retry path as empty content")
+	assert.Contains(t, got.String(), "ответ восстановлен после повтора")
+	// The assistant turn in conv.messages must NOT carry the
+	// broken tool calls — they would poison the next round.
+	conv := g.getConversation("chat1")
+	conv.mu.Lock()
+	defer conv.mu.Unlock()
+	for _, m := range conv.messages {
+		if m.Role != "assistant" {
+			continue
+		}
+		for _, tc := range m.ToolCalls {
+			assert.NotEmpty(t, tc.Function.Name, "broken (headless) tool calls must not be persisted into history")
+		}
+	}
 }
 
-func TestGM_EmptyContentSendsPlaceholderDelta(t *testing.T) {
+// TestAllToolCallsBroken covers the "minimax-m3:cloud stream
+// got cut off mid-tool-call" detection. When every entry in
+// the slice has an empty Function.Name the round is
+// treated as empty content (the model intended to call a
+// tool but the stream clipped before the head landed).
+// Dispatching them as "unknown tool:" would just pollute
+// the conversation with garbage tool-role messages.
+func TestAllToolCallsBroken(t *testing.T) {
+	// Empty slice: not "broken" — there are simply no tool calls.
+	assert.False(t, allToolCallsBroken(nil))
+	assert.False(t, allToolCallsBroken([]llm.ToolCall{}))
+	// A single headless entry (Name="") is the broken signature.
+	assert.True(t, allToolCallsBroken([]llm.ToolCall{{
+		Function: llm.FunctionCall{Name: "", Arguments: "{partial"},
+	}}))
+	// Multiple headless entries: still all broken.
+	assert.True(t, allToolCallsBroken([]llm.ToolCall{
+		{Function: llm.FunctionCall{Name: "", Arguments: ""}},
+		{Function: llm.FunctionCall{Name: "", Arguments: "{partial"}},
+	}))
+	// One valid entry makes the round NOT broken.
+	assert.False(t, allToolCallsBroken([]llm.ToolCall{{
+		Function: llm.FunctionCall{Name: "update_state", Arguments: `{"moment":"x"}`},
+	}}))
+	// Mixed: one valid + one headless — keep the valid one, do
+	// not classify the whole round as broken.
+	assert.False(t, allToolCallsBroken([]llm.ToolCall{
+		{Function: llm.FunctionCall{Name: "", Arguments: "{partial"}},
+		{Function: llm.FunctionCall{Name: "update_state", Arguments: `{}`}},
+	}))
+}
+
+// TestGM_EmptyContentRetrySucceeds is the happy path of the
+// new auto-retry: model returns 0 chars on round 0, the
+// retry hits the same prompt and gets a real reply back.
+// Exactly 2 LLM calls; visible delta splices the recovered
+// text with a "[ответ восстановлен после повтора]" marker.
+func TestGM_EmptyContentRetrySucceeds(t *testing.T) {
 	g, _, fake := newGMTestEnv(t)
 	fake.rounds = [][]fakeChunk{
-		{{finish: "stop"}},
+		{{finish: "stop"}}, // round 0: empty
+		{
+			{content: "**диалоги и действия**\nok\n\n**КОНТЕКСТ И ИЗМЕНЕНИЯ**\nбез изменений\n\n**БУДУЩЕЕ**\n- продолжение\n\n**ВАЛИДАЦИЯ ПРАВИЛ**\n- ok"},
+			{finish: "stop"},
+		}, // round 1: recovered
 	}
 	var got strings.Builder
 	_, err := g.Reply(context.Background(), "chat1", "ping", deltaOnly(&got))
 	require.NoError(t, err)
-	// The placeholder must be the only text in the stream —
-	// no other content from the model leaked through.
+	assert.Equal(t, 2, fake.calls, "one retry on empty content")
+	assert.Contains(t, got.String(), "ответ восстановлен после повтора")
+	assert.Contains(t, got.String(), "ok")
+	// The placeholder must NOT have fired — we recovered.
+	assert.NotContains(t, got.String(), "не вернула ответ")
+}
+
+// TestGM_EmptyContentRetryFallsToPlaceholder is the unhappy
+// path: every retry round is empty, the bot surfaces the
+// polite placeholder. With the default MaxEmptyRetries=2
+// the bot issues exactly 3 LLM calls (1 original + 2
+// retries); the slowlog captures every raw SSE trace.
+func TestGM_EmptyContentRetryFallsToPlaceholder(t *testing.T) {
+	g, _, fake := newGMTestEnv(t)
+	fake.rounds = [][]fakeChunk{
+		{{finish: "stop"}}, // round 0: empty
+		{{finish: "stop"}}, // round 1: retry 1, still empty
+		{{finish: "stop"}}, // round 2: retry 2, still empty
+	}
+	var got strings.Builder
+	_, err := g.Reply(context.Background(), "chat1", "ping", deltaOnly(&got))
+	require.NoError(t, err)
+	assert.Equal(t, 3, fake.calls, "1 original + MaxEmptyRetries(2) retries")
+	assert.Equal(t, "⚠️ модель не вернула ответ — попробуй ещё раз", got.String())
+}
+
+// TestGM_EmptyContentRetryDisabled covers the operator-facing
+// "off switch": when MaxEmptyRetries is set to 0 (or any
+// non-positive value), the bot surfaces the placeholder
+// immediately on the first empty round without retrying.
+// Useful for operators who would rather have a fast
+// placeholder than a 60-90s pause.
+func TestGM_EmptyContentRetryDisabled(t *testing.T) {
+	g, _, fake := newGMTestEnv(t)
+	g.role.MaxEmptyRetries = 0
+	fake.rounds = [][]fakeChunk{
+		{{finish: "stop"}}, // round 0: empty
+		// No retry rounds — the bot must surface the
+		// placeholder after this one call.
+	}
+	var got strings.Builder
+	_, err := g.Reply(context.Background(), "chat1", "ping", deltaOnly(&got))
+	require.NoError(t, err)
+	assert.Equal(t, 1, fake.calls, "MaxEmptyRetries=0 disables auto-retry")
 	assert.Equal(t, "⚠️ модель не вернула ответ — попробуй ещё раз", got.String())
 }

@@ -1,63 +1,63 @@
-// Package usecase — application-level orchestration. The character
-// update, GM, maintenance and world transition usecases all share
-// this package and depend only on the storage / domain / slowlog
-// adapters below them.
-package usecase
+package files
 
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/rs/zerolog"
 
 	"narrative/internal/adapter/storage"
 	"narrative/internal/slowlog"
+	"narrative/internal/usecase/tools"
 )
 
-// SlowLogger is a thin alias so usecase callers do not have to
-// import the slowlog package directly. The interface is satisfied
-// by *slowlog.Logger.
-type SlowLogger = slowlog.Logger
-
-// CharacterUpdate persists new facts about the player character
-// into the matching file under characters/<name>/. It is the
-// counterpart of FirstLaunch.writeCharacter for the *runtime*
-// phase: a fact the player revealed in the latest scene (name,
-// age, a learned skill) is appended to the right section so it
-// survives across sessions and across world transitions.
-//
-// Sections are looked up by their `## Header` line. If a section
-// does not exist yet, it is appended to the file with a
-// placeholder body. Existing content is never overwritten —
-// the skill mandates forward-only files.
-type CharacterUpdate struct {
-	fs     *storage.FileStore
-	log    zerolog.Logger
-	slow   *slowlog.Logger
-	world  func() string
+// Character is the file-backed implementation of
+// tools.CharacterTool: SOUL/SKILL/memory.md appends and the
+// /me snapshot read.
+type Character struct {
+	fs   *storage.FileStore
+	log  zerolog.Logger
+	slow *slowlog.Logger
+	// world returns the active world name. Indirected through
+	// a function so callers can pass a custom resolver (the
+	// tests do this), and so a future in-process swap of the
+	// active world does not require re-constructing the
+	// toolset.
+	world func() string
 }
 
-func NewCharacterUpdate(fs *storage.FileStore, log zerolog.Logger, slow *slowlog.Logger) *CharacterUpdate {
-	return NewCharacterUpdateWithWorld(fs, log, slow, func() string { return currentWorld(fs) })
+func newCharacter(fs *storage.FileStore, log zerolog.Logger, slow *slowlog.Logger) *Character {
+	return &Character{
+		fs:   fs,
+		log:  log.With().Str("component", "character").Logger(),
+		slow: slow,
+		world: func() string {
+			info, _ := fs.ReadRaw(storage.InfoFile)
+			if info == "" {
+				return ""
+			}
+			// Avoid an import cycle on domain by reusing
+			// the parse path through the World helper below
+			// — currentWorld is in state.go of this package.
+			return currentWorld(fs)
+		},
+	}
 }
 
-func NewCharacterUpdateWithWorld(fs *storage.FileStore, log zerolog.Logger, slow *slowlog.Logger, worldFn func() string) *CharacterUpdate {
-	return &CharacterUpdate{fs: fs, log: log.With().Str("component", "character_update").Logger(), slow: slow, world: worldFn}
-}
-
+// Public errors so callers can errors.Is against them without
+// importing this package's internals.
 var (
-	ErrUnknownCharacterFile = errors.New("character_update: file must be SOUL, SKILL or memory")
-	ErrEmptySection         = errors.New("character_update: section must not be empty")
-	ErrEmptyAppend          = errors.New("character_update: append must not be empty")
-	ErrNoActiveCharacter    = errors.New("character_update: no active character in registry")
+	ErrUnknownCharacterFile = errors.New("character: file must be SOUL, SKILL or memory")
+	ErrEmptySection         = errors.New("character: section must not be empty")
+	ErrEmptyAppend          = errors.New("character: append must not be empty")
+	ErrNoActiveCharacter    = errors.New("character: no active character in registry")
 )
 
 // Append routes the new fact to characters/<name>/<file> with
-// the section heading preserved. characterDir is the bare
-// directory name (e.g. "markus") — the caller is the GM, which
-// already knows the active character.
-func (c *CharacterUpdate) Append(characterDir, file, section, appendText string) error {
+// the section heading preserved.
+func (c *Character) Append(characterDir, file, section, appendText string) error {
 	if characterDir == "" {
 		return ErrNoActiveCharacter
 	}
@@ -77,7 +77,6 @@ func (c *CharacterUpdate) Append(characterDir, file, section, appendText string)
 	if strings.TrimSpace(appendText) == "" {
 		return ErrEmptyAppend
 	}
-
 	rel := "characters/" + characterDir + "/" + file
 	before, _ := c.fs.ReadRaw(rel)
 	next := upsertSection(before, section, appendText)
@@ -101,10 +100,6 @@ func (c *CharacterUpdate) Append(characterDir, file, section, appendText string)
 	return nil
 }
 
-// upsertSection inserts appendText into the `## section` block of
-// the file body, creating the block at the end if missing. The
-// existing content is preserved verbatim — only the new line is
-// added.
 func upsertSection(body, section, appendText string) string {
 	header := "## " + section
 	lines := strings.Split(body, "\n")
@@ -116,7 +111,6 @@ func upsertSection(body, section, appendText string) string {
 		}
 	}
 	if headerIdx < 0 {
-		// Create the section at the end of the file.
 		if body != "" && !strings.HasSuffix(body, "\n") {
 			body += "\n"
 		}
@@ -125,7 +119,6 @@ func upsertSection(body, section, appendText string) string {
 		}
 		return body + header + "\n" + strings.TrimSpace(appendText) + "\n"
 	}
-	// Find the end of the section: next "## " heading or end of file.
 	endIdx := len(lines)
 	for j := headerIdx + 1; j < len(lines); j++ {
 		if strings.HasPrefix(strings.TrimSpace(lines[j]), "## ") {
@@ -133,7 +126,6 @@ func upsertSection(body, section, appendText string) string {
 			break
 		}
 	}
-	// Append before endIdx, avoiding a duplicate of the same line.
 	tail := make([]string, 0, endIdx-headerIdx)
 	for _, ln := range lines[headerIdx:endIdx] {
 		if strings.TrimSpace(ln) == strings.TrimSpace(appendText) {
@@ -151,23 +143,8 @@ func upsertSection(body, section, appendText string) string {
 	return strings.Join(out, "\n")
 }
 
-// CharacterSnapshot is the read-only bundle the dispatcher returns
-// to /me. It is pre-formatted for plain-text output; markdown
-// sections pass through unchanged.
-type CharacterSnapshot struct {
-	Character string
-	World     string
-	SOUL      string
-	SKILL     string
-	Memory    string
-	State     string
-	Day       int
-}
-
-// Read returns the snapshot of the current character. character
-// and world are the active_* fields from info.yaml; if either is
-// empty the snapshot still works (just with empty file bodies).
-func (c *CharacterUpdate) Read(activeChar, activeWorld string) (*CharacterSnapshot, error) {
+// Read returns the snapshot of the current character.
+func (c *Character) Read(activeChar, activeWorld string) (*tools.CharacterSnapshot, error) {
 	if activeChar == "" {
 		return nil, ErrNoActiveCharacter
 	}
@@ -180,7 +157,7 @@ func (c *CharacterUpdate) Read(activeChar, activeWorld string) (*CharacterSnapsh
 		state, _ = c.fs.ReadRaw("worlds/" + activeWorld + "/state.md")
 		day, _ = extractDayNumber(state)
 	}
-	return &CharacterSnapshot{
+	return &tools.CharacterSnapshot{
 		Character: activeChar,
 		World:     activeWorld,
 		SOUL:      soul,
@@ -191,10 +168,15 @@ func (c *CharacterUpdate) Read(activeChar, activeWorld string) (*CharacterSnapsh
 	}, nil
 }
 
-// Format renders a snapshot for /me. Caps body sizes to keep the
-// Telegram message under the 4096-char limit and to avoid dumping
+// FormatSnapshot renders a snapshot for /me. Caps body sizes to keep
+// the Telegram message under the 4096-char limit and to avoid dumping
 // a multi-thousand-line lore file on a status check.
-func (s *CharacterSnapshot) Format(maxPerSection int) string {
+//
+// Kept as a package-level function rather than a method on
+// tools.CharacterSnapshot so the interface type stays free of
+// presentation concerns. Callers (dispatcher.cmdMe) do
+// snap.Format(40).
+func FormatSnapshot(s *tools.CharacterSnapshot, maxPerSection int) string {
 	if s == nil {
 		return "Нет активного персонажа. Запустите /launch."
 	}
@@ -234,4 +216,35 @@ func truncateForMe(s string, max int) string {
 		return s
 	}
 	return strings.Join(lines[:max], "\n") + fmt.Sprintf("\n[…+%d строк обрезано…]", len(lines)-max)
+}
+
+// extractDayNumber parses the "День N" line out of a
+// state.md body. Returns (n, true) on hit, (0, false) when
+// the marker is missing — callers can fall back to "day 1"
+// without surfacing an error.
+//
+// Duplicated from the State struct's private helper so each
+// file is self-contained; the regex is small.
+var dayHeaderRe = regexp.MustCompile(`День (\d+)`)
+
+func extractDayNumber(s string) (int, bool) {
+	m := dayHeaderRe.FindStringSubmatch(s)
+	if len(m) < 2 {
+		return 0, false
+	}
+	n := 0
+	for _, r := range m[1] {
+		if r < '0' || r > '9' {
+			return 0, false
+		}
+		n = n*10 + int(r-'0')
+	}
+	return n, true
+}
+
+// ExtractDayNumber is the public alias for the day-number
+// parser; world-transition code calls it through this
+// exported wrapper.
+func ExtractDayNumber(s string) (int, bool) {
+	return extractDayNumber(s)
 }

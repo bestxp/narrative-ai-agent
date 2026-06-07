@@ -2,15 +2,12 @@ package usecase
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/rs/zerolog"
 
 	"narrative/internal/adapter/llm"
-	"narrative/internal/domain"
 	"narrative/internal/slowlog"
 )
 
@@ -216,35 +213,3 @@ func renderTurnsForSummary(msgs []llm.Message) string {
 	return b.String()
 }
 
-// AppendHistoryToState appends a compaction summary as a new
-// section to the active world's state.md. The section is
-// timestamped and includes a marker so the operator can grep
-// the file for "сжато" and find every compaction.
-//
-// The function reads the existing state, parses it via
-// parseStateMD, and re-renders through BuildStateMarkdown so
-// the format stays consistent. The history block lives at
-// the end of the file (after the Хронология дня) and is
-// append-only — we never rewrite old history sections.
-func (m *Maintenance) AppendHistoryToState(world, summary string, at time.Time) error {
-	if world == "" {
-		return errors.New("maintenance: empty world")
-	}
-	if summary == "" {
-		return nil
-	}
-	rel := "worlds/" + world + "/state.md"
-	cur, _ := m.fs.ReadRaw(rel)
-	parsed := parseStateMD(cur)
-	parsed.World = world
-	// History is stored under the existing "Events" slice with
-	// a [history] prefix so the layout stays compatible with
-	// BuildStateMarkdown. BuildStateMarkdown renders the
-	// "Хронология дня" section from Events; we tag the
-	// summary line with [history] so a reader can tell it
-	// apart from in-day events.
-	marker := fmt.Sprintf("[history сжато %s]", at.UTC().Format("2006-01-02 15:04"))
-	parsed.Events = append(parsed.Events, marker+"\n"+summary)
-	body := domain.BuildStateMarkdown(parsed)
-	return m.fs.WriteRawAtomic(rel, body)
-}

@@ -18,6 +18,7 @@ import (
 	"narrative/internal/config"
 	"narrative/internal/domain"
 	"narrative/internal/messaging"
+	"narrative/internal/slowlog"
 	"narrative/internal/usecase"
 )
 
@@ -31,30 +32,24 @@ type Dispatcher struct {
 	rf     *usecase.ResponseFormat
 	fl     *usecase.FirstLaunch
 	ss     *usecase.SessionStart
-	npcm   *usecase.NPCManager
-	mt     *usecase.Maintenance
-	wt     *usecase.WorldTransition
-	cu     *usecase.CharacterUpdate
+	tools  usecase.Tool
 	gm     *usecase.GM // optional; nil until main.go wires the LLM
-	slow   *usecase.SlowLogger
+	slow   *slowlog.Logger
 	log    zerolog.Logger
 }
 
-func New(cfg *config.Config, fs *storage.FileStore, git *gitops.Operator, cu *usecase.CharacterUpdate, slow *usecase.SlowLogger, log zerolog.Logger) *Dispatcher {
+func New(cfg *config.Config, fs *storage.FileStore, git *gitops.Operator, tools usecase.Tool, slow *slowlog.Logger, log zerolog.Logger) *Dispatcher {
 	l := log.With().Str("component", "dispatcher").Logger()
 	return &Dispatcher{
-		cfg:  cfg,
-		fs:   fs,
-		git:  git,
-		rf:   usecase.NewResponseFormat(cfg.Narrative.WordLimit, cfg.Narrative.Language),
-		fl:   usecase.NewFirstLaunchWithLogger(fs, l),
-		ss:   usecase.NewSessionStartWithLogger(fs, l),
-		npcm: usecase.NewNPCManagerWithLogger(fs, l),
-		mt:   usecase.NewMaintenanceWithLogger(fs, l),
-		wt:   usecase.NewWorldTransitionWithLogger(fs, l),
-		cu:   cu,
-		slow: slow,
-		log:  l,
+		cfg:   cfg,
+		fs:    fs,
+		git:   git,
+		rf:    usecase.NewResponseFormat(cfg.Narrative.WordLimit, cfg.Narrative.Language),
+		fl:    usecase.NewFirstLaunch(fs),
+		ss:    usecase.NewSessionStart(fs),
+		tools: tools,
+		slow:  slow,
+		log:   l,
 	}
 }
 
@@ -106,6 +101,8 @@ func (d *Dispatcher) Handle(ctx context.Context, msg messaging.IncomingMessage) 
 		return d.cmdLeave(msg)
 	case "return":
 		return d.cmdReturn(msg)
+	case "reload":
+		return d.cmdReload()
 	case "help":
 		return d.cmdHelp()
 	}
@@ -218,7 +215,7 @@ func (d *Dispatcher) cmdStatus() (string, error) {
 // truncated to roughly the screen size so a Telegram reply stays
 // under 4096 chars even on heavily-developed characters.
 func (d *Dispatcher) cmdMe() (string, error) {
-	if d.cu == nil {
+	if d.tools == nil {
 		return "character_update не подключён.", nil
 	}
 	if !d.fs.Exists(storage.InfoFile) {
@@ -229,11 +226,11 @@ func (d *Dispatcher) cmdMe() (string, error) {
 	if err != nil || parsed.ActiveCharacter == "" {
 		return "Нет активного персонажа. /launch сначала.", nil
 	}
-	snap, err := d.cu.Read(parsed.ActiveCharacter, parsed.ActiveWorld)
+	snap, err := d.tools.Read(parsed.ActiveCharacter, parsed.ActiveWorld)
 	if err != nil {
 		return "", err
 	}
-	return snap.Format(40), nil
+	return usecase.FormatCharacterSnapshot(snap, 40), nil
 }
 
 func (d *Dispatcher) cmdCommit(msg messaging.IncomingMessage) (string, error) {
@@ -334,7 +331,7 @@ func (d *Dispatcher) cmdMaintenance() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	touched, err := d.mt.CompactNPCs(sc.World)
+	touched, err := d.tools.CompactNPCs(sc.World)
 	if err != nil {
 		return "", err
 	}
@@ -358,7 +355,7 @@ func (d *Dispatcher) cmdEndDay(msg messaging.IncomingMessage) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := d.mt.ArchiveDay(sc.World, day, summary); err != nil {
+	if err := d.tools.ArchiveDay(sc.World, day, summary); err != nil {
 		return "", err
 	}
 	d.commit(fmt.Sprintf("День %d", day))
@@ -378,7 +375,7 @@ func (d *Dispatcher) cmdLeave(msg messaging.IncomingMessage) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	res, err := d.wt.Leave(sc.World, to, skip, sc.Character)
+	res, err := d.tools.Leave(sc.World, to, skip, sc.Character)
 	if err != nil {
 		return "", err
 	}
@@ -396,12 +393,41 @@ func (d *Dispatcher) cmdReturn(msg messaging.IncomingMessage) (string, error) {
 	}
 	world := msg.Args[0]
 	days := msg.Args[1]
-	note, err := d.wt.ReturnWorld(world, days)
+	note, err := d.tools.ReturnWorld(world, days)
 	if err != nil {
 		return "", err
 	}
 	d.commit(fmt.Sprintf("world return: %s", world))
 	return note, nil
+}
+
+// cmdReload forces the active world's data source to refresh
+// from the canonical source. Today the source is "files",
+// so a successful Reload is a no-op (every read already goes
+// to disk); the command still does two useful things:
+//
+//  1. Surfaces a one-line "backed by: files" reply so the
+//     player sees the wiring is alive.
+//  2. Future backends (cached, s3, git-lfs) override Reload
+//     to invalidate their LRU. The command becomes a
+//     forced-refresh knob for the operator.
+//
+// Typical use: the operator edits canon.md or state.md by
+// hand to fix a typo, then runs /reload to confirm the
+// toolset is ready for the next turn.
+func (d *Dispatcher) cmdReload() (string, error) {
+	if d.tools == nil {
+		return "toolset не подключён.", nil
+	}
+	if r, ok := d.tools.(usecase.Reloadable); ok {
+		if err := r.Reload(); err != nil {
+			return "⚠️ reload: " + err.Error(), nil
+		}
+	}
+	if d.slow != nil {
+		_ = d.slow.Write("tool.reload", "", map[string]any{"source": "files"})
+	}
+	return "✅ reload ok. backed by: files. Следующий ход подхватит свежие данные.", nil
 }
 
 // Commands returns the canonical command set with short
@@ -421,6 +447,7 @@ func (d *Dispatcher) Commands() []messaging.BotCommand {
 		{Command: "maintenance", Description: "Сжать NPC > 40 строк"},
 		{Command: "leave", Description: "Переход в новый мир"},
 		{Command: "return", Description: "Возврат с time-skip"},
+		{Command: "reload", Description: "Перечитать данные активного мира из источника"},
 		{Command: "save", Description: "git commit + push, уведомление"},
 		{Command: "commit", Description: "Только git commit (локально)"},
 		{Command: "push", Description: "Только git push"},
@@ -438,6 +465,7 @@ func (d *Dispatcher) cmdHelp() (string, error) {
 		"/maintenance — выжимка NPC > 40 строк",
 		"/leave <мир> [время] — переход в новый мир",
 		"/return <мир> <дней> — возврат с time-skip",
+		"/reload — перечитать данные активного мира из источника",
 		"/save — коммит + push, уведомление отдельным сообщением",
 		"/commit <msg> — коммит (только локально)",
 		"/push — pull --rebase + push",

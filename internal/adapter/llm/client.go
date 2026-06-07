@@ -43,6 +43,18 @@ type RoleConfig struct {
 	// string means "no override"; when DisableThinking is
 	// true and ReasoningEffort is empty we default to "none".
 	ReasoningEffort string
+	// MaxEmptyRetries is the number of automatic re-issues of
+	// the same LLM request when the previous round produced 0
+	// content. 0 disables auto-retry (the bot surfaces the
+	// "model returned empty" placeholder immediately).
+	MaxEmptyRetries int
+	// EmptyRetryTimeoutSeconds is the per-retry HTTP timeout
+	// for the auto-retry rounds. Cloud Ollama is slow under
+	// load (50-90s per response on the minimax-m3:cloud tier)
+	// and the default per-role timeout may be too tight when
+	// the model is mid-thought. Set 0 to fall back to
+	// RequestTimeoutSeconds.
+	EmptyRetryTimeoutSeconds int
 }
 
 // Message is a single chat entry.
@@ -96,6 +108,12 @@ type ChatRequest struct {
 	// GPT-OSS rejects "none") and accept the residual cost.
 	// See: https://ollama.com/blog/thinking
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+	// TimeoutSeconds overrides the role's per-request
+	// timeout for this single call. 0 means "use the
+	// role's RequestTimeoutSeconds". Set higher on retry
+	// rounds when the model is mid-thought and the
+	// provider is slow under load.
+	TimeoutSeconds int `json:"-"`
 }
 
 // ToolSchema is the public-facing tool declaration. We accept the
@@ -220,9 +238,13 @@ func (c *Client) Stream(ctx context.Context, req ChatRequest, onChunk func(Chunk
 			req.ReasoningEffort = "none"
 		}
 	}
-	if c.role.RequestTimeoutSeconds > 0 {
+	timeoutSec := c.role.RequestTimeoutSeconds
+	if req.TimeoutSeconds > 0 {
+		timeoutSec = req.TimeoutSeconds
+	}
+	if timeoutSec > 0 {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, time.Duration(c.role.RequestTimeoutSeconds)*time.Second)
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
 		defer cancel()
 	}
 	body, err := json.Marshal(req)

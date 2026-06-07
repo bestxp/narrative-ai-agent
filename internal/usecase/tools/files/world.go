@@ -1,4 +1,4 @@
-package usecase
+package files
 
 import (
 	"errors"
@@ -10,35 +10,26 @@ import (
 
 	"narrative/internal/adapter/storage"
 	"narrative/internal/domain"
+	"narrative/internal/usecase/tools"
 )
 
-// WorldTransition implements "Покидаем мир" and "Возвращение в мир"
-// from the skill.
-type WorldTransition struct {
+// World is the file-backed implementation of tools.WorldTool:
+// /leave (active world switch) and /return (time-skip into a
+// parked world).
+type World struct {
 	fs  *storage.FileStore
 	log zerolog.Logger
 }
 
-func NewWorldTransition(fs *storage.FileStore) *WorldTransition {
-	return NewWorldTransitionWithLogger(fs, zerolog.Nop())
-}
-
-func NewWorldTransitionWithLogger(fs *storage.FileStore, log zerolog.Logger) *WorldTransition {
-	return &WorldTransition{fs: fs, log: log.With().Str("component", "world_transition").Logger()}
-}
-
-type LeaveResult struct {
-	FromWorld    string
-	FromDay      int
-	NewWorld     string
-	NewWorldInit bool
+func newWorld(fs *storage.FileStore, log zerolog.Logger) *World {
+	return &World{fs: fs, log: log.With().Str("component", "world").Logger()}
 }
 
 // Leave switches the active world. If the new world does not exist on
 // disk yet, it is initialised with sensible defaults. The skipped
 // amount of time in the old world is provided by the player; "" means
 // "an instant".
-func (w *WorldTransition) Leave(fromWorld, toWorld, skipNote, character string) (*LeaveResult, error) {
+func (w *World) Leave(fromWorld, toWorld, skipNote, character string) (*tools.LeaveResult, error) {
 	from, err := domain.SanitizeName(fromWorld)
 	if err != nil {
 		return nil, fmt.Errorf("from: %w", err)
@@ -55,19 +46,16 @@ func (w *WorldTransition) Leave(fromWorld, toWorld, skipNote, character string) 
 	if skipNote == "" {
 		skipNote = "мгновение"
 	}
-	// Compress current state to a short departure note.
 	note := fmt.Sprintf("Уход в мир %s. Прошло времени: %s.", to, skipNote)
 	if err := w.fs.WriteRawAtomic("worlds/"+from+"/state.md",
 		StateHeader(fromDay, false)+"\n"+note+"\n"); err != nil {
 		return nil, err
 	}
-	// Freeze plan.md: append a single comment line so it remains forward-only.
 	planRaw, _ := w.fs.ReadRaw("worlds/" + from + "/plan.md")
 	if planRaw != "" && !strings.Contains(planRaw, "[заморожено]") {
 		planRaw += "\n[заморожено: переход в " + to + "]\n"
 		_ = w.fs.WriteRawAtomic("worlds/"+from+"/plan.md", planRaw)
 	}
-	// Initialise new world if absent.
 	created := false
 	if !w.fs.Exists("worlds/" + to) {
 		if err := w.initialiseBlankWorld(to); err != nil {
@@ -75,36 +63,18 @@ func (w *WorldTransition) Leave(fromWorld, toWorld, skipNote, character string) 
 		}
 		created = true
 	}
-	// Switch active world in the registry (info.yaml).
 	if err := w.switchActive(to, character); err != nil {
 		return nil, err
 	}
 	if character != "" {
-		_ = NewMaintenanceWithLogger(w.fs, w.log).AppendMemory(character,
+		_ = newMemory(w.fs, w.log).AppendMemory(character,
 			"Переход в мир "+to+". "+skipNote+".")
 	}
 	w.log.Info().Str("from", from).Str("to", to).Bool("new_world", created).Int("from_day", fromDay).Msg("world_leave")
-	return &LeaveResult{FromWorld: from, FromDay: fromDay, NewWorld: to, NewWorldInit: created}, nil
+	return &tools.LeaveResult{FromWorld: from, FromDay: fromDay, NewWorld: to, NewWorldInit: created}, nil
 }
 
-// switchActive rewrites the registry (info.yaml) so that the
-// active world points at toWorld and the toWorld appears in the
-// worlds list. The active character is preserved unless the caller
-// passes a non-empty character — that path is taken by Leave, where
-// the caller has just confirmed the player character for the new
-// world. If the world's directory does not exist on disk the
-// worlds list is left as-is — directories are the source of truth
-// for "which worlds exist" and the registry is just an
-// operator-facing summary.
-//
-// The registry is expected to exist by the time we reach this
-// method — it is created by FirstLaunch.Launch at /launch and
-// bootstrapped by SessionStart.Start at /start. If it is missing
-// here the caller's on-disk state is inconsistent (e.g. game-data
-// was wiped between sessions) and we surface the error honestly
-// rather than silently re-initialising and dropping the player's
-// character/world list.
-func (w *WorldTransition) switchActive(toWorld, character string) error {
+func (w *World) switchActive(toWorld, character string) error {
 	body, err := w.fs.ReadRaw(storage.InfoFile)
 	if err != nil {
 		w.log.Error().
@@ -133,9 +103,6 @@ func (w *WorldTransition) switchActive(toWorld, character string) error {
 		info.Worlds = append(info.Worlds, toWorld)
 	}
 	rendered := domain.BuildInfo(info.ActiveCharacter, info.ActiveWorld, without(info.Characters, info.ActiveCharacter), without(info.Worlds, info.ActiveWorld))
-	// BuildInfo emits the full file (frontmatter + anchors); use it
-	// to replace the body in one shot, preserving the existing
-	// anchor lines and any operator edits to the freeform section.
 	return w.fs.WriteRawAtomic(storage.InfoFile, rendered)
 }
 
@@ -149,7 +116,7 @@ func without(xs []string, drop string) []string {
 	return out
 }
 
-func (w *WorldTransition) initialiseBlankWorld(dir string) error {
+func (w *World) initialiseBlankWorld(dir string) error {
 	root := "worlds/" + dir
 	if err := w.fs.EnsureDir(root + "/characters"); err != nil {
 		return err
@@ -165,7 +132,7 @@ func (w *WorldTransition) initialiseBlankWorld(dir string) error {
 			return err
 		}
 	}
-	return NewMaintenanceWithLogger(w.fs, w.log).RotatePlan(dir, []string{
+	return newState(w.fs, w.log).RotatePlan(dir, []string{
 		"вводная сцена: знакомство с миром",
 		"первая зацепка / конфликт",
 		"первая развилка",
@@ -174,7 +141,7 @@ func (w *WorldTransition) initialiseBlankWorld(dir string) error {
 
 // ReturnWorld applies a literal time-skip to the left world and
 // prepares a re-entry scene description.
-func (w *WorldTransition) ReturnWorld(world, days string) (string, error) {
+func (w *World) ReturnWorld(world, days string) (string, error) {
 	wDir, err := domain.SanitizeName(world)
 	if err != nil {
 		return "", err

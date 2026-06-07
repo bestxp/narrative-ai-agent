@@ -89,11 +89,13 @@ type GM struct {
 	compaction   CompactionConfig
 	staticPrompt string
 	ss           *SessionStart
-	mt           *Maintenance
 	fl           *FirstLaunch
-	npcm         *NPCManager
-	wt           *WorldTransition
-	cu           *CharacterUpdate
+	// tools is the single file-backed Tool the GM reaches
+	// for when it dispatches a tool call. Replacing the five
+	// per-concern fields with one interface is the key
+	// simplification of the 2026-06 refactor: a future mock
+	// or alternate backend satisfies one interface, not five.
+	tools        Tool
 	summarizer   *Summarizer
 	sysSt        *SystemState
 	slow         *slowlog.Logger
@@ -101,8 +103,8 @@ type GM struct {
 	includeReply bool
 	log          zerolog.Logger
 
-	// tools cached on construction; immutable.
-	tools []llm.ToolSchema
+	// toolSpecs cached on construction; immutable.
+	toolSpecs []llm.ToolSchema
 }
 
 // GMConfig carries everything GM needs to bootstrap. Kept separate
@@ -132,20 +134,24 @@ type CompactionConfig struct {
 	KeepRecent int
 }
 
-// NewGM constructs the GM. The supplied system prompt is sent as
-// the first "system" message on every turn. The conversation state
-// (per ChatID) is kept in a sync.Map; the GM is therefore safe to
-// call from multiple goroutines.
-func NewGM(cfg GMConfig, fs *storage.FileStore, llmCli LLMClient, ss *SessionStart, mt *Maintenance, fl *FirstLaunch, npcm *NPCManager, wt *WorldTransition, cu *CharacterUpdate, summarizer *Summarizer, sysSt *SystemState, slow *slowlog.Logger, tracking string, includeReply bool, log zerolog.Logger) *GM {
+// NewGM constructs the GM. The supplied system prompt is
+// sent as the first "system" message on every turn. The
+// conversation state (per ChatID) is kept in a sync.Map; the
+// GM is therefore safe to call from multiple goroutines.
+//
+// The single Tool parameter bundles every domain operation
+// the GM needs. main.go wires the file-backed implementation
+// (NewFileToolset); tests pass a mock.
+func NewGM(cfg GMConfig, fs *storage.FileStore, llmCli LLMClient, ss *SessionStart, fl *FirstLaunch, tools Tool, summarizer *Summarizer, sysSt *SystemState, slow *slowlog.Logger, tracking string, includeReply bool, log zerolog.Logger) *GM {
 	log = log.With().Str("component", "gm").Logger()
-	tools := make([]llm.ToolSchema, 0, len(domain.Tools()))
+	toolSpecs := make([]llm.ToolSchema, 0, len(domain.Tools()))
 	for _, t := range domain.Tools() {
 		raw, err := t.MarshalParameters()
 		if err != nil {
 			log.Warn().Err(err).Str("tool", t.Function.Name).Msg("tool schema marshal failed; skipping")
 			continue
 		}
-		tools = append(tools, llm.ToolSchema{
+		toolSpecs = append(toolSpecs, llm.ToolSchema{
 			Name:        t.Function.Name,
 			Description: t.Function.Description,
 			Parameters:  raw,
@@ -158,18 +164,15 @@ func NewGM(cfg GMConfig, fs *storage.FileStore, llmCli LLMClient, ss *SessionSta
 		compaction:   cfg.Compaction,
 		staticPrompt: cfg.SystemPrompt,
 		ss:           ss,
-		mt:           mt,
 		fl:           fl,
-		npcm:         npcm,
-		wt:           wt,
-		cu:           cu,
+		tools:        tools,
 		summarizer:   summarizer,
 		sysSt:        sysSt,
 		slow:         slow,
 		tracking:     tracking,
 		includeReply: includeReply,
 		log:          log,
-		tools:        tools,
+		toolSpecs:    toolSpecs,
 	}
 }
 
@@ -204,13 +207,9 @@ func (g *GM) ResetConversation(chatID string) {
 //
 // maxToolRounds caps the number of tool-call rounds so a runaway
 // model cannot loop forever. 5 is enough for any realistic session.
-//
-// The returned TokenUsage is the cumulative prompt/completion count
-// across all rounds of this Reply. When the operator has
-// token_tracking=off the struct is zero-valued and the
-// dispatcher/transport can simply ignore it.
+const maxToolRounds = 5
+
 func (g *GM) Reply(ctx context.Context, chatID, userText string, cb Callbacks) (TokenUsage, error) {
-	const maxToolRounds = 5
 	var totals TokenUsage
 	if g.tracking == "" || g.tracking == "off" {
 		totals.Source = "off"
@@ -269,7 +268,7 @@ func (g *GM) Reply(ctx context.Context, chatID, userText string, cb Callbacks) (
 					if sumErr != nil {
 						g.log.Warn().Err(sumErr).Msg("summary failed; dropping turns without state.md append")
 					} else if sumRes.Text != "" {
-						if err := g.mt.AppendHistoryToState(currentWorldName(g.fs), sumRes.Text, now); err != nil {
+						if err := g.tools.AppendHistoryToState(currentWorldName(g.fs), sumRes.Text, now); err != nil {
 							g.log.Warn().Err(err).Msg("append history to state.md failed")
 						} else {
 							g.log.Info().Int("summary_chars", len(sumRes.Text)).Msg("summary appended to state.md")
@@ -331,7 +330,7 @@ func (g *GM) Reply(ctx context.Context, chatID, userText string, cb Callbacks) (
 		streamErr := g.llm.Stream(ctx, llm.ChatRequest{
 			Model:       g.role.Model,
 			Messages:    messages,
-			Tools:       g.tools,
+			Tools:       g.toolSpecs,
 			Temperature: g.role.Temperature,
 			MaxTokens:   g.role.MaxTokens,
 		}, func(ch llm.Chunk) error {
@@ -371,15 +370,22 @@ func (g *GM) Reply(ctx context.Context, chatID, userText string, cb Callbacks) (
 		}
 
 		// Persist the assistant turn regardless of finish reason.
+		// Tool calls with empty names are dropped here so the
+		// broken-cloud-stream case does not poison the next
+		// round with `[{"name":""}]` history entries.
+		storedCalls := toolCalls
+		if allToolCallsBroken(storedCalls) {
+			storedCalls = nil
+		}
 		conv.mu.Lock()
 		conv.messages = append(conv.messages, llm.Message{
 			Role:      "assistant",
 			Content:   assistantBuf.String(),
-			ToolCalls: toolCalls,
+			ToolCalls: storedCalls,
 		})
 		conv.mu.Unlock()
 		history = append(history, llm.Message{
-			Role: "assistant", Content: assistantBuf.String(), ToolCalls: toolCalls,
+			Role: "assistant", Content: assistantBuf.String(), ToolCalls: storedCalls,
 		})
 
 		// Accumulate per-round token accounting.
@@ -437,15 +443,108 @@ func (g *GM) Reply(ctx context.Context, chatID, userText string, cb Callbacks) (
 		// If the model only wanted to talk, we're done — but first
 		// check format compliance and re-prompt on missing blocks.
 		if len(toolCalls) == 0 || finishReason != "tool_calls" {
+			// Detect a "broken" tool-call round: the model
+			// emitted tool_calls but the stream cut off
+			// before any of them got a name. minimax-m3:cloud
+			// (Ollama Cloud) does this occasionally when
+			// its reasoning block runs past the response
+			// budget — we get `delta.tool_calls: [{}]`
+			// fragments that never assemble into a
+			// callable name. Treat this as the same
+			// "empty content" case below: the model did
+			// intend to act but the stream was clipped, so
+			// retrying the same prompt is the right move.
+			if allToolCallsBroken(toolCalls) {
+				toolCalls = nil
+				g.log.Warn().
+					Int("round", round).
+					Str("finish", finishReason).
+					Msg("llm emitted broken tool calls (no names) — treating as empty")
+			}
 			// Skip the format gate entirely when the round
 			// produced no content. Re-prompting on an empty
 			// string would force us to send "[system note]
 			// missing: 4 blocks" with no original to fix, and
 			// the model would either repeat nothing or invent
-			// text that ignores our blocks. Instead we surface
-			// a polite "model returned empty" placeholder so
-			// the user is not left hanging on a frozen "…".
+			// text that ignores our blocks.
+			//
+			// We DO try up to g.role.MaxEmptyRetries automatic
+			// retries of the same request: cloud Ollama
+			// models (and o1 family) occasionally return a
+			// `finish_reason: stop` with 0 content on the
+			// first round and a normal reply on the second.
+			// Some flaky providers need two restarts to
+			// recover. The retry is identical (same
+			// messages, same temperature) — it just gives
+			// the model another chance. MaxEmptyRetries is
+			// the hard cap: if all retries return empty we
+			// surface the placeholder so the operator can
+			// diagnose via slowlog. The default of 2
+			// is set in config/config.go's Validate; the
+			// operator can raise it for particularly flaky
+			// cloud providers via config.yaml.
 			if len(assistantBuf.String()) == 0 {
+				// MaxEmptyRetries=0 explicitly disables
+				// auto-retry — the operator gets the polite
+				// placeholder immediately. Any positive
+				// value N yields exactly N retries.
+				if g.role.MaxEmptyRetries <= 0 {
+					if cb.OnDelta != nil {
+						_ = cb.OnDelta("⚠️ модель не вернула ответ — попробуй ещё раз")
+					}
+					g.log.Warn().
+						Int("round", round).
+						Str("finish", finishReason).
+						Msg("llm returned empty content; auto-retry disabled")
+					return totals, nil
+				}
+				for attempt := 1; attempt <= g.role.MaxEmptyRetries; attempt++ {
+					retryText, retryUsage, retryRawTrace, retryErr := g.retryEmptyOnce(ctx, messages, g.role.EmptyRetryTimeoutSeconds)
+					totals.PromptTokens += retryUsage.PromptTokens
+					totals.CompletionTokens += retryUsage.CompletionTokens
+					totals.TotalTokens += retryUsage.TotalTokens
+					if retryUsage.Source != "" && (totals.Source == "" || totals.Source == "off") {
+						totals.Source = retryUsage.Source
+					}
+					if retryErr != nil {
+						g.log.Warn().Err(retryErr).Int("attempt", attempt).Msg("empty-content retry failed; falling through to placeholder")
+						break
+					}
+					if retryText != "" {
+						// Success on retry — splice the
+						// recovered text into the visible
+						// buffer with a marker so the
+						// player sees what happened.
+						if cb.OnDelta != nil {
+							_ = cb.OnDelta("\n\n[ответ восстановлен после повтора]\n\n" + retryText)
+						}
+						conv.mu.Lock()
+						if len(conv.messages) > 0 {
+							last := conv.messages[len(conv.messages)-1]
+							if last.Role == "assistant" {
+								last.Content = "[первый ответ был пустым]\n\n" + retryText
+								conv.messages[len(conv.messages)-1] = last
+							}
+						}
+						conv.mu.Unlock()
+						g.log.Info().Int("attempt", attempt).Int("retry_chars", len(retryText)).Msg("empty-content retry succeeded")
+						return totals, nil
+					}
+					// Retry also empty — log the raw trace
+					// for diagnosis. Continue the loop to
+					// try the next attempt.
+					if g.slow != nil {
+						_ = g.slow.Write("llm.empty_retry", chatID, map[string]any{
+							"round":     round,
+							"attempt":   attempt,
+							"raw_trace": retryRawTrace,
+						})
+					}
+					g.log.Warn().
+						Int("round", round).
+						Int("attempt", attempt).
+						Msg("empty-content retry also returned 0; trying again")
+				}
 				if cb.OnDelta != nil {
 					_ = cb.OnDelta("⚠️ модель не вернула ответ — попробуй ещё раз")
 				}
@@ -469,11 +568,22 @@ func (g *GM) Reply(ctx context.Context, chatID, userText string, cb Callbacks) (
 					if cb.OnDelta != nil {
 						_ = cb.OnDelta("\n\n[формат восстановлен]\n\n" + fixed)
 					}
+					// Persist ONLY the fixed chunk as the
+					// assistant turn. The truncated
+					// original is omitted from history —
+					// otherwise the model sees half a
+					// sentence + a [формат восстановлен]
+					// marker on its next turn and tries
+					// to "continue" the broken text. The
+					// recovered text already satisfies
+					// the 4-block contract, so it is
+					// self-contained as a training
+					// example.
 					conv.mu.Lock()
 					if len(conv.messages) > 0 {
 						last := conv.messages[len(conv.messages)-1]
 						if last.Role == "assistant" {
-							last.Content = assistantBuf.String() + "\n\n[формат восстановлен]\n\n" + fixed
+							last.Content = fixed
 							conv.messages[len(conv.messages)-1] = last
 						}
 					}
@@ -493,6 +603,15 @@ func (g *GM) Reply(ctx context.Context, chatID, userText string, cb Callbacks) (
 			cb.OnStatus("tool_dispatch", map[string]any{"tools": names})
 		}
 		results := g.executeTools(ctx, toolCalls)
+		// Post-tool guard: if the model returned a narrative that
+		// mentions facts about the player (age, name, skills) or
+		// new NPC names but did NOT call update_character /
+		// create_npc, the player's persistent files are now
+		// out-of-date. We log a warning so the operator can
+		// see the gap in slow.log, and inject a one-shot hint
+		// onto the next user turn via the conv history so the
+		// model gets a chance to self-correct.
+		g.missedToolGuard(ctx, chatID, toolCalls, assistantBuf.String(), currentWorldName(g.fs))
 		conv.mu.Lock()
 		conv.messages = append(conv.messages, results...)
 		conv.mu.Unlock()
@@ -500,6 +619,125 @@ func (g *GM) Reply(ctx context.Context, chatID, userText string, cb Callbacks) (
 		toolCalls = nil
 	}
 	return totals, fmt.Errorf("gm: tool loop exceeded %d rounds", maxToolRounds)
+}
+
+// missedToolGuard inspects the assistant turn + the tool calls
+// the model issued and warns (via slowlog) when the narrative
+// clearly called for update_character / create_npc but no
+// such call was made. The check is heuristic on purpose — it
+// errs on the side of "no warning" rather than spamming the
+// slowlog on every turn. Operators who want a tighter contract
+// can add a stricter checker here.
+func (g *GM) missedToolGuard(_ context.Context, chatID string, calls []llm.ToolCall, answer string, world string) {
+	if world == "" {
+		return
+	}
+	called := make(map[string]bool, len(calls))
+	for _, tc := range calls {
+		called[tc.Function.Name] = true
+	}
+	lower := strings.ToLower(answer)
+	// Missing update_character: the assistant turn mentions
+	// the player's name, age, or a clear self-disclosure
+	// ("мне N лет", "меня зовут", "я умею"). These are the
+	// triggers the prompt's checklist calls out, so the
+	// absence of the tool is a real signal.
+	if !called["update_character"] {
+		triggers := []string{
+			"мне ", "лет", "меня зовут", "я умею", "мой навык", "моя цель",
+			"я родился", "я из ", "моё прошлое", "в моём мире", "в моей школе",
+		}
+		for _, t := range triggers {
+			if strings.Contains(lower, t) {
+				g.log.Warn().
+					Str("trigger", t).
+					Str("chat", chatID).
+					Msg("narrative mentions player facts but update_character was not called")
+				if g.slow != nil {
+					_ = g.slow.Write("gm.missed_tool", chatID, map[string]any{
+						"tool":   "update_character",
+						"reason": "player facts mentioned in narrative",
+						"trigger": t,
+					})
+				}
+				return
+			}
+		}
+	}
+	// Missing create_npc: the assistant turn mentions a new
+	// NPC by name whose profile does not yet exist on disk.
+	// We do a quick check against the worlds/<w>/characters/
+	// directory — any uppercase name that is not already a
+	// file is a candidate. The threshold is "mentioned in
+	// dialogue" (i.e. quoted), not merely listed in npcs.
+	if !called["create_npc"] {
+		for _, npc := range extractProperNamesFromDialogue(answer) {
+			rel := "worlds/" + world + "/characters/" + npc + ".md"
+			if !g.fs.Exists(rel) {
+				g.log.Warn().
+					Str("npc", npc).
+					Str("chat", chatID).
+					Msg("narrative introduces a new NPC without a profile; create_npc was not called")
+				if g.slow != nil {
+					_ = g.slow.Write("gm.missed_tool", chatID, map[string]any{
+						"tool": "create_npc",
+						"npc":  npc,
+					})
+				}
+				return
+			}
+		}
+	}
+}
+
+// extractProperNamesFromDialogue returns a slice of
+// candidate NPC names that appear in dialogue lines of the
+// answer. A "dialogue line" is anything starting with "—".
+// We pull the next 1-3 capitalised words off the line — that
+// is the pattern a Russian GM uses ("— Ирука повернулся…",
+// "— Хокаге-сама, я…").
+func extractProperNamesFromDialogue(answer string) []string {
+	var out []string
+	seen := make(map[string]bool)
+	for _, ln := range strings.Split(answer, "\n") {
+		t := strings.TrimSpace(ln)
+		if !strings.HasPrefix(t, "—") && !strings.HasPrefix(t, "-") {
+			continue
+		}
+		// Strip the leading dash and split into words.
+		body := strings.TrimLeft(t, "—- ")
+		// Walk words; collect runs of capitalised tokens.
+		var current []string
+		for _, w := range strings.Fields(body) {
+			// Strip punctuation.
+			cleaned := strings.Trim(w, ",.;:!?\"'()«»…")
+			if cleaned == "" {
+				continue
+			}
+			// Capitalised iff the first rune is uppercase.
+			runes := []rune(cleaned)
+			if runes[0] >= 'A' && runes[0] <= 'Z' || runes[0] >= 'А' && runes[0] <= 'Я' {
+				current = append(current, cleaned)
+			} else {
+				if len(current) > 0 {
+					name := strings.Join(current, " ")
+					if !seen[name] {
+						seen[name] = true
+						out = append(out, name)
+					}
+					current = nil
+				}
+			}
+		}
+		if len(current) > 0 {
+			name := strings.Join(current, " ")
+			if !seen[name] {
+				seen[name] = true
+				out = append(out, name)
+			}
+		}
+	}
+	return out
 }
 
 // accountRound converts the per-round counters into a TokenUsage.
@@ -629,7 +867,7 @@ func (g *GM) loadActiveNPCs(world, state string) []domain.NPCSnapshot {
 		if name == "" {
 			continue
 		}
-		body, err := g.npcm.Load(world, name)
+		body, err := g.tools.Load(world, name)
 		if err != nil {
 			g.log.Warn().Err(err).Str("npc", name).Msg("skip npc load")
 			continue
@@ -673,12 +911,12 @@ func (g *GM) dispatchOneTool(_ context.Context, tc llm.ToolCall) (string, string
 		if day == 0 || summary == "" {
 			return "", "end_day requires day and summary"
 		}
-		if err := g.mt.ArchiveDay(currentWorldName(g.fs), day, summary); err != nil {
+		if err := g.tools.ArchiveDay(currentWorldName(g.fs), day, summary); err != nil {
 			return "", err.Error()
 		}
 		return okJSON("archived"), ""
 	case "run_maintenance":
-		touched, err := g.mt.CompactNPCs(currentWorldName(g.fs))
+		touched, err := g.tools.CompactNPCs(currentWorldName(g.fs))
 		if err != nil {
 			return "", err.Error()
 		}
@@ -691,10 +929,8 @@ func (g *GM) dispatchOneTool(_ context.Context, tc llm.ToolCall) (string, string
 		if moment == "" {
 			return "", "update_state requires moment"
 		}
-		// Day number is taken from the current state.md; if absent,
-		// default to 1 so the LLM can keep going.
 		day := readCurrentDay(g.fs, currentWorldName(g.fs))
-		if err := g.mt.UpdateState(StateSnapshot{
+		if err := g.tools.UpdateState(StateSnapshot{
 			Day: day, InFlight: inFlight, Moment: moment, NPCs: npcs,
 			AppendEvents: events,
 		}); err != nil {
@@ -703,7 +939,7 @@ func (g *GM) dispatchOneTool(_ context.Context, tc llm.ToolCall) (string, string
 		return okJSON("state updated"), ""
 	case "rotate_plan":
 		events := toStringSlice(args["events"])
-		if err := g.mt.RotatePlan(currentWorldName(g.fs), events); err != nil {
+		if err := g.tools.RotatePlan(currentWorldName(g.fs), events); err != nil {
 			return "", err.Error()
 		}
 		return okJSON("plan rotated"), ""
@@ -716,27 +952,26 @@ func (g *GM) dispatchOneTool(_ context.Context, tc llm.ToolCall) (string, string
 			Abilities:   toString(args["abilities"]),
 			Nicknames:   toStringSlice(args["nicknames"]),
 		}
-		if err := g.npcm.Create(currentWorldName(g.fs), spec); err != nil {
+		if err := g.tools.Create(currentWorldName(g.fs), spec); err != nil {
 			return "", err.Error()
 		}
 		return okJSON("npc created"), ""
 	case "leave_world":
 		to := toString(args["to_world"])
 		skip := toString(args["skip_note"])
-		// We need the from-world which lives in the registry (info.yaml).
 		sc, err := g.ss.Start()
 		if err != nil {
 			return "", err.Error()
 		}
-		if _, err := g.wt.Leave(sc.World, to, skip, sc.Character); err != nil {
+		if _, err := g.tools.Leave(sc.World, to, skip, sc.Character); err != nil {
 			return "", err.Error()
 		}
-		g.ResetConversation(sc.Character) // best-effort, no chatID available
+		g.ResetConversation(sc.Character)
 		return okJSON("world switched"), ""
 	case "update_character":
-		if g.cu == nil {
-			return "", "update_character: character updater not wired"
-		}
+		if g.tools == nil {
+		return "", "update_character: tool not wired"
+	}
 		file := toString(args["file"])
 		section := toString(args["section"])
 		appendText := toString(args["append"])
@@ -744,11 +979,34 @@ func (g *GM) dispatchOneTool(_ context.Context, tc llm.ToolCall) (string, string
 		if err != nil {
 			return "", err.Error()
 		}
-		if err := g.cu.Append(sc.Character, file, section, appendText); err != nil {
+		if err := g.tools.Append(sc.Character, file, section, appendText); err != nil {
 			return "", err.Error()
 		}
 		return okJSON(map[string]any{
 			"file":    file,
+			"section": section,
+		}), ""
+	case "update_npc":
+		if g.tools == nil {
+			return "", "update_npc: tool not wired"
+		}
+		npcName := toString(args["npc"])
+		section := toString(args["section"])
+		appendText := toString(args["append"])
+		if npcName == "" {
+			return "", "update_npc: npc name required"
+		}
+		if section == "" {
+			return "", "update_npc: section required"
+		}
+		if strings.TrimSpace(appendText) == "" {
+			return "", "update_npc: append text required (no empty updates)"
+		}
+		if err := g.tools.UpdateNPC(currentWorldName(g.fs), npcName, section, appendText); err != nil {
+			return "", err.Error()
+		}
+		return okJSON(map[string]any{
+			"npc":     npcName,
 			"section": section,
 		}), ""
 	}
@@ -756,6 +1014,30 @@ func (g *GM) dispatchOneTool(_ context.Context, tc llm.ToolCall) (string, string
 }
 
 // --- helpers ---
+
+// allToolCallsBroken reports whether every entry in calls
+// has an empty Function.Name — the signature of a stream
+// that emitted `delta.tool_calls` JSON fragments but never
+// assembled them into a complete call. minimax-m3:cloud
+// (Ollama Cloud) does this when its reasoning block runs
+// past the response budget: the model decides to call a
+// tool, the stream cuts off before the head lands, and the
+// caller (us) ends up with one or more headless tool-call
+// entries. They would be useless to dispatch (every one
+// becomes "unknown tool:" in dispatchOneTool's default
+// branch), so we treat the whole round as "empty content"
+// and let the existing retry path take over.
+func allToolCallsBroken(calls []llm.ToolCall) bool {
+	if len(calls) == 0 {
+		return false
+	}
+	for _, tc := range calls {
+		if tc.Function.Name != "" {
+			return false
+		}
+	}
+	return true
+}
 
 // mergeToolCalls stitches together the partial tool-call chunks
 // that OpenAI emits across a stream. Each chunk may carry the full
@@ -889,6 +1171,84 @@ func (g *GM) missingFormatHeaders(text string) []string {
 	return missing
 }
 
+// retryEmptyOnce re-issues the exact same LLM request that
+// just produced 0 content. The two cloud-Ollama cases that
+// motivated this — the minimax-m3:cloud deployment returning
+// 4 chunks of `delta.content: ""` and then `finish_reason:
+// stop`, and the o1 family occasionally returning an empty
+// stop frame after a long thinking phase — both recover on
+// the second attempt. The retry is byte-for-byte identical
+// to the original (same messages, same temperature, same
+// tools); the only thing that changes is the model gets
+// another chance to emit visible text.
+//
+// Returned: the assistant text (may still be empty), the
+// token usage, the raw SSE trace (so the slowlog can
+// diagnose a second empty round), and the stream error if
+// any.
+func (g *GM) retryEmptyOnce(ctx context.Context, messages []llm.Message, timeoutSec int) (string, TokenUsage, []string, error) {
+	var (
+		buf          strings.Builder
+		usageFromAPI llm.Usage
+		gotUsage     bool
+		compChars    int
+		finishReason string
+		rawTrace     []string
+	)
+	totals := TokenUsage{}
+	if g.tracking == "" || g.tracking == "off" {
+		totals.Source = "off"
+	}
+	streamErr := g.llm.Stream(ctx, llm.ChatRequest{
+		Model:          g.role.Model,
+		Messages:       messages,
+		Tools:          g.toolSpecs,
+		Temperature:    g.role.Temperature,
+		MaxTokens:      g.role.MaxTokens,
+		TimeoutSeconds: timeoutSec,
+	}, func(ch llm.Chunk) error {
+		if len(ch.RawTrace) > 0 {
+			rawTrace = ch.RawTrace
+		}
+		if ch.Done {
+			return nil
+		}
+		if ch.Content != "" {
+			buf.WriteString(ch.Content)
+			compChars += len(ch.Content)
+		}
+		if ch.Finish != "" {
+			finishReason = ch.Finish
+		}
+		if ch.Usage.TotalTokens > 0 || ch.Usage.PromptTokens > 0 {
+			usageFromAPI = ch.Usage
+			gotUsage = true
+		}
+		return nil
+	})
+	if streamErr != nil {
+		return "", totals, rawTrace, streamErr
+	}
+	_ = compChars
+	_ = finishReason
+	if gotUsage {
+		totals = TokenUsage{
+			PromptTokens:     usageFromAPI.PromptTokens,
+			CompletionTokens: usageFromAPI.CompletionTokens,
+			TotalTokens:      usageFromAPI.TotalTokens,
+			Source:           "usage",
+		}
+	} else if g.tracking == "estimate" {
+		totals = TokenUsage{
+			PromptTokens:     llm.EstimateMessages(messages),
+			CompletionTokens: llm.EstimateTokens(buf.String()),
+			TotalTokens:      llm.EstimateMessages(messages) + llm.EstimateTokens(buf.String()),
+			Source:           "estimate",
+		}
+	}
+	return buf.String(), totals, rawTrace, nil
+}
+
 // repromptForFormat appends a corrective user message to history
 // and runs one more LLM round. The corrective text is short and
 // neutral — it only lists the headers that were missing, then
@@ -916,6 +1276,8 @@ func (g *GM) repromptForFormat(ctx context.Context, chatID string, history []llm
 		"[system note] твой предыдущий ответ не содержал обязательных блоков: %s. "+
 			"Перепиши ответ с нуля, включив все четыре блока **в этом порядке**: "+
 			"**диалоги и действия**, **КОНТЕКСТ И ИЗМЕНЕНИЯ**, **БУДУЩЕЕ**, **ВАЛИДАЦИЯ ПРАВИЛ**. "+
+			"**КРАТКО**: нарратив ≤ 150 слов, каждый служебный блок — 1-2 строки (иначе ответ оборвётся по лимиту токенов). "+
+			"**Не продолжай** предыдущий оборванный текст — начни с нового абзаца. "+
 			"Не пиши пятый блок (варианты действий / следующий ход / выбор игрока), "+
 			"не задавай игроку вопрос в конце, не нумеруй опции.",
 		missingList,
@@ -945,7 +1307,7 @@ func (g *GM) repromptForFormat(ctx context.Context, chatID string, history []llm
 	streamErr := g.llm.Stream(ctx, llm.ChatRequest{
 		Model:       g.role.Model,
 		Messages:    messages,
-		Tools:       g.tools,
+		Tools:       g.toolSpecs,
 		Temperature: g.role.Temperature,
 		MaxTokens:   g.role.MaxTokens,
 	}, func(ch llm.Chunk) error {

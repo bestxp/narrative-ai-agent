@@ -68,7 +68,7 @@ git:
 # narrative: поведенческая обёртка GM — лимит слов и язык ответов.
 # ----------------------------------------------------------------------------
 narrative:
-  word_limit: 350   # Мягкий лимит на длину ответа (правило "~350 слов")
+  word_limit: 250   # Мягкий лимит на длину ответа (правило "~200 слов")
   language: "ru"    # Язык, на котором GM пишет
   # rules_check_block: показывать ли игроку LLM-генерируемый блок
   # "**ВАЛИДАЦИЯ ПРАВИЛ**" (лимит слов, NPC isolation, обновлённые файлы).
@@ -140,6 +140,19 @@ llm:
       context_window: 32000
       compaction_threshold: 0.7
       compaction_keep_recent: 5
+      # max_empty_retries: сколько раз бот автоматически
+      # повторит запрос, если LLM вернул 0 chars (cloud
+      # Ollama иногда "зависает в размышлениях" и шлёт пустой
+      # finish_reason: stop). Default 2. Увеличь до 3-4 для
+      # очень flaky провайдеров.
+      max_empty_retries: 2
+      # empty_retry_timeout_seconds: таймаут на КАЖДЫЙ retry
+      # round. Cloud Ollama медленная (50-90s на ответ), а
+      # дефолтный request_timeout_seconds может быть 60s —
+      # тогда retry обрывается прямо на полпути. Default =
+      # request_timeout_seconds (120). Для cloud Ollama
+      # рекомендую 180.
+      empty_retry_timeout_seconds: 180
       # disable_thinking: отключить chain-of-thought reasoning
       # на провайдерах, которые уважают OpenAI-compat поле
       # `reasoning_effort` (Ollama /v1/chat/completions, OpenAI

@@ -229,21 +229,33 @@ func (c *Client) Run(ctx context.Context) error {
 
 // Send implements messaging.Client.
 func (c *Client) Send(ctx context.Context, msg messaging.OutgoingMessage) error {
-	m := tg.NewMessage(parseChatID(msg.ChatID), c.formatText(msg.Text, msg.ParseMode))
-	if msg.ParseMode != "" {
-		m.ParseMode = msg.ParseMode
-	} else if c.cfg.ParseMode != "" {
-		m.ParseMode = c.cfg.ParseMode
+	wire := c.formatText(msg.Text, msg.ParseMode)
+	// Telegram caps each message at 4096 characters. Long
+	// freeform replies (e.g. /me dump of a 7k-character
+	// character) have to be split; the first chunk is the
+	// "main" reply, the rest are continuations sent as
+	// fresh messages in the same chat.
+	chunks := splitForTelegram(wire)
+	for i, chunk := range chunks {
+		m := tg.NewMessage(parseChatID(msg.ChatID), chunk)
+		if msg.ParseMode != "" {
+			m.ParseMode = msg.ParseMode
+		} else if c.cfg.ParseMode != "" {
+			m.ParseMode = c.cfg.ParseMode
+		}
+		// Only the first chunk carries the reply_to
+		// threading — continuations are not replies to the
+		// user's message, they are follow-ups to the
+		// bot's own preceding message.
+		if i == 0 && msg.ReplyToMessageID > 0 {
+			m.ReplyToMessageID = msg.ReplyToMessageID
+		}
+		if _, err := c.api.Send(m); err != nil {
+			c.log.Error().Err(err).Str("chat", msg.ChatID).Int("reply_to", msg.ReplyToMessageID).Int("text_len", len(chunk)).Int("chunk", i).Msg("telegram: send failed")
+			return err
+		}
 	}
-	if msg.ReplyToMessageID > 0 {
-		m.ReplyToMessageID = msg.ReplyToMessageID
-	}
-	sent, err := c.api.Send(m)
-	if err != nil {
-		c.log.Error().Err(err).Str("chat", msg.ChatID).Int("reply_to", msg.ReplyToMessageID).Int("text_len", len(msg.Text)).Msg("telegram: send failed")
-		return err
-	}
-	c.log.Debug().Str("chat", msg.ChatID).Int("msg_id", sent.MessageID).Int("reply_to", msg.ReplyToMessageID).Msg("send ok")
+	c.log.Debug().Str("chat", msg.ChatID).Int("reply_to", msg.ReplyToMessageID).Int("text_len", len(msg.Text)).Int("chunks", len(chunks)).Msg("send ok")
 	return nil
 }
 

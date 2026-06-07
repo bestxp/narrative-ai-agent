@@ -272,6 +272,21 @@ type LLMRoleConfig struct {
 	// state.md and memorise.md which the LLM re-reads every
 	// turn via the system prompt. Default 5.
 	CompactionKeepRecent int `yaml:"compaction_keep_recent"`
+	// MaxEmptyRetries is the number of automatic re-issues of
+	// the same LLM request when the previous round produced 0
+	// content (the model "thought" past its budget, the stream
+	// was clipped, or `delta.tool_calls` came in headless). Each
+	// retry is byte-for-byte identical to the original — same
+	// messages, same temperature, same tools — and just gives
+	// the provider another chance. Default 2.
+	MaxEmptyRetries int `yaml:"max_empty_retries"`
+	// EmptyRetryTimeoutSeconds is the per-retry HTTP timeout
+	// for the auto-retry rounds. Cloud Ollama is slow under
+	// load (50-90s per response on the minimax-m3:cloud tier)
+	// and the default per-role timeout may be too tight when
+	// the model is mid-thought. Set 0 to fall back to the
+	// role's RequestTimeoutSeconds.
+	EmptyRetryTimeoutSeconds int `yaml:"empty_retry_timeout_seconds"`
 	// DisableThinking turns off chain-of-thought reasoning on
 	// providers that recognise `reasoning_effort` (Ollama via
 	// /v1/chat/completions, OpenAI reasoning models, xAI
@@ -404,7 +419,7 @@ func (c *Config) Validate() error {
 	// RemoteDisabled is a bool — its zero value is false, which
 	// matches the default behaviour (push enabled).
 	if c.Narrative.WordLimit == 0 {
-		c.Narrative.WordLimit = 350
+		c.Narrative.WordLimit = 150
 	}
 	if c.Narrative.Language == "" {
 		c.Narrative.Language = "ru"
@@ -415,10 +430,12 @@ func (c *Config) Validate() error {
 		role.APIURL = nonEmpty(role.APIURL, "http://localhost:11434/v1")
 		role.APIKey = nonEmpty(role.APIKey, "ollama")
 		role.RequestTimeoutSeconds = nonZero(role.RequestTimeoutSeconds, c.LLM.DefaultTimeoutSeconds)
-		role.MaxTokens = nonZero(role.MaxTokens, 1500)
+		role.MaxTokens = nonZero(role.MaxTokens, 2500)
 		role.Temperature = nonZeroFloat(role.Temperature, 0.8)
 		role.CompactionThreshold = nonZeroFloat(role.CompactionThreshold, 0.7)
 		role.CompactionKeepRecent = nonZero(role.CompactionKeepRecent, 5)
+		role.MaxEmptyRetries = nonZero(role.MaxEmptyRetries, 2)
+		role.EmptyRetryTimeoutSeconds = nonZero(role.EmptyRetryTimeoutSeconds, role.RequestTimeoutSeconds)
 		// system_prompt_path stays empty by default. main.go
 		// will fall back to the embed.FS copy in internal/prompts.
 		// Operators who want to A/B test a new prompt set the

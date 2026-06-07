@@ -32,6 +32,34 @@ func (s *stream) Append(ctx context.Context, text string) error {
 		return nil
 	}
 	wire := s.client.formatText(text, "")
+	// Telegram caps messages at 4096 chars; if the LLM
+	// produced a 7k-block in one go we have to split it.
+	// The first chunk fits in the placeholder message,
+	// subsequent chunks go to fresh messages.
+	if len(wire) > maxTelegramMessageLen {
+		chunks := splitForTelegram(wire)
+		wire = chunks[0]
+		// The remainder we send after the stream Final
+		// (Final calls Append with the full text — by the
+		// time Final runs the text is the complete
+		// assembly). For Append, we only see a growing
+		// prefix, so any chunks beyond the first are
+		// appended to the visible stream as new messages
+		// now.
+		for _, tail := range chunks[1:] {
+			m := tg.NewMessage(s.chat, tail)
+			if s.client.cfg.ParseMode != "" {
+				m.ParseMode = s.client.cfg.ParseMode
+			}
+			if _, err := s.client.api.Send(m); err != nil {
+				s.client.log.Error().
+					Err(err).
+					Str("chat", s.chatID).
+					Int("text_len", len(tail)).
+					Msg("stream tail send failed")
+			}
+		}
+	}
 	e := tg.EditMessageTextConfig{
 		BaseEdit: tg.BaseEdit{
 			ChatID:    s.chat,
@@ -52,13 +80,45 @@ func (s *stream) Append(ctx context.Context, text string) error {
 				Msg("stream edit: no-op (content unchanged)")
 			return nil
 		}
-		s.client.log.Error().
-			Err(err).
-			Str("chat", s.chatID).
-			Int("msg_id", s.msgID).
-			Int("text_len", len(text)).
-			Msg("stream edit failed")
-		return err
+		if isMessageTooLong(err) {
+			// Defensive: the pre-split above should have
+			// caught this, but if the formatted wire text
+			// grew past the cap (markup expansion) we
+			// retry with the first chunk and queue the
+			// rest.
+			chunks := splitForTelegram(wire)
+			wire = chunks[0]
+			e.Text = wire
+			if _, retryErr := s.client.api.Send(e); retryErr != nil {
+				s.client.log.Error().
+					Err(retryErr).
+					Str("chat", s.chatID).
+					Int("text_len", len(wire)).
+					Msg("stream edit retry after split failed")
+				return retryErr
+			}
+			for _, tail := range chunks[1:] {
+				m := tg.NewMessage(s.chat, tail)
+				if s.client.cfg.ParseMode != "" {
+					m.ParseMode = s.client.cfg.ParseMode
+				}
+				if _, sendErr := s.client.api.Send(m); sendErr != nil {
+					s.client.log.Error().
+						Err(sendErr).
+						Str("chat", s.chatID).
+						Int("text_len", len(tail)).
+						Msg("stream tail send after split failed")
+				}
+			}
+		} else {
+			s.client.log.Error().
+				Err(err).
+				Str("chat", s.chatID).
+				Int("msg_id", s.msgID).
+				Int("text_len", len(text)).
+				Msg("stream edit failed")
+			return err
+		}
 	}
 	s.lastSent = text
 	return nil

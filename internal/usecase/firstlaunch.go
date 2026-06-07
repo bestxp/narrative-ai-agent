@@ -3,6 +3,7 @@ package usecase
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/rs/zerolog"
@@ -108,11 +109,7 @@ func (f *FirstLaunch) writeWorld(dir string, w WorldSpec) error {
 	if err := f.fs.WriteRawAtomic(root+"/lore.md", lore); err != nil {
 		return err
 	}
-	if err := NewMaintenance(f.fs).RotatePlan(dir, []string{
-		"вводная сцена: знакомство с миром",
-		"первая зацепка / конфликт",
-		"первая развилка",
-	}); err != nil {
+	if err := f.fs.WriteRawAtomic(root+"/plan.md", defaultPlan(dir)); err != nil {
 		return err
 	}
 	if err := f.fs.WriteRawAtomic(root+"/memorise.md", ""); err != nil {
@@ -120,4 +117,26 @@ func (f *FirstLaunch) writeWorld(dir string, w WorldSpec) error {
 	}
 	reg := "# NPC: " + strings.TrimSpace(w.DisplayName) + "\n| Имя | Файл | Прозвища |\n|-----|------|----------|\n"
 	return f.fs.WriteRawAtomic(root+"/characters.md", reg)
+}
+
+// defaultPlan returns the canonical 3-event starter plan for
+// a brand-new world. Equivalent to
+// Maintenance.RotatePlan(dir, [...]) but inlined here so
+// firstlaunch does not have to spin up a full toolset just
+// to write four lines.
+func defaultPlan(dir string) string {
+	var b strings.Builder
+	b.WriteString("# План: " + dir + "\n\n")
+	for i, e := range []string{
+		"вводная сцена: знакомство с миром",
+		"первая зацепка / конфликт",
+		"первая развилка",
+	} {
+		b.WriteString("- День +")
+		b.WriteString(strconv.Itoa(i + 1))
+		b.WriteString(": ")
+		b.WriteString(e)
+		b.WriteString("\n")
+	}
+	return b.String()
 }

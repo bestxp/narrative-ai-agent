@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestMarkdownToHTML_Bold(t *testing.T) {
@@ -99,6 +100,75 @@ func TestIsMessageNotModified(t *testing.T) {
 	assert.True(t, isMessageNotModified(errString("Bad Request: message is not modified: specified new message content and reply markup are exactly the same as a current content and reply markup of the message")))
 	assert.False(t, isMessageNotModified(errString("network timeout")))
 	assert.False(t, isMessageNotModified(nil))
+}
+
+// TestIsMessageTooLong covers the two Telegram error
+// phrasings for the 4096-char cap. The first is the
+// short-form returned by the bot API; the second is the
+// long-form some proxies (Cloudflare in front of older
+// Telegram cores) use.
+func TestIsMessageTooLong(t *testing.T) {
+	assert.True(t, isMessageTooLong(errString("Bad Request: MESSAGE_TOO_LONG")))
+	assert.True(t, isMessageTooLong(errString("Bad Request: message is too long")))
+	assert.True(t, isMessageTooLong(errString("400 MESSAGE_TOO_LONG: chat is rate-limited")))
+	assert.False(t, isMessageTooLong(errString("Bad Request: chat not found")))
+	assert.False(t, isMessageTooLong(nil))
+}
+
+// TestSplitForTelegram_ShortText is the no-split case: text
+// already fits, returned as a single chunk.
+func TestSplitForTelegram_ShortText(t *testing.T) {
+	out := splitForTelegram("hello world")
+	assert.Equal(t, []string{"hello world"}, out)
+}
+
+// TestSplitForTelegram_AtParagraphBoundary covers the
+// preferred path: text > 4096, but a "\n\n" within the cap
+// marks a clean cut. Result is two chunks, each ≤ 4096.
+func TestSplitForTelegram_AtParagraphBoundary(t *testing.T) {
+	para1 := strings.Repeat("a", 3000)
+	para2 := strings.Repeat("b", 3000)
+	text := para1 + "\n\n" + para2
+	out := splitForTelegram(text)
+	require.Len(t, out, 2, "should split at the \\n\\n boundary, not later")
+	assert.Equal(t, para1+"\n\n", out[0])
+	assert.Equal(t, para2, out[1])
+	for i, c := range out {
+		assert.LessOrEqual(t, len(c), maxTelegramMessageLen, "chunk %d exceeds cap", i)
+	}
+}
+
+// TestSplitForTelegram_ThreeChunks covers a longer text
+// that requires three splits, each at the most recent
+// paragraph break within the cap.
+func TestSplitForTelegram_ThreeChunks(t *testing.T) {
+	paras := []string{
+		strings.Repeat("a", 3500),
+		strings.Repeat("b", 3500),
+		strings.Repeat("c", 3500),
+	}
+	text := strings.Join(paras, "\n\n")
+	out := splitForTelegram(text)
+	require.GreaterOrEqual(t, len(out), 2, "should split at least once")
+	for i, c := range out {
+		assert.LessOrEqual(t, len(c), maxTelegramMessageLen, "chunk %d exceeds cap", i)
+	}
+	reassembled := strings.Join(out, "")
+	assert.Equal(t, text, reassembled, "splitting must round-trip cleanly")
+}
+
+// TestSplitForTelegram_HardCutOnGiantParagraph covers the
+// rare case where one paragraph exceeds the cap on its
+// own. The splitter falls back to a hard cut at the cap;
+// the round-trip is still lossless.
+func TestSplitForTelegram_HardCutOnGiantParagraph(t *testing.T) {
+	big := strings.Repeat("x", maxTelegramMessageLen+500)
+	out := splitForTelegram(big)
+	require.GreaterOrEqual(t, len(out), 2)
+	for i, c := range out {
+		assert.LessOrEqual(t, len(c), maxTelegramMessageLen, "chunk %d exceeds cap", i)
+	}
+	assert.Equal(t, big, strings.Join(out, ""))
 }
 
 type stringErr string

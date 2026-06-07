@@ -72,8 +72,14 @@ func main() {
 		log.Info().Str("path", cfg.Slowlog.File).Msg("slowlog enabled")
 	}
 
-	cu := usecase.NewCharacterUpdate(fs, log, slow)
-	disp := dispatcher.New(cfg, fs, gitOp, cu, slow, log)
+	// One Tool bundles every concern. main.go constructs it
+	// once, hands it to the dispatcher and the GM, and that's
+	// the entire wiring. The previous five-concrete-objects
+	// layout made it trivial to forget to wire one of them;
+	// the single Tool surface fails closed.
+	tools := usecase.NewFileToolset(fs, log, slow)
+	log.Info().Str("source", tools.Source()).Msg("file-backed toolset ready")
+	disp := dispatcher.New(cfg, fs, gitOp, tools, slow, log)
 
 	role, ok := cfg.Role(config.NarrativeRole)
 	if !ok {
@@ -85,20 +91,19 @@ func main() {
 		log.Fatal().Err(err).Str("path", role.SystemPromptPath).Msg("read system prompt")
 	}
 	llmCli := llm.New(llm.RoleConfig{
-		APIURL:                role.APIURL,
-		APIKey:                role.APIKey,
-		Model:                 role.Model,
-		MaxTokens:             role.MaxTokens,
-		Temperature:           role.Temperature,
-		RequestTimeoutSeconds: role.RequestTimeoutSeconds,
-		DisableThinking:       role.DisableThinking,
-		ReasoningEffort:       role.ReasoningEffort,
+		APIURL:                  role.APIURL,
+		APIKey:                  role.APIKey,
+		Model:                   role.Model,
+		MaxTokens:               role.MaxTokens,
+		Temperature:             role.Temperature,
+		RequestTimeoutSeconds:   role.RequestTimeoutSeconds,
+		DisableThinking:         role.DisableThinking,
+		ReasoningEffort:         role.ReasoningEffort,
+		MaxEmptyRetries:         role.MaxEmptyRetries,
+		EmptyRetryTimeoutSeconds: role.EmptyRetryTimeoutSeconds,
 	}, log)
 	ss := usecase.NewSessionStartWithLogger(fs, log)
-	mt := usecase.NewMaintenanceWithLogger(fs, log)
 	fl := usecase.NewFirstLaunchWithLogger(fs, log)
-	npcm := usecase.NewNPCManagerWithLogger(fs, log)
-	wt := usecase.NewWorldTransitionWithLogger(fs, log)
 	sysSt := usecase.NewSystemState(fs, log, slow)
 
 	// summarizer: three modes.
@@ -113,14 +118,16 @@ func main() {
 		var ok bool
 		if sumRoleCfg, hasSummary := cfg.Role("summary"); hasSummary {
 			sumRole = llm.RoleConfig{
-				APIURL:                sumRoleCfg.APIURL,
-				APIKey:                sumRoleCfg.APIKey,
-				Model:                 sumRoleCfg.Model,
-				MaxTokens:             sumRoleCfg.MaxTokens,
-				Temperature:           sumRoleCfg.Temperature,
-				RequestTimeoutSeconds: sumRoleCfg.RequestTimeoutSeconds,
-				DisableThinking:       sumRoleCfg.DisableThinking,
-				ReasoningEffort:       sumRoleCfg.ReasoningEffort,
+				APIURL:                  sumRoleCfg.APIURL,
+				APIKey:                  sumRoleCfg.APIKey,
+				Model:                   sumRoleCfg.Model,
+				MaxTokens:               sumRoleCfg.MaxTokens,
+				Temperature:             sumRoleCfg.Temperature,
+				RequestTimeoutSeconds:   sumRoleCfg.RequestTimeoutSeconds,
+				DisableThinking:         sumRoleCfg.DisableThinking,
+				ReasoningEffort:         sumRoleCfg.ReasoningEffort,
+				MaxEmptyRetries:         sumRoleCfg.MaxEmptyRetries,
+				EmptyRetryTimeoutSeconds: sumRoleCfg.EmptyRetryTimeoutSeconds,
 			}
 			sumPrompt, err = promptpkg.LoadSystemPrompt(sumRoleCfg.SystemPromptPath, "summary.md")
 			if err != nil {
@@ -160,14 +167,20 @@ func main() {
 	}
 
 	gm := usecase.NewGM(usecase.GMConfig{
-		Role:         llm.RoleConfig{Model: role.Model, MaxTokens: role.MaxTokens, Temperature: role.Temperature},
+		Role: llm.RoleConfig{
+			Model:                   role.Model,
+			MaxTokens:               role.MaxTokens,
+			Temperature:             role.Temperature,
+			MaxEmptyRetries:         role.MaxEmptyRetries,
+			EmptyRetryTimeoutSeconds: role.EmptyRetryTimeoutSeconds,
+		},
 		SystemPrompt: string(systemPrompt),
 		Compaction: usecase.CompactionConfig{
 			ContextWindow: role.ContextWindow,
 			Threshold:     role.CompactionThreshold,
 			KeepRecent:    role.CompactionKeepRecent,
 		},
-	}, fs, llmCli, ss, mt, fl, npcm, wt, cu, summarizer, sysSt, slow, cfg.LLM.TokenTracking, cfg.LLM.IncludeInReply, log)
+	}, fs, llmCli, ss, fl, tools, summarizer, sysSt, slow, cfg.LLM.TokenTracking, cfg.LLM.IncludeInReply, log)
 	if !*disableLLM {
 		disp.AttachGM(gm)
 		log.Info().Str("model", role.Model).Str("url", role.APIURL).Msg("gm attached")

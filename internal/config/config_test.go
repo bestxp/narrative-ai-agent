@@ -113,14 +113,14 @@ func TestLoad_AppliesDefaults(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotEmpty(t, cfg.Paths.DataRoot)
 	assert.Equal(t, "origin", cfg.Git.Remote)
-	assert.Equal(t, 350, cfg.Narrative.WordLimit)
+	assert.Equal(t, 150, cfg.Narrative.WordLimit)
 	assert.Equal(t, 120, cfg.LLM.DefaultTimeoutSeconds)
 	role, ok := cfg.Role(NarrativeRole)
 	require.True(t, ok)
 	assert.Equal(t, "qwen2.5:7b-instruct", role.Model)
 	assert.Equal(t, "http://localhost:11434/v1", role.APIURL)
 	assert.Equal(t, 0.8, role.Temperature)
-	assert.Equal(t, 1500, role.MaxTokens)
+	assert.Equal(t, 2500, role.MaxTokens)
 	assert.Equal(t, 120, role.RequestTimeoutSeconds)
 	// system_prompt_path is empty by default — the embed.FS
 	// copy in internal/prompts is the fallback.
@@ -176,7 +176,7 @@ llm:
 	role, ok := cfg.Role(NarrativeRole)
 	require.True(t, ok)
 	assert.Equal(t, 0.8, role.Temperature)
-	assert.Equal(t, 1500, role.MaxTokens)
+	assert.Equal(t, 2500, role.MaxTokens)
 	// system_prompt_path is empty by default — main.go will fall
 	// back to the embed.FS copy in internal/prompts/narrative.md.
 	assert.Empty(t, role.SystemPromptPath)
