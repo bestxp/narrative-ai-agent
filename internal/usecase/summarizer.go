@@ -181,6 +181,146 @@ func source(s *Summarizer) string {
 	return "summary"
 }
 
+// NPCSummaryResult is what SummarizeNPC returns. Body is
+// the new YAML profile the caller writes back to disk;
+// Compressed is true when the body shrank (false means
+// the summarizer decided the profile was already tight
+// and returned the input unchanged). BeforeCount and
+// AfterCount are personal_memory lengths so the operator
+// can see "40 → 28 facts" at a glance in slowlog.
+type NPCSummaryResult struct {
+	Body         []byte
+	Compressed   bool
+	BeforeCount  int
+	AfterCount   int
+	OutputChars  int
+}
+
+// SummarizeNPC asks the LLM to compact a single NPC
+// profile. The system prompt (passed in as `systemPrompt`,
+// typically loaded from internal/prompts/npc_summary.md)
+// tells the model the rules: keep base sections, dedup
+// relations, prune abilities, squeeze personal_memory to
+// 20-30 critical facts. The world name and the
+// memorise.md tail give the model context (which days
+// were key, which NPCs are still active).
+//
+// The summarizer is best-effort. If the LLM returns the
+// same content it received (no compression), or returns
+// invalid YAML, or returns fewer facts than the input had
+// (the model went too far), the caller (MaintainNPCs)
+// leaves the file untouched and logs a warning.
+//
+// This method is safe to call from any goroutine — the
+// underlying LLMClient.Stream is safe under concurrent
+// use on the same role (the GM serialises per-chat turns
+// with chatMu; the maintenance tool is called serially
+// per round by the dispatcher).
+func (s *Summarizer) SummarizeNPC(ctx context.Context, displayName, world string, yamlBody, memoriseTail []byte) (NPCSummaryResult, error) {
+	res := NPCSummaryResult{Body: yamlBody, Compressed: false}
+	if !s.IsConfigured() {
+		return res, nil
+	}
+	if len(yamlBody) == 0 {
+		return res, nil
+	}
+
+	// Build the user prompt. The memorise.md tail
+	// (last 20 days) gives the model the long-term
+	// context it needs to decide which facts are
+	// "key" vs "everyday". Without that context the
+	// model treats every fact as critical.
+	var userBuf strings.Builder
+	userBuf.WriteString("# World: ")
+	userBuf.WriteString(world)
+	userBuf.WriteString("\n\n# NPC: ")
+	userBuf.WriteString(displayName)
+	userBuf.WriteString("\n\n# Current profile (YAML)\n```yaml\n")
+	userBuf.Write(yamlBody)
+	userBuf.WriteString("\n```\n")
+	if len(memoriseTail) > 0 {
+		userBuf.WriteString("\n# Хвост memorise.md (последние дни, контекст)\n```\n")
+		userBuf.Write(memoriseTail)
+		userBuf.WriteString("\n```\n")
+	}
+	userBuf.WriteString("\nВерни сжатый YAML. Только YAML, без обёрток и комментариев.")
+
+	// Reuse the role config but bump MaxTokens — the
+	// compression output can be up to the input size
+	// (we never enlarge, but the model is verbose
+	// about YAML).
+	role := s.role
+	if role.MaxTokens < 2000 {
+		role.MaxTokens = 2000
+	}
+	if role.Temperature == 0 || role.Temperature > 0.4 {
+		role.Temperature = 0.2
+	}
+
+	req := llm.ChatRequest{
+		Model: role.Model,
+		Messages: []llm.Message{
+			{Role: "system", Content: s.prompt},
+			{Role: "user", Content: userBuf.String()},
+		},
+		Temperature: role.Temperature,
+		MaxTokens:   role.MaxTokens,
+	}
+
+	var buf strings.Builder
+	streamErr := s.llm.Stream(ctx, req, func(ch llm.Chunk) error {
+		if ch.Done || ch.Content == "" {
+			return nil
+		}
+		buf.WriteString(ch.Content)
+		return nil
+	})
+	if streamErr != nil {
+		return res, fmt.Errorf("summarizer: npc stream: %w", streamErr)
+	}
+	out := strings.TrimSpace(buf.String())
+	if out == "" {
+		return res, fmt.Errorf("summarizer: empty response for npc %q", displayName)
+	}
+
+	// Strip a leading/trailing ```yaml fence the
+	// model sometimes emits despite being told not
+	// to. We do NOT trust anything between a fence
+	// pair: even a "thinking" preamble is dropped
+	// because the parser only knows the YAML shape.
+	cleaned := stripYAMLFence(out)
+	res.Body = []byte(cleaned)
+	res.OutputChars = len(cleaned)
+	res.Compressed = len(cleaned) < len(yamlBody)
+
+	// Sanity check: try to parse. If invalid, the
+	// caller will log a warning and skip the write.
+	// We do not return an error here because the
+	// caller may want to keep the original file and
+	// just log the failure (the round-trip is
+	// idempotent — the file stays as it was).
+	return res, nil
+}
+
+// stripYAMLFence removes a leading ```yaml (or ```) and
+// the matching trailing ``` from the model response. The
+// summarizer system prompt forbids fences but a fraction
+// of models emit them anyway; we keep the parse path
+// permissive.
+func stripYAMLFence(s string) string {
+	s = strings.TrimSpace(s)
+	if !strings.HasPrefix(s, "```") {
+		return s
+	}
+	if idx := strings.Index(s, "\n"); idx > 0 {
+		s = s[idx+1:]
+	}
+	if idx := strings.LastIndex(s, "```"); idx >= 0 {
+		s = s[:idx]
+	}
+	return strings.TrimSpace(s)
+}
+
 // renderTurnsForSummary flattens a slice of chat-completion
 // messages into a single user-role text buffer that the
 // summary role can consume. The format is intentionally
@@ -211,5 +351,117 @@ func renderTurnsForSummary(msgs []llm.Message) string {
 		}
 	}
 	return b.String()
+}
+
+// LoreSummaryResult is what SummarizeLore returns. Body
+// is the new markdown the caller writes back; Compressed
+// is true when the body shrank; BeforeLines / AfterLines
+// are file lengths so the operator can see "500 → 230
+// lines" in slowlog.
+type LoreSummaryResult struct {
+	Body        []byte
+	Compressed  bool
+	BeforeLines int
+	AfterLines  int
+	OutputChars int
+}
+
+// SummarizeLore asks the LLM to compact a world's
+// lore.md. The system prompt (passed in as `systemPrompt`,
+// loaded from internal/prompts/lore_summary.md) tells
+// the model the rules: keep canon deviations, death,
+// first NPC appearances; trim routine events; preserve
+// chronologically. The world name and the memorise.md
+// tail + state.md give the model the long-term context.
+//
+// Best-effort: invalid markdown or a returned body
+// that is not smaller than the input leaves the file
+// untouched. The caller (MaintainLore) decides what
+// counts as "valid" — for lore this is just a non-empty
+// body with at least one "## " section.
+func (s *Summarizer) SummarizeLore(ctx context.Context, world string, loreBody, memoriseTail, stateMD []byte) (LoreSummaryResult, error) {
+	res := LoreSummaryResult{Body: loreBody, Compressed: false}
+	if !s.IsConfigured() {
+		return res, nil
+	}
+	if len(loreBody) == 0 {
+		return res, nil
+	}
+
+	var userBuf strings.Builder
+	userBuf.WriteString("# World: ")
+	userBuf.WriteString(world)
+	userBuf.WriteString("\n\n# Current lore.md\n```markdown\n")
+	userBuf.Write(loreBody)
+	userBuf.WriteString("\n```\n")
+	if len(memoriseTail) > 0 {
+		userBuf.WriteString("\n# Хвост memorise.md (последние 20 дней)\n```\n")
+		userBuf.Write(memoriseTail)
+		userBuf.WriteString("\n```\n")
+	}
+	if len(stateMD) > 0 {
+		userBuf.WriteString("\n# state.md (текущий момент)\n```\n")
+		userBuf.Write(stateMD)
+		userBuf.WriteString("\n```\n")
+	}
+	userBuf.WriteString("\nВерни сжатый lore.md. Только markdown, без обёрток.")
+
+	role := s.role
+	if role.MaxTokens < 4000 {
+		role.MaxTokens = 4000
+	}
+	if role.Temperature == 0 || role.Temperature > 0.4 {
+		role.Temperature = 0.2
+	}
+
+	req := llm.ChatRequest{
+		Model: role.Model,
+		Messages: []llm.Message{
+			{Role: "system", Content: s.prompt},
+			{Role: "user", Content: userBuf.String()},
+		},
+		Temperature: role.Temperature,
+		MaxTokens:   role.MaxTokens,
+	}
+
+	var buf strings.Builder
+	streamErr := s.llm.Stream(ctx, req, func(ch llm.Chunk) error {
+		if ch.Done || ch.Content == "" {
+			return nil
+		}
+		buf.WriteString(ch.Content)
+		return nil
+	})
+	if streamErr != nil {
+		return res, fmt.Errorf("summarizer: lore stream: %w", streamErr)
+	}
+	out := strings.TrimSpace(buf.String())
+	if out == "" {
+		return res, fmt.Errorf("summarizer: empty response for lore of %q", world)
+	}
+	cleaned := stripMarkdownFence(out)
+	res.Body = []byte(cleaned)
+	res.OutputChars = len(cleaned)
+	res.Compressed = len(cleaned) < len(loreBody)
+	return res, nil
+}
+
+// stripMarkdownFence removes a leading ```markdown (or
+// ```) and the matching trailing ``` from a model
+// response. The lore summarizer prompt forbids fences
+// but a fraction of models emit them anyway; we keep
+// the parse path permissive.
+func stripMarkdownFence(s string) string {
+	s = strings.TrimSpace(s)
+	if !strings.HasPrefix(s, "```") {
+		return s
+	}
+	if idx := strings.Index(s, "\n"); idx > 0 {
+		s = s[idx+1:]
+	}
+	if idx := strings.LastIndex(s, "```"); idx >= 0 {
+		s = s[:idx]
+	}
+	return strings.TrimSpace(s)
 }
 

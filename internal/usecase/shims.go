@@ -50,8 +50,15 @@ const FileBackend = "files"
 // file-backed toolset. main.go calls this once and hands
 // the result to gm and dispatcher. The returned *files.Toolset
 // satisfies tools.Tool and tools.Reloadable.
-func NewFileToolset(fs *storage.FileStore, log zerolog.Logger, slow *slowlog.Logger) *files.Toolset {
-	return files.New(fs, log, slow)
+//
+// summarizer is the LLM-driven NPC condensation hook used
+// by MaintainNPCs. loreSummarizer is the LLM-driven
+// lore.md compaction hook used by MaintainLore. Pass
+// nil to either to disable — the file backend will then
+// log a warning and leave the file untouched. Tests
+// typically pass nil for both (or stubs).
+func NewFileToolset(fs *storage.FileStore, log zerolog.Logger, slow *slowlog.Logger, summarizer tools.NPCSummarizer, loreSummarizer tools.LoreSummarizer) *files.Toolset {
+	return files.New(fs, log, slow, summarizer, loreSummarizer)
 }
 
 // --- format / threshold / header helpers ---------------------------------

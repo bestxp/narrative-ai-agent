@@ -396,6 +396,21 @@ func (g *GM) Reply(ctx context.Context, chatID, userText string, cb Callbacks) (
 			Role: "assistant", Content: assistantBuf.String(), ToolCalls: storedCalls,
 		})
 
+		// Context-directive parser. Ollama Cloud
+		// silently ignores tool_choice=required
+		// (cmd/test-openapi), so the model can write
+		// "⦁ update_npc: Хината — статус: смущена"
+		// in **КОНТЕКСТ** and never actually call the
+		// tool. We parse the rendered assistant turn
+		// and run the directives locally so a turn
+		// that LOOKS like an update actually updates
+		// the file. Errors here are non-fatal; the
+		// user-visible narrative has already been
+		// streamed. See extractContextCommands for
+		// the grammar.
+		cmds := extractContextCommands(assistantBuf.String())
+		g.executeExtractedCommands(ctx, chatID, currentWorldName(g.fs), cmds)
+
 		// Accumulate per-round token accounting.
 		roundUsage := g.accountRound(messages, roundCompChars, assistantBuf.String(), gotUsage, usageFromAPI)
 		totals.PromptTokens += roundUsage.PromptTokens
@@ -771,6 +786,593 @@ func extractProperNamesFromDialogue(answer string) []string {
 	return out
 }
 
+// extractedCommand is one actionable directive recovered
+// from the assistant turn. The GM runs these locally as
+// if the model had issued a real tool_call (which on
+// Ollama Cloud is silently ignored — see the rationale
+// in cmd/test-openapi/main.go). Commands are pure data;
+// the dispatcher below (executeExtractedCommands) knows
+// how to route them to the right usecase.Tool method.
+type extractedCommand struct {
+	Kind string // "update_npc" | "update_state" | "append_lore" | "update_character" | "create_npc"
+	Args map[string]string
+	// Raw is the original line for the slowlog so an
+	// operator can see exactly what the model wrote.
+	Raw string
+}
+
+// extractContextCommands scans the assistant turn for
+// bullet-style tool directives. The model is told in
+// prompts/narrative.md to write these as a fallback when
+// the provider does not honour tool_choice=required (which
+// is every Ollama Cloud model we have probed). Each line
+// that matches a known pattern becomes an
+// extractedCommand that the GM dispatches in the same
+// goroutine after streaming finishes.
+//
+// Both wire formats are supported:
+//
+//   - Markdown (legacy / Режим B): the line lives inside
+//     the **КОНТЕКСТ И ИЗМЕНЕНИЯ** block, prefixed with
+//     "⦁" (or "-" / "•"). We extract the block and then
+//     scan its lines.
+//
+//   - JSON (Режим A): the assistant turn is a JSON object
+//     with a `context` field. We parse the field, split on
+//     newlines, and treat each line as a markdown-style
+//     directive. The JSON path goes through
+//     structured.Parse so the field-extraction logic is
+//     not duplicated.
+//
+// Unknown lines are silently dropped — the slowlog
+// `context.extracted` event records what we kept so the
+// operator can audit the gap.
+func extractContextCommands(answer string) []extractedCommand {
+	body := answer
+	if structured.LooksLikeJSON(answer) {
+		n, err := structured.Parse(answer)
+		if err == nil {
+			body = n.Context
+		}
+	}
+	// Pull the КОНТЕКСТ block if present. Anything outside
+	// it is narrative (we do not want to interpret a quoted
+	// NPC line as a tool directive). The block ends at
+	// **БУДУЩЕЕ or end-of-input.
+	block := extractContextBlock(body)
+	if block == "" {
+		return nil
+	}
+	var out []extractedCommand
+	for _, raw := range strings.Split(block, "\n") {
+		line := strings.TrimSpace(raw)
+		// Skip empty lines and lines that are clearly
+		// not directives (no recognised prefix after
+		// the bullet).
+		if !looksLikeDirective(line) {
+			continue
+		}
+		if cmd, ok := parseDirectiveLine(line); ok {
+			cmd.Raw = line
+			out = append(out, cmd)
+		}
+	}
+	return out
+}
+
+// extractContextBlock returns the lines between
+// "КОНТЕКСТ И ИЗМЕНЕНИЯ" and the next major header
+// (БУДУЩЕЕ / ВАЛИДАЦИЯ ПРАВИЛ / end of input). We
+// accept several historical phrasings of the header —
+// the prompt says "КОНТЕКСТ И ИЗМЕНЕНИЯ" but models
+// sometimes shorten it to "**КОНТЕКСТ**" alone, and the
+// JSON path emits the field text without any header.
+func extractContextBlock(body string) string {
+	if body == "" {
+		return ""
+	}
+	lower := strings.ToLower(body)
+	start := -1
+	for _, marker := range []string{
+		"**контекст и изменения**",
+		"**контекст**",
+		"### контекст",
+	} {
+		if idx := strings.Index(lower, marker); idx >= 0 {
+			start = idx + len(marker)
+			break
+		}
+	}
+	if start < 0 {
+		// JSON-mode fallback: if the body is one
+		// short paragraph with no header, treat the
+		// whole body as the context block. Long
+		// bodies (>800 chars) probably are not a
+		// context field and we return empty to avoid
+		// false positives.
+		if len(body) <= 800 {
+			return body
+		}
+		return ""
+	}
+	// Find the end: next major header.
+	rest := body[start:]
+	for _, end := range []string{
+		"**будущее**",
+		"**валидация правил**",
+		"### будущее",
+		"### валидация",
+	} {
+		if idx := strings.Index(strings.ToLower(rest), end); idx >= 0 {
+			rest = rest[:idx]
+			break
+		}
+	}
+	return rest
+}
+
+// looksLikeDirective is a cheap pre-filter. We accept
+// lines that start with a bullet character AND contain
+// at least one of the recognised command prefixes
+// (case-insensitive). The full parse happens in
+// parseDirectiveLine. Bullets are matched as runes
+// because ⦁ / • are multi-byte in UTF-8 and indexing
+// into a string as bytes would split the codepoint.
+func looksLikeDirective(line string) bool {
+	if line == "" {
+		return false
+	}
+	runes := []rune(line)
+	switch runes[0] {
+	case '⦁', '•', '-', '*', '>':
+	default:
+		return false
+	}
+	lower := strings.ToLower(line)
+	prefixes := []string{
+		"update_npc", "update_state", "append_lore",
+		"update_character", "create_npc",
+		"lore:", "npc:", "state:",
+	}
+	for _, p := range prefixes {
+		if strings.Contains(lower, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// parseDirectiveLine extracts one command from a single
+// КОНТЕКСТ line. The grammar is intentionally forgiving:
+//
+//	⦁ update_npc: Хината — статус: смущена
+//	⦁ update_npc: Хината, статус = смущена
+//	⦁ lore: День 5: Саске простил Итахи
+//	⦁ append_lore: header=День 5, bullet=Саске простил Итахи
+//
+// We use "—" (em dash) and "," and "=" as the canonical
+// separators between name and the rest. Section names
+// follow the canonical Russian vocabulary in
+// usecase/tools/files/npc.go (temperament, status,
+// abilities, etc.) and are matched case-insensitively.
+func parseDirectiveLine(line string) (extractedCommand, bool) {
+	// Strip the leading bullet. TrimLeftFunc is the
+	// rune-safe counterpart to TrimLeft — needed
+	// because ⦁ / • are multi-byte UTF-8 codepoints
+	// and the cutset would otherwise be interpreted
+	//// as bytes.
+	stripped := strings.TrimLeftFunc(line, func(r rune) bool {
+		switch r {
+		case '⦁', '•', '-', '*', '>', ' ', '\'':
+			return true
+		}
+		return false
+	})
+	lower := strings.ToLower(stripped)
+
+	// npc / lore: short-form prefixes.
+	if strings.HasPrefix(lower, "npc:") {
+		// "npc: Хината — статус: смущена" is the
+		// short form of update_npc. Rewrite to the
+		// long form and recurse.
+		return parseDirectiveLine("⦁ update_npc: " + strings.TrimSpace(stripped[4:]))
+	}
+	if strings.HasPrefix(lower, "lore:") {
+		body := strings.TrimSpace(stripped[5:])
+		// Split on the first em-dash / dash / colon:
+		// "header — body" or "header: body".
+		header, bullet := splitHeaderBullet(body)
+		return extractedCommand{
+			Kind: "append_lore",
+			Args: map[string]string{"header": header, "bullet": bullet},
+		}, true
+	}
+	if strings.HasPrefix(lower, "state:") {
+		body := strings.TrimSpace(stripped[6:])
+		// "state: moment=...; npcs=...; events=..."
+		args := parseSemicolonPairs(body)
+		return extractedCommand{
+			Kind: "update_state",
+			Args: args,
+		}, true
+	}
+
+	// Long forms.
+	switch {
+	case strings.HasPrefix(lower, "update_npc:"):
+		body := strings.TrimSpace(stripped[len("update_npc:"):])
+		// "Хината — статус: смущена" or
+		// "Хината, секция=статус, текст=смущена"
+		return parseUpdateNpcLine(body)
+	case strings.HasPrefix(lower, "append_lore:"):
+		body := strings.TrimSpace(stripped[len("append_lore:"):])
+		// append_lore uses comma-separated pairs
+		// (not semicolon) because the model often
+		// writes "header=День 7, bullet=...". Other
+		// directives keep semicolons because their
+		// values can contain commas (e.g. event
+		// descriptions). The split is on the first
+		// "=" of each pair, NOT on commas, so
+		// "День 7" with an internal comma would
+		// still split correctly.
+		args := parseCommaPairs(body)
+		if _, ok := args["header"]; !ok {
+			// Fallback: treat the whole body as
+			// "header — bullet".
+			args["header"], args["bullet"] = splitHeaderBullet(body)
+		}
+		return extractedCommand{Kind: "append_lore", Args: args}, true
+	case strings.HasPrefix(lower, "update_state:"):
+		body := strings.TrimSpace(stripped[len("update_state:"):])
+		return extractedCommand{
+			Kind: "update_state",
+			Args: parseSemicolonPairs(body),
+		}, true
+	case strings.HasPrefix(lower, "update_character:"):
+		body := strings.TrimSpace(stripped[len("update_character:"):])
+		return extractedCommand{
+			Kind: "update_character",
+			Args: parseSemicolonPairs(body),
+		}, true
+	case strings.HasPrefix(lower, "create_npc:"):
+		body := strings.TrimSpace(stripped[len("create_npc:"):])
+		return extractedCommand{
+			Kind: "create_npc",
+			Args: parseSemicolonPairs(body),
+		}, true
+	}
+	return extractedCommand{}, false
+}
+
+// parseUpdateNpcLine handles "Name — section: text" with
+// em-dash, comma, or "section=text" variants.
+func parseUpdateNpcLine(body string) (extractedCommand, bool) {
+	body = strings.TrimSpace(body)
+	if body == "" {
+		return extractedCommand{}, false
+	}
+	// Long form: "Name, section=..., append=..."
+	if strings.Contains(body, "=") {
+		args := parseSemicolonPairs(body)
+		if name, ok := args["npc"]; ok {
+			args["npc"] = strings.TrimSpace(name)
+		} else {
+			// Sometimes the model writes "Name,
+			// section=X, append=Y" without
+			// explicit "npc=Name". Try to pull
+			// the leading word.
+			if idx := strings.IndexAny(body, ",;"); idx > 0 {
+				args["npc"] = strings.TrimSpace(body[:idx])
+			} else {
+				args["npc"] = body
+			}
+		}
+		return extractedCommand{Kind: "update_npc", Args: args}, true
+	}
+	// Short form: "Name — section: text" or
+	// "Name — section: text — extra".
+	name, rest, ok := splitOnEmDash(body)
+	if !ok {
+		// "Name" alone is not actionable.
+		return extractedCommand{}, false
+	}
+	section, text, ok := splitOnColon(rest)
+	if !ok {
+		// "Name — section" without ": text". Treat
+		// the rest as section, no text — caller
+		// will reject empty append.
+		return extractedCommand{
+			Kind: "update_npc",
+			Args: map[string]string{
+				"npc":     strings.TrimSpace(name),
+				"section": strings.TrimSpace(rest),
+				"append":  "",
+			},
+		}, true
+	}
+	return extractedCommand{
+		Kind: "update_npc",
+		Args: map[string]string{
+			"npc":     strings.TrimSpace(name),
+			"section": strings.TrimSpace(section),
+			"append":  strings.TrimSpace(text),
+		},
+	}, true
+}
+
+// splitHeaderBullet splits "Header — body" or "Header:
+// body" on the first em-dash or colon after position 1.
+// Returns ("", body) when no separator is present.
+func splitHeaderBullet(s string) (string, string) {
+	for i, r := range s {
+		if r == '—' || r == ':' {
+			if r == ':' && i == 0 {
+				continue
+			}
+			return strings.TrimSpace(s[:i]), strings.TrimSpace(s[i+1:])
+		}
+	}
+	return "", strings.TrimSpace(s)
+}
+
+// splitOnEmDash returns the part before the first "—"
+// and the part after. Falls back to comma if no em-dash.
+// We work on runes so a multi-byte em-dash does not get
+// sliced through the middle (returning garbage bytes
+// like 0x80 0x94 to the caller). The returned strings
+// are still byte slices of the original — the caller
+// only sees the boundary at the right UTF-8 codepoint.
+func splitOnEmDash(s string) (string, string, bool) {
+	for i, r := range s {
+		if r == '—' {
+			return s[:i], s[i+len("—"):], true
+		}
+		if r == ',' {
+			return s[:i], s[i+1:], true
+		}
+	}
+	return "", "", false
+}
+
+// splitOnColon returns the part before the first colon
+// and the part after. Used for "section: text".
+func splitOnColon(s string) (string, string, bool) {
+	for i, r := range s {
+		if r == ':' {
+			return s[:i], s[i+1:], true
+		}
+	}
+	return "", "", false
+}
+
+// parseSemicolonPairs reads "k1=v1; k2=v2" into a map.
+// Keys are lower-cased and trimmed. Empty entries are
+// dropped. Quoted values have the quotes stripped.
+func parseSemicolonPairs(s string) map[string]string {
+	out := map[string]string{}
+	for _, part := range strings.Split(s, ";") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		idx := strings.Index(part, "=")
+		if idx < 0 {
+			continue
+		}
+		key := strings.ToLower(strings.TrimSpace(part[:idx]))
+		val := strings.TrimSpace(part[idx+1:])
+		val = strings.Trim(val, "\"'«»")
+		if key != "" {
+			out[key] = val
+		}
+	}
+	return out
+}
+
+// parseCommaPairs is the comma-separated sibling of
+// parseSemicolonPairs. Used for append_lore where the
+// model writes "header=X, bullet=Y" rather than the
+// semicolon form. Same rules apply (lower-case keys,
+// strip quotes). Empty values are kept (the model may
+// use a placeholder we want to surface as a warning).
+func parseCommaPairs(s string) map[string]string {
+	out := map[string]string{}
+	for _, part := range strings.Split(s, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		idx := strings.Index(part, "=")
+		if idx < 0 {
+			continue
+		}
+		key := strings.ToLower(strings.TrimSpace(part[:idx]))
+		val := strings.TrimSpace(part[idx+1:])
+		val = strings.Trim(val, "\"'«»")
+		if key != "" {
+			out[key] = val
+		}
+	}
+	return out
+}
+
+// executeExtractedCommands runs every directive the parser
+// recovered. Errors are logged at warn level but do not
+// abort the turn — a malformed directive should not
+// prevent the user-visible narrative from being delivered.
+// The dispatch mirrors gm.dispatchOneTool but is data-
+// driven (no llm.ToolCall envelope).
+func (g *GM) executeExtractedCommands(ctx context.Context, chatID, world string, cmds []extractedCommand) {
+	if len(cmds) == 0 {
+		return
+	}
+	if g.tools == nil {
+		g.log.Warn().Int("n", len(cmds)).Msg("context.extracted: no tools wired; skipping")
+		return
+	}
+	var (
+		executed int
+		failed   int
+		byKind   = map[string]int{}
+	)
+	for _, c := range cmds {
+		byKind[c.Kind]++
+		var err error
+		switch c.Kind {
+		case "update_npc":
+			err = g.dispatchUpdateNpcDirective(ctx, world, c)
+		case "update_state":
+			err = g.dispatchUpdateStateDirective(ctx, world, c)
+		case "append_lore":
+			err = g.dispatchAppendLoreDirective(ctx, world, c)
+		case "update_character":
+			err = g.dispatchUpdateCharacterDirective(ctx, c)
+		case "create_npc":
+			err = g.dispatchCreateNpcDirective(ctx, world, c)
+		default:
+			g.log.Warn().Str("kind", c.Kind).Str("raw", c.Raw).Msg("context.extracted: unknown kind")
+			failed++
+			continue
+		}
+		if err != nil {
+			g.log.Warn().Err(err).Str("kind", c.Kind).Str("raw", c.Raw).Msg("context.extracted: dispatch failed")
+			failed++
+		} else {
+			executed++
+		}
+	}
+	if g.slow != nil {
+		_ = g.slow.Write("context.extracted", chatID, map[string]any{
+			"total":    len(cmds),
+			"executed": executed,
+			"failed":   failed,
+			"by_kind":  byKind,
+		})
+	}
+	g.log.Info().
+		Int("total", len(cmds)).
+		Int("executed", executed).
+		Int("failed", failed).
+		Interface("by_kind", byKind).
+		Msg("context.extracted: processed directives")
+}
+
+// dispatchUpdateNpcDirective runs UpdateNPC from an
+// extracted directive. The args map is what
+// parseDirectiveLine / parseUpdateNpcLine produced.
+func (g *GM) dispatchUpdateNpcDirective(_ context.Context, world string, c extractedCommand) error {
+	name := strings.TrimSpace(c.Args["npc"])
+	section := strings.TrimSpace(c.Args["section"])
+	appendText := c.Args["append"]
+	if name == "" {
+		return fmt.Errorf("update_npc: npc name required")
+	}
+	if section == "" {
+		return fmt.Errorf("update_npc: section required")
+	}
+	if strings.TrimSpace(appendText) == "" {
+		return fmt.Errorf("update_npc: append text required (no empty updates)")
+	}
+	return g.tools.UpdateNPC(world, name, section, appendText)
+}
+
+// dispatchUpdateStateDirective runs UpdateState from a
+// directive. The "npcs" and "events" args are comma-
+// separated; "moment" and "in_flight" are scalars.
+func (g *GM) dispatchUpdateStateDirective(_ context.Context, world string, c extractedCommand) error {
+	moment := strings.TrimSpace(c.Args["moment"])
+	if moment == "" {
+		return fmt.Errorf("update_state: moment required")
+	}
+	inFlight := parseBoolArg(c.Args["in_flight"])
+	npcs := splitCSV(c.Args["npcs"])
+	events := splitCSV(c.Args["events"])
+	day := readCurrentDay(g.fs, world)
+	return g.tools.UpdateState(StateSnapshot{
+		Day: day, InFlight: inFlight, Moment: moment, NPCs: npcs,
+		AppendEvents: events,
+	})
+}
+
+// dispatchAppendLoreDirective writes one deviation
+// entry to lore.md. The header is a short title (e.g.
+// "День 5"), the bullet is the new fact.
+func (g *GM) dispatchAppendLoreDirective(_ context.Context, world string, c extractedCommand) error {
+	header := strings.TrimSpace(c.Args["header"])
+	bullet := strings.TrimSpace(c.Args["bullet"])
+	if header == "" || bullet == "" {
+		return fmt.Errorf("append_lore: header and bullet required")
+	}
+	return g.tools.AppendLore(world, header, bullet)
+}
+
+// dispatchUpdateCharacterDirective is symmetric with
+// update_npc but writes to the active character's
+// SKILL/SOUL/memory.md files.
+func (g *GM) dispatchUpdateCharacterDirective(_ context.Context, c extractedCommand) error {
+	file := strings.TrimSpace(c.Args["file"])
+	section := strings.TrimSpace(c.Args["section"])
+	appendText := c.Args["append"]
+	if file == "" || section == "" || strings.TrimSpace(appendText) == "" {
+		return fmt.Errorf("update_character: file, section, append required")
+	}
+	sc, err := g.ss.Start()
+	if err != nil {
+		return err
+	}
+	return g.tools.Append(sc.Character, file, section, appendText)
+}
+
+// dispatchCreateNpcDirective is a best-effort fallback
+// for when the model wrote create_npc as text but did
+// not call it as a tool. We only handle the most
+// common shape ("display_name=X; file_slug=Y;
+// temperament=Z"); richer payloads (relations,
+// nicknames, abilities) are dropped with a warning
+// because the real tool path is the rich version.
+func (g *GM) dispatchCreateNpcDirective(_ context.Context, world string, c extractedCommand) error {
+	spec := NPCProfile{
+		DisplayName: strings.TrimSpace(c.Args["display_name"]),
+		File:        strings.TrimSpace(c.Args["file_slug"]),
+		Temperament: strings.TrimSpace(c.Args["temperament"]),
+		Relations:   strings.TrimSpace(c.Args["relations"]),
+		Abilities:   strings.TrimSpace(c.Args["abilities"]),
+	}
+	if spec.DisplayName == "" || spec.File == "" {
+		return fmt.Errorf("create_npc: display_name and file_slug required")
+	}
+	return g.tools.Create(world, spec)
+}
+
+// parseBoolArg accepts "true" / "yes" / "1" / "on" as
+// truthy; everything else is false.
+func parseBoolArg(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "true", "yes", "1", "on":
+		return true
+	}
+	return false
+}
+
+// splitCSV splits on comma OR semicolon, trims, drops
+// empties.
+func splitCSV(s string) []string {
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	if len(parts) == 1 {
+		parts = strings.Split(s, ";")
+	}
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 // accountRound converts the per-round counters into a TokenUsage.
 // When tracking is "off" the result is zero and source stays "off".
 // When tracking is "estimate" we always estimate regardless of
@@ -921,7 +1523,37 @@ func (g *GM) executeTools(ctx context.Context, calls []llm.ToolCall) []llm.Messa
 			Content:    result,
 		})
 		if errText != "" {
-			g.log.Warn().Str("tool", tc.Function.Name).Str("err", errText).Msg("tool error")
+			// The errText alone ("npc profile not
+			// found; call create_npc first") does not
+			// name which NPC failed. The argument
+			// map is decoded here (a second time —
+			// dispatchOneTool already unmarshalled it)
+			// so the slowlog + zerolog line tells the
+			// operator at a glance which NPC, which
+			// section, and which arg was rejected.
+			// We swallow the decode error silently
+			// because the first decode succeeded
+			// and we are only reading; if the
+			// arguments are genuinely malformed the
+			// previous log line already covers it.
+			args := map[string]any{}
+			_ = json.Unmarshal([]byte(tc.Function.Arguments), &args)
+			ev := g.log.Warn().
+				Str("tool", tc.Function.Name).
+				Str("err", errText)
+			if name, ok := args["npc"].(string); ok && name != "" {
+				ev = ev.Str("npc", name)
+			}
+			if name, ok := args["display_name"].(string); ok && name != "" {
+				ev = ev.Str("display_name", name)
+			}
+			if name, ok := args["file"].(string); ok && name != "" {
+				ev = ev.Str("file", name)
+			}
+			if section, ok := args["section"].(string); ok && section != "" {
+				ev = ev.Str("section", section)
+			}
+			ev.Msg("tool error")
 		}
 	}
 	return out
@@ -930,7 +1562,7 @@ func (g *GM) executeTools(ctx context.Context, calls []llm.ToolCall) []llm.Messa
 // dispatchOneTool is the tool-to-usecase bridge. The argument JSON
 // is decoded into the matching usecase type and the result is
 // rendered as a short JSON-ish text the model can read.
-func (g *GM) dispatchOneTool(_ context.Context, tc llm.ToolCall) (string, string) {
+func (g *GM) dispatchOneTool(ctx context.Context, tc llm.ToolCall) (string, string) {
 	args := map[string]any{}
 	if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
 		return "", "invalid arguments: " + err.Error()
@@ -947,11 +1579,29 @@ func (g *GM) dispatchOneTool(_ context.Context, tc llm.ToolCall) (string, string
 		}
 		return okJSON("archived"), ""
 	case "run_maintenance":
-		touched, err := g.tools.CompactNPCs(currentWorldName(g.fs))
+		// Alias for the renamed maintain_npcs tool.
+		// The legacy name is kept so existing prompts
+		// that call run_maintenance still work; the
+		// canonical name in narrative.md is
+		// maintain_npcs (new behaviour: LLM-driven
+		// compaction, was naive strip).
+		touched, err := g.tools.MaintainNPCs(currentWorldName(g.fs))
 		if err != nil {
 			return "", err.Error()
 		}
 		return okJSON(map[string]any{"compacted": touched}), ""
+	case "maintain_npcs":
+		touched, err := g.tools.MaintainNPCs(currentWorldName(g.fs))
+		if err != nil {
+			return "", err.Error()
+		}
+		return okJSON(map[string]any{"compacted": touched}), ""
+	case "maintain_lore":
+		rewritten, err := g.tools.MaintainLore(ctx, currentWorldName(g.fs))
+		if err != nil {
+			return "", err.Error()
+		}
+		return okJSON(map[string]any{"compacted": rewritten}), ""
 	case "update_state":
 		moment := toString(args["moment"])
 		inFlight := toBool(args["in_flight"])

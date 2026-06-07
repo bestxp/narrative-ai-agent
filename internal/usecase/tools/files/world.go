@@ -67,7 +67,14 @@ func (w *World) Leave(fromWorld, toWorld, skipNote, character string) (*tools.Le
 		return nil, err
 	}
 	if character != "" {
-		_ = newMemory(w.fs, w.log).AppendMemory(character,
+		// Append a one-line memory entry to the
+		// character that just left the world. We use
+		// the in-package newMemory constructor with
+		// nil summarizers — AppendMemory does not
+		// need the LLM, and creating a Memory on
+		// every Leave is cheap (no state besides
+		// fs + log + nil summarizer).
+		_ = newMemory(w.fs, w.log, nil, nil).AppendMemory(character,
 			"Переход в мир "+to+". "+skipNote+".")
 	}
 	w.log.Info().Str("from", from).Str("to", to).Bool("new_world", created).Int("from_day", fromDay).Msg("world_leave")

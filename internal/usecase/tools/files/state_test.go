@@ -23,7 +23,7 @@ func newTestToolset(t *testing.T) *Toolset {
 	require.NoError(t, fs.EnsureDir("worlds/naruto/characters"))
 	require.NoError(t, fs.WriteRawAtomic("info.yaml",
 		"active_character: markus\nactive_world: naruto\n"))
-	return New(fs, zerolog.Nop(), nil)
+	return New(fs, zerolog.Nop(), nil, nil, nil)
 }
 
 // TestUpdateState_DedupesAppendEvents is the regression

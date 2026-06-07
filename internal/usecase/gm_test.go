@@ -71,14 +71,14 @@ func newGMTestEnv(t *testing.T) (*GM, *storage.FileStore, *fakeLLM) {
 	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/canon.md", "canon"))
 	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/memorise.md", ""))
 	require.NoError(t, fs.EnsureDir("worlds/naruto/characters"))
-	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/characters/kakashi.md", "# Какаши\nспокойный"))
+	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/characters/kakashi.yaml", "display_name: Какаши\ntemperament: спокойный\n"))
 
 	ss := NewSessionStart(fs)
 	fl := NewFirstLaunch(fs)
 	// One Tool bundles every concern; the tests use the
 	// file-backed implementation so on-disk state changes
 	// are observable via fs.ReadRaw.
-	tools := NewFileToolset(fs, discardLogger(), slowlog.Discard())
+	tools := NewFileToolset(fs, discardLogger(), slowlog.Discard(), nil, nil)
 	fake := &fakeLLM{}
 	log, _ := newBufLogger()
 	g := NewGM(GMConfig{

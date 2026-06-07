@@ -28,6 +28,7 @@ import (
 	"narrative/internal/slowlog"
 	"narrative/internal/structured"
 	"narrative/internal/usecase"
+	"narrative/internal/usecase/tools"
 )
 
 func main() {
@@ -74,15 +75,14 @@ func main() {
 		log.Info().Str("path", cfg.Slowlog.File).Msg("slowlog enabled")
 	}
 
-	// One Tool bundles every concern. main.go constructs it
-	// once, hands it to the dispatcher and the GM, and that's
-	// the entire wiring. The previous five-concrete-objects
-	// layout made it trivial to forget to wire one of them;
-	// the single Tool surface fails closed.
-	tools := usecase.NewFileToolset(fs, log, slow)
-	log.Info().Str("source", tools.Source()).Msg("file-backed toolset ready")
-	disp := dispatcher.New(cfg, fs, gitOp, tools, slow, log)
-
+	// role / systemPrompt / driver / summarizer must be
+	// wired BEFORE NewFileToolset: the file backend's
+	// memory concern now takes the LLM-driven summarizer
+	// so it can call back into a cheap model to compact
+	// overgrown NPC profiles. Without that wiring
+	// MaintainNPCs is a no-op and the legacy naive strip
+	// path stays in place (still safe, just less
+	// accurate).
 	role, ok := cfg.Role(config.NarrativeRole)
 	if !ok {
 		log.Fatal().Str("role", config.NarrativeRole).Msg("narrative role not configured")
@@ -160,9 +160,6 @@ func main() {
 	// in main.go's responsibility).
 	llmCli := driverClient{driver: driver}
 	defer driver.Close()
-	ss := usecase.NewSessionStartWithLogger(fs, log)
-	fl := usecase.NewFirstLaunchWithLogger(fs, log)
-	sysSt := usecase.NewSystemState(fs, log, slow)
 
 	// summarizer: three modes.
 	//   1. Dedicated `summary` role in config → use it.
@@ -224,6 +221,32 @@ func main() {
 		}
 	}
 
+	ss := usecase.NewSessionStartWithLogger(fs, log)
+	fl := usecase.NewFirstLaunchWithLogger(fs, log)
+	sysSt := usecase.NewSystemState(fs, log, slow)
+
+	// One Tool bundles every concern. main.go constructs it
+	// once, hands it to the dispatcher and the GM, and that's
+	// the entire wiring. The previous five-concrete-objects
+	// layout made it trivial to forget to wire one of them;
+	// the single Tool surface fails closed.
+	//
+	// summarizer is the LLM-driven NPC condensation hook.
+	// May be nil if compaction is disabled in config; in
+	// that case the file backend keeps the legacy naive
+	// strip behaviour. We wrap *usecase.Summarizer into
+	// the tools.NPCSummarizer interface via the small
+	// adapter at the bottom of this file (the two
+	// signatures are different — the struct returns a
+	// rich result, the interface returns a flat []byte).
+	var npcSum tools.NPCSummarizer
+	if summarizer != nil {
+		npcSum = summarizerAdapter{s: summarizer}
+	}
+	fileTools := usecase.NewFileToolset(fs, log, slow, npcSum, nil)
+	log.Info().Str("source", fileTools.Source()).Msg("file-backed toolset ready")
+	disp := dispatcher.New(cfg, fs, gitOp, fileTools, slow, log)
+
 	gm := usecase.NewGM(usecase.GMConfig{
 		Role: llm.RoleConfig{
 			Model:                   role.Model,
@@ -238,7 +261,7 @@ func main() {
 			Threshold:     role.CompactionThreshold,
 			KeepRecent:    role.CompactionKeepRecent,
 		},
-	}, fs, llmCli, ss, fl, tools, summarizer, sysSt, slow, cfg.LLM.TokenTracking, cfg.LLM.IncludeInReply, log)
+	}, fs, llmCli, ss, fl, fileTools, summarizer, sysSt, slow, cfg.LLM.TokenTracking, cfg.LLM.IncludeInReply, log)
 	if !*disableLLM {
 		disp.AttachGM(gm)
 		log.Info().Str("model", role.Model).Str("url", role.APIURL).Msg("gm attached")
@@ -713,4 +736,22 @@ type driverClient struct {
 
 func (d driverClient) Stream(ctx context.Context, req llm.ChatRequest, onChunk func(llm.Chunk) error) error {
 	return d.driver.Stream(ctx, req, onChunk)
+}
+
+// summarizerAdapter wraps a *usecase.Summarizer (which
+// returns a struct) into the tools.NPCSummarizer
+// interface (which returns []byte). We cannot do this
+// inside the usecase package because that would create
+// a tools → usecase import cycle; main.go is the only
+// place that knows about both layers.
+type summarizerAdapter struct {
+	s *usecase.Summarizer
+}
+
+func (a summarizerAdapter) SummarizeNPC(ctx context.Context, displayName, world string, yamlBody, memoriseTail []byte) ([]byte, error) {
+	res, err := a.s.SummarizeNPC(ctx, displayName, world, yamlBody, memoriseTail)
+	if err != nil {
+		return nil, err
+	}
+	return res.Body, nil
 }

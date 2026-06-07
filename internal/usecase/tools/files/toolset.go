@@ -6,6 +6,7 @@
 package files
 
 import (
+	"context"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -39,10 +40,15 @@ type Toolset struct {
 // concern when needed (so a maintenance event and an NPC
 // event get different "component" fields in zerolog). slow
 // is the optional audit log; pass slowlog.Discard() in tests.
-func New(fs *storage.FileStore, log zerolog.Logger, slow *slowlog.Logger) *Toolset {
+// summarizer is the LLM-driven NPC condensation hook used
+// by MaintainNPCs. loreSummarizer is the LLM-driven
+// lore.md compaction hook used by MaintainLore. Pass nil
+// to either to disable the LLM path — the file backend
+// will then log a warning and skip.
+func New(fs *storage.FileStore, log zerolog.Logger, slow *slowlog.Logger, summarizer tools.NPCSummarizer, loreSummarizer tools.LoreSummarizer) *Toolset {
 	return &Toolset{
 		State:     newState(fs, log),
-		Memory:    newMemory(fs, log),
+		Memory:    newMemory(fs, log, summarizer, loreSummarizer),
 		World:     newWorld(fs, log),
 		Character: newCharacter(fs, log, slow),
 		NPC:       newNPC(fs, log),
@@ -68,6 +74,18 @@ func (t *Toolset) Source() string { return "files" }
 // a method is renamed or its signature drifts the build
 // fails here, not in main.go far away from the cause.
 var _ tools.Tool = (*Toolset)(nil)
+
+// MaintainLore is a thin forwarder to the embedded
+// *Memory. The interface declares MaintainLore(ctx, world)
+// (with a context for the summarizer LLM call) so the
+// per-request deadline applies; the GM and the
+// /maintenance dispatcher path supply their own
+// context. main.go is the only caller that does NOT
+// supply a context — it does not call this method
+// directly.
+func (t *Toolset) MaintainLore(ctx context.Context, world string) (bool, error) {
+	return t.Memory.MaintainLore(ctx, world)
+}
 
 // Reload flushes any in-memory caches. The file backend is
 // stateless today (every read goes to disk) so the method

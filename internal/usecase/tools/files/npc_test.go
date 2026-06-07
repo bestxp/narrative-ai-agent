@@ -208,7 +208,7 @@ func TestUpdateNPC_NotFoundForUnknownNPC(t *testing.T) {
 // by a zero-byte placeholder.
 func TestLoad_NotFoundForEmptyFile(t *testing.T) {
 	ts := newTestToolset(t)
-	require.NoError(t, ts.NPC.fs.WriteRawAtomic("worlds/naruto/characters/blank.md", ""))
+	require.NoError(t, ts.NPC.fs.WriteRawAtomic("worlds/naruto/characters/blank.yaml", ""))
 	_, err := ts.NPC.Load("naruto", "blank")
 	assert.ErrorIs(t, err, ErrNPCNotFound)
 }

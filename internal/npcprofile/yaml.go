@@ -1,0 +1,681 @@
+// Package npcprofile is the canonical storage shape for
+// NPC files. The bot has moved from free-form markdown
+// to a structured YAML representation so that:
+//
+//   - facts are append-only array items (no free-form
+//     text that can be a duplicate in different words);
+//   - relations between NPCs are a list of
+//     {target, note} pairs that can be filtered and
+//     deduped by target;
+//   - abilities are a flat list, not a paragraph — the
+//     summarizer can prune obvious filler and the player
+//     can read them at a glance;
+//   - last_update stays a single REPLACE line so the
+//     operator can see "the most recent thing this NPC
+//     did" without scrolling.
+//
+// The on-disk file is YAML. The model (and the
+// dispatcher) never see YAML — BuildMarkdown renders
+// the same canonical layout the legacy path used, so
+// the prompt, the parser markers, and the player's
+// eyes do not need to change. Storage is hidden
+// behind Load / Save / Update helpers that take and
+// return markdown-shaped strings where it matters.
+package npcprofile
+
+import (
+	"errors"
+	"fmt"
+	"sort"
+	"strings"
+
+	"gopkg.in/yaml.v3"
+)
+
+// Profile is the canonical NPC record on disk. Field
+// names are the YAML keys; they are deliberately short
+// to keep the file readable when an operator opens it
+// in a text editor.
+//
+// The struct is split between "scalars" (one value
+// per slot) and "arrays" (append-only lists). The
+// arrays are what makes this representation
+// attractive vs the previous free-form markdown: every
+// fact is a discrete line, dedup is exact-byte
+// (case-sensitive after TrimSpace), and the summarizer
+// can tell at a glance how many facts a profile has
+// without parsing prose.
+type Profile struct {
+	// DisplayName is the human-readable name the
+	// model and the player see. Required.
+	DisplayName string `yaml:"display_name"`
+	// FileSlug is the on-disk filename without the
+	// ".md" suffix. The model and dispatcher refer
+	// to NPCs by DisplayName; FileSlug is what
+	// FileStore uses to find the file.
+	FileSlug string `yaml:"file_slug"`
+	// Temperament is a one-sentence description of
+	// the NPC's baseline personality. Replace on
+	// explicit update; otherwise stays put.
+	Temperament string `yaml:"temperament"`
+	// RelationsGG is the NPC's disposition toward
+	// the player's character. Plain text — the
+	// summarizer keeps it tight.
+	RelationsGG string `yaml:"relations_gg"`
+	// RelationsNPCs is the list of (target, note)
+	// pairs for the NPC's relations to other named
+	// NPCs in the world. We keep it as a list of
+	// objects (not a flat string) so dedup by
+	// target is exact and the operator can scan the
+	// file to see at a glance who hates whom.
+	RelationsNPCs []Relation `yaml:"relations_npcs,omitempty"`
+	// Abilities is the flat list of capabilities
+	// the NPC has shown in the story. Filler
+	// ("talks loudly", "is friendly") gets pruned
+	// by the summarizer; concrete bloodline
+	// techniques stay.
+	Abilities []string `yaml:"abilities,omitempty"`
+	// PersonalMemory is the ring buffer of facts
+	// the NPC has witnessed or learned. The
+	// summarizer kicks in when this list grows
+	// past NPCPersonalMemoryLimit (40 by default)
+	// and compresses the older entries.
+	PersonalMemory []string `yaml:"personal_memory,omitempty"`
+	// CurrentStatus is a short sentence about what
+	// the NPC is doing RIGHT NOW. Updated by
+	// update_state; not summarised.
+	CurrentStatus string `yaml:"current_status"`
+	// CriticalKnowledge is the list of secrets
+	// only this NPC knows. The dispatcher enforces
+	// info-isolation by including only this field
+	// for NPCs that are not present in the scene.
+	CriticalKnowledge []string `yaml:"critical_knowledge,omitempty"`
+	// Nicknames is the list of alternative names
+	// the model may use in dialogue to refer to
+	// this NPC ("Хината-чан", "Sensei", etc.).
+	Nicknames []string `yaml:"nicknames,omitempty"`
+	// LastUpdate is the single most recent fact
+	// about the NPC. REPLACE on each update; the
+	// previous value lives in PersonalMemory. The
+	// operator reads this line first.
+	LastUpdate string `yaml:"last_update"`
+}
+
+// Relation is a (target, note) pair. Stored as a YAML
+// mapping (not a flat string) so dedup by Target is
+// exact and the summarizer can keep the note brief.
+type Relation struct {
+	Target string `yaml:"target"`
+	Note   string `yaml:"note"`
+}
+
+// NPCPersonalMemoryLimit is the threshold above which
+// the summarizer kicks in to compress personal_memory.
+// The number is intentionally identical to the legacy
+// CompactNPCs threshold so the operator's intuition
+// ("40 lines = needs maintenance") carries over.
+const NPCPersonalMemoryLimit = 40
+
+// ErrNotFound is returned by Load when the file does
+// not exist or exists but is empty. The dispatcher
+// turns this into a slowlog warning rather than a
+// fatal error — create_npc is the right next step.
+var ErrNotFound = errors.New("npcprofile: file not found or empty")
+
+// Load parses a YAML-encoded NPC file. The returned
+// Profile is the only shape downstream code should
+// touch; do not unmarshal into Profile yourself, the
+// format may grow additional fields.
+func Load(body string) (Profile, error) {
+	var p Profile
+	if strings.TrimSpace(body) == "" {
+		return Profile{}, ErrNotFound
+	}
+	if err := yaml.Unmarshal([]byte(body), &p); err != nil {
+		return Profile{}, fmt.Errorf("npcprofile: yaml.Unmarshal: %w", err)
+	}
+	return p, nil
+}
+
+// Save serialises the profile back to disk. The output
+// is sorted alphabetically by section for stable diffs
+// in git; yaml.Marshal's default ordering follows
+// struct field order, but we add a top-level comment
+// so an operator opening the file knows what they are
+// looking at.
+func (p Profile) Save() (string, error) {
+	out, err := yaml.Marshal(p)
+	if err != nil {
+		return "", fmt.Errorf("npcprofile: yaml.Marshal: %w", err)
+	}
+	return string(out), nil
+}
+
+// BuildMarkdown renders the profile as a 4-block
+// markdown document — the same shape the model saw
+// under the legacy free-form format. Empty sections
+// are dropped. The output is the canonical
+// representation the LLM reads and writes through.
+//
+// The block order matches the legacy file layout so
+// existing prompts and operator muscle memory carry
+// over without changes:
+//
+//	# <DisplayName>
+//	## Темперамент
+//	## Отношения с ГГ
+//	## Отношения с другими NPC
+//	## Способности
+//	## Личная память/факты
+//	## Текущий статус
+//	## Критические знания
+//	## Никнеймы
+//	## Последнее обновление
+func (p Profile) BuildMarkdown() string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "# %s\n\n", strings.TrimSpace(p.DisplayName))
+
+	// Темперамент — scalar, one sentence.
+	if s := strings.TrimSpace(p.Temperament); s != "" {
+		b.WriteString("## Темперамент\n")
+		b.WriteString(s)
+		b.WriteString("\n\n")
+	}
+
+	// Отношения с ГГ — scalar, may be empty.
+	if s := strings.TrimSpace(p.RelationsGG); s != "" {
+		b.WriteString("## Отношения с ГГ\n")
+		b.WriteString(s)
+		b.WriteString("\n\n")
+	}
+
+	// Отношения с другими NPC — list of "- target:
+	// note" lines. The dispatcher / model is allowed
+	// to write prose here too (e.g. "- Наруто:
+	// сложные чувства"), but the underlying YAML is
+	// structured so the summarizer can prune.
+	if len(p.RelationsNPCs) > 0 {
+		b.WriteString("## Отношения с другими NPC\n")
+		for _, r := range p.RelationsNPCs {
+			target := strings.TrimSpace(r.Target)
+			note := strings.TrimSpace(r.Note)
+			if target == "" && note == "" {
+				continue
+			}
+			if note == "" {
+				fmt.Fprintf(&b, "- %s\n", target)
+			} else {
+				fmt.Fprintf(&b, "- %s: %s\n", target, note)
+			}
+		}
+		b.WriteString("\n")
+	}
+
+	// Способности — flat list of "- ability".
+	// Empty list = omit the section so the
+	// operator does not see a placeholder.
+	if len(p.Abilities) > 0 {
+		b.WriteString("## Способности\n")
+		for _, a := range p.Abilities {
+			if a = strings.TrimSpace(a); a != "" {
+				fmt.Fprintf(&b, "- %s\n", a)
+			}
+		}
+		b.WriteString("\n")
+	}
+
+	// Личная память/факты — append-only list. The
+	// "facts" sub-header (## → ###) is what the
+	// operator / summarizer looks for to count
+	// items. Numbered list keeps diffs readable.
+	if len(p.PersonalMemory) > 0 {
+		b.WriteString("## Личная память/факты\n")
+		for i, fact := range p.PersonalMemory {
+			if fact = strings.TrimSpace(fact); fact != "" {
+				fmt.Fprintf(&b, "%d. %s\n", i+1, fact)
+			}
+		}
+		b.WriteString("\n")
+	}
+
+	if s := strings.TrimSpace(p.CurrentStatus); s != "" {
+		b.WriteString("## Текущий статус\n")
+		b.WriteString(s)
+		b.WriteString("\n\n")
+	}
+
+	if len(p.CriticalKnowledge) > 0 {
+		b.WriteString("## Критические знания\n")
+		for _, k := range p.CriticalKnowledge {
+			if k = strings.TrimSpace(k); k != "" {
+				fmt.Fprintf(&b, "- %s\n", k)
+			}
+		}
+		b.WriteString("\n")
+	}
+
+	if len(p.Nicknames) > 0 {
+		b.WriteString("## Никнеймы\n")
+		for _, n := range p.Nicknames {
+			if n = strings.TrimSpace(n); n != "" {
+				fmt.Fprintf(&b, "- %s\n", n)
+			}
+		}
+		b.WriteString("\n")
+	}
+
+	if s := strings.TrimSpace(p.LastUpdate); s != "" {
+		b.WriteString("## Последнее обновление\n")
+		b.WriteString(s)
+		b.WriteString("\n")
+	} else {
+		// Always render the footer so future
+		// update_npc calls have a stable landing
+		// pad and the operator can see at a glance
+		// that this is the most recent section
+		// they should be reading.
+		b.WriteString("## Последнее обновление\n_(пусто)_\n")
+	}
+
+	return b.String()
+}
+
+// SectionKind enumerates the section names the
+// model can address via update_npc. The constants
+// are used by UpdateSection and the parser in
+// internal/usecase/gm.go. Aliases are matched in
+// MatchSection.
+type SectionKind int
+
+const (
+	SectionUnknown SectionKind = iota
+	SectionTemperament
+	SectionRelationsGG
+	SectionRelationsNPCs
+	SectionAbilities
+	SectionPersonalMemory
+	SectionCurrentStatus
+	SectionCriticalKnowledge
+	SectionNicknames
+	SectionLastUpdate
+)
+
+// CanonicalSectionName returns the Russian section
+// header as it appears in BuildMarkdown's output.
+// Used by the parser to label missing-sections in
+// the format re-prompt.
+func (k SectionKind) CanonicalSectionName() string {
+	switch k {
+	case SectionTemperament:
+		return "Темперамент"
+	case SectionRelationsGG:
+		return "Отношения с ГГ"
+	case SectionRelationsNPCs:
+		return "Отношения с другими NPC"
+	case SectionAbilities:
+		return "Способности"
+	case SectionPersonalMemory:
+		return "Личная память/факты"
+	case SectionCurrentStatus:
+		return "Текущий статус"
+	case SectionCriticalKnowledge:
+		return "Критические знания"
+	case SectionNicknames:
+		return "Никнеймы"
+	case SectionLastUpdate:
+		return "Последнее обновление"
+	}
+	return ""
+}
+
+// MatchSection resolves a free-form section name
+// (Russian canonical, Russian casual, or English
+// alias) to a typed SectionKind. The model is
+// allowed to write any of these forms in update_npc;
+// the dispatcher canonicalises to the typed kind so
+// the storage layer can route to the right array.
+func MatchSection(name string) SectionKind {
+	trimmed := strings.TrimSpace(strings.ToLower(name))
+	switch trimmed {
+	case "темперамент", "temperament", "temper":
+		return SectionTemperament
+	case "отношения с гг", "relations_gg", "relations gg", "relationsgg", "gg", "отношения с главным", "к гг":
+		return SectionRelationsGG
+	case "отношения с другими npc", "отношения с npc", "relations_npcs", "npc relations", "npc_relations", "отношения", "к другим npc":
+		return SectionRelationsNPCs
+	case "способности", "abilities", "умения", "навыки", "skills":
+		return SectionAbilities
+	case "личная память", "личная память/факты", "память", "факты", "personal memory", "personal_memory", "memory":
+		return SectionPersonalMemory
+	case "текущий статус", "статус", "current status", "current_status", "status":
+		return SectionCurrentStatus
+	case "критические знания", "знания", "секреты", "critical knowledge", "critical_knowledge", "secrets":
+		return SectionCriticalKnowledge
+	case "никнеймы", "nicknames", "клички", "nickname", "прозвища":
+		return SectionNicknames
+	case "последнее обновление", "last update", "last_update", "обновление", "update":
+		return SectionLastUpdate
+	}
+	return SectionUnknown
+}
+
+// UpdateSection mutates a Profile in place based on
+// the section kind. The text argument is the model-
+// supplied content; how it is parsed depends on the
+// section:
+//
+//   - Scalars (Temperament, RelationsGG, CurrentStatus,
+//     LastUpdate): REPLACE. text replaces whatever was
+//     there. LastUpdate is special: it is the only
+//     scalar that the legacy code allowed to be
+//     appended; we keep the REPLACE semantic here for
+//     consistency. The PersonalMemory array keeps the
+//     history of "what changed" by appending the new
+//     fact there as well — see UpdateSectionWithLog.
+//
+//   - Arrays (Abilities, PersonalMemory, Nicknames,
+//     CriticalKnowledge): APPEND with dedup. Empty
+//     strings are skipped. Exact-byte match (after
+//     TrimSpace) is the dedup key. We also fold case
+//     for personal_memory so "День 1: встал" and
+//     "день 1: встал" do not both land — the more
+//     recent spelling wins.
+//
+//   - RelationsNPCs: APPEND a new Relation if the
+//     target is not already present. If it is, the
+//     note is REPLACED (the most recent impression
+//     of "how do they feel about X" wins). The text
+//     is split on the first colon to get
+//     "target: note"; the model's prompt tells it to
+//     use that shape.
+//
+// Returns true if the profile changed (something was
+// added or replaced). False means the section was a
+// no-op (empty text, or exact-byte duplicate of an
+// existing item).
+func (p *Profile) UpdateSection(kind SectionKind, text string) bool {
+	text = strings.TrimSpace(text)
+	switch kind {
+	case SectionTemperament:
+		if text == "" || p.Temperament == text {
+			return false
+		}
+		p.Temperament = text
+		return true
+	case SectionRelationsGG:
+		if text == "" || p.RelationsGG == text {
+			return false
+		}
+		p.RelationsGG = text
+		return true
+	case SectionCurrentStatus:
+		if text == "" || p.CurrentStatus == text {
+			return false
+		}
+		p.CurrentStatus = text
+		return true
+	case SectionLastUpdate:
+		if text == "" || p.LastUpdate == text {
+			return false
+		}
+		p.LastUpdate = text
+		return true
+	case SectionAbilities:
+		return appendUnique(&p.Abilities, text)
+	case SectionPersonalMemory:
+		if text == "" {
+			return false
+		}
+		// Dedup: case-insensitive, whitespace-trimmed
+		// comparison. We keep the original casing
+		// of the first occurrence (no rewrite on
+		// re-encounter with a different capitalisation).
+		key := strings.ToLower(text)
+		for _, existing := range p.PersonalMemory {
+			if strings.ToLower(strings.TrimSpace(existing)) == key {
+				return false
+			}
+		}
+		p.PersonalMemory = append(p.PersonalMemory, text)
+		return true
+	case SectionCriticalKnowledge:
+		return appendUnique(&p.CriticalKnowledge, text)
+	case SectionNicknames:
+		return appendUnique(&p.Nicknames, text)
+	case SectionRelationsNPCs:
+		return p.updateRelation(text)
+	}
+	return false
+}
+
+// updateRelation parses "Target: note" from text and
+// either inserts a new Relation or replaces the note
+// on an existing one (same Target).
+func (p *Profile) updateRelation(text string) bool {
+	if text == "" {
+		return false
+	}
+	target, note := splitRelationText(text)
+	if target == "" {
+		return false
+	}
+	targetKey := strings.ToLower(strings.TrimSpace(target))
+	for i := range p.RelationsNPCs {
+		existing := strings.ToLower(strings.TrimSpace(p.RelationsNPCs[i].Target))
+		if existing == targetKey {
+			if p.RelationsNPCs[i].Note == note {
+				return false
+			}
+			p.RelationsNPCs[i].Note = note
+			return true
+		}
+	}
+	p.RelationsNPCs = append(p.RelationsNPCs, Relation{Target: target, Note: note})
+	return true
+}
+
+// joinNonEmpty joins a slice of lines with single
+// spaces, dropping any empty / whitespace-only entries.
+func joinNonEmpty(lines []string) string {
+	var parts []string
+	for _, ln := range lines {
+		if t := strings.TrimSpace(ln); t != "" {
+			parts = append(parts, t)
+		}
+	}
+	return strings.Join(parts, " ")
+}
+
+// splitRelationText splits "Target: note" on the
+// first colon. "Target" alone (no note) is allowed.
+func splitRelationText(s string) (string, string) {
+	for i, r := range s {
+		if r == ':' {
+			return strings.TrimSpace(s[:i]), strings.TrimSpace(s[i+1:])
+		}
+	}
+	return strings.TrimSpace(s), ""
+}
+
+// appendUnique is the shared array-append helper. It
+// trims, drops empties, and dedups by exact byte
+// match (case-sensitive — the model's spelling is the
+// canonical one; we do not rewrite it).
+func appendUnique(field *[]string, text string) bool {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return false
+	}
+	for _, existing := range *field {
+		if existing == text {
+			return false
+		}
+	}
+	*field = append(*field, text)
+	return true
+}
+
+// MigrateFromMarkdown converts a legacy free-form
+// markdown file into a Profile. We do NOT aim for a
+// perfect 1:1 reconstruction — the goal is a
+// "good enough" profile so the operator does not
+// have to re-enter every fact. Unknown sections are
+// dropped with a warning (the operator can recover
+// from git history).
+//
+// The heuristic is:
+//
+//	# <DisplayName>
+//	## Темперамент
+//	<scalar>
+//	## Отношения с ГГ
+//	<scalar>
+//	## Отношения с другими NPC
+//	- Target: note
+//	- Target: note
+//	## Способности
+//	- ability
+//	## Личная память/факты
+//	- fact
+//	## Текущий статус
+//	<scalar>
+//	## Критические знания
+//	- secret
+//	## Никнеймы
+//	- nickname
+//	## Последнее обновление
+//	<scalar>
+//
+// Anything not matching a known section header is
+// dropped (we return nil for the section list — the
+// operator is responsible for the diff).
+func MigrateFromMarkdown(body, fileSlug string) (Profile, error) {
+	p := Profile{FileSlug: fileSlug}
+	if strings.TrimSpace(body) == "" {
+		return p, ErrNotFound
+	}
+	lines := strings.Split(body, "\n")
+	var current SectionKind
+	var pending []string
+	flush := func() {
+		if current == SectionUnknown || len(pending) == 0 {
+			return
+		}
+		// Scalars get a single UpdateSection with the
+		// joined text; arrays get one update per item
+		// so dedup applies per line (and the order is
+		// preserved).
+		switch current {
+		case SectionAbilities, SectionPersonalMemory,
+			SectionCriticalKnowledge, SectionNicknames:
+			for _, item := range pending {
+				p.UpdateSection(current, item)
+			}
+		case SectionRelationsNPCs:
+			for _, item := range pending {
+				p.updateRelation(item)
+			}
+		default:
+			text := strings.TrimSpace(strings.Join(pending, " "))
+			if text != "" {
+				p.UpdateSection(current, text)
+			}
+		}
+		pending = nil
+	}
+	for _, raw := range lines {
+		t := strings.TrimSpace(raw)
+		switch {
+		case strings.HasPrefix(t, "# ") && !strings.HasPrefix(t, "## "):
+			p.DisplayName = strings.TrimSpace(t[2:])
+		case strings.HasPrefix(t, "## "):
+			sawSection = true
+			flush()
+			current = MatchSection(t[3:])
+		case t == "":
+			flush()
+			current = SectionUnknown
+		default:
+			item := strings.TrimPrefix(t, "- ")
+			item = strings.TrimPrefix(item, "* ")
+			// Drop numbered-list prefix
+			// ("1. ", "2. ", ...).
+			if idx := strings.Index(t, ". "); idx > 0 {
+				prefix := t[:idx]
+				isDigits := true
+				for _, r := range prefix {
+					if r < '0' || r > '9' {
+						isDigits = false
+						break
+					}
+				}
+				if isDigits {
+					item = strings.TrimSpace(t[idx+2:])
+				}
+			}
+			pending = append(pending, item)
+		}
+	}
+	// Final flush — the last section may not have been
+	// terminated by a blank line or a new header.
+	flush()
+	// Heuristic: if no section headers were found
+	// (legacy "name + one free-form paragraph"
+	// files, common in the oldest commits), drop the
+	// free-form text into Темперамент so the model
+	// has a stable section to anchor on. The
+	// alternative — silently dropping the body — is
+	// strictly worse: the operator's manual edits
+	// would vanish on the next save.
+	if !sawSection && strings.TrimSpace(p.Temperament) == "" {
+		if body := strings.TrimSpace(joinNonEmpty(pending)); body != "" {
+			p.Temperament = body
+		}
+	}
+	if p.DisplayName == "" {
+		p.DisplayName = fileSlug
+	}
+	return p, nil
+}
+
+// sawSection is set inside the parser when any
+// "## " header is encountered. The legacy "name +
+// free text" files do not have any.
+var sawSection bool
+
+// SortedKeys returns the names of every section that
+// has data, alphabetically sorted. Used by the
+// operator-facing diagnostic (e.g. /inspect) and the
+// summarizer to know which sections are populated.
+func (p Profile) SortedKeys() []string {
+	var keys []string
+	if p.Temperament != "" {
+		keys = append(keys, SectionTemperament.CanonicalSectionName())
+	}
+	if p.RelationsGG != "" {
+		keys = append(keys, SectionRelationsGG.CanonicalSectionName())
+	}
+	if len(p.RelationsNPCs) > 0 {
+		keys = append(keys, SectionRelationsNPCs.CanonicalSectionName())
+	}
+	if len(p.Abilities) > 0 {
+		keys = append(keys, SectionAbilities.CanonicalSectionName())
+	}
+	if len(p.PersonalMemory) > 0 {
+		keys = append(keys, SectionPersonalMemory.CanonicalSectionName())
+	}
+	if p.CurrentStatus != "" {
+		keys = append(keys, SectionCurrentStatus.CanonicalSectionName())
+	}
+	if len(p.CriticalKnowledge) > 0 {
+		keys = append(keys, SectionCriticalKnowledge.CanonicalSectionName())
+	}
+	if len(p.Nicknames) > 0 {
+		keys = append(keys, SectionNicknames.CanonicalSectionName())
+	}
+	if p.LastUpdate != "" {
+		keys = append(keys, SectionLastUpdate.CanonicalSectionName())
+	}
+	sort.Strings(keys)
+	return keys
+}

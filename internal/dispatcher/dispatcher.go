@@ -331,11 +331,25 @@ func (d *Dispatcher) cmdMaintenance() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	touched, err := d.tools.CompactNPCs(sc.World)
+	touched, err := d.tools.MaintainNPCs(sc.World)
 	if err != nil {
 		return "", err
 	}
 	d.commit(fmt.Sprintf("maintenance: %s", sc.World))
+	// Lore is compacted in the same /maintenance call
+	// so an operator can run the bot's daily cleanup
+	// with one command. Both paths are LLM-driven and
+	// best-effort — a failed summarizer call is logged
+	// and skipped, not surfaced to the operator as an
+	// error. canon.md is NEVER touched here. We use
+	// context.Background (not a request-scoped ctx)
+	// because /maintenance is operator-triggered and
+	// may legitimately take a minute or two for a
+	// large lore.md.
+	_, loreErr := d.tools.MaintainLore(context.Background(), sc.World)
+	if loreErr != nil {
+		d.log.Warn().Err(loreErr).Msg("lore maintenance failed")
+	}
 	if len(touched) > 0 {
 		return "Обслуживание выполнено. Выжимка NPC: " + strings.Join(touched, ", "), nil
 	}
