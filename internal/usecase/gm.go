@@ -1461,7 +1461,7 @@ func (g *GM) buildContextPrompt() (string, error) {
 		WorldState:        safeRead(g.fs, "worlds/"+sc.World+"/state.md"),
 		WorldLore:         safeRead(g.fs, "worlds/"+sc.World+"/lore.md"),
 		WorldPlan:         safeRead(g.fs, "worlds/"+sc.World+"/plan.md"),
-		WorldMemoriseTail: tailMemorise(safeRead(g.fs, "worlds/"+sc.World+"/memorise.md"), 20),
+		WorldMemorise:     safeRead(g.fs, "worlds/"+sc.World+"/memorise.md"),
 		NPCs:              g.loadActiveNPCs(sc.World, sc.State),
 	}
 	return domain.BuildSystemPrompt(g.staticPrompt, ctx, g.role.DisableThinking), nil
@@ -1470,19 +1470,6 @@ func (g *GM) buildContextPrompt() (string, error) {
 func safeRead(fs *storage.FileStore, rel string) string {
 	s, _ := fs.ReadRaw(rel)
 	return s
-}
-
-// tailMemorise returns the last N lines of the memorise file so the
-// LLM sees recent days without burning context on the full archive.
-func tailMemorise(body string, n int) string {
-	if body == "" {
-		return ""
-	}
-	lines := strings.Split(strings.TrimRight(body, "\n"), "\n")
-	if len(lines) <= n {
-		return body
-	}
-	return strings.Join(lines[len(lines)-n:], "\n") + "\n"
 }
 
 // loadActiveNPCs reads the world state, extracts the comma-separated
@@ -1582,7 +1569,7 @@ func (g *GM) dispatchOneTool(ctx context.Context, tc llm.ToolCall) (string, stri
 		if day == 0 || summary == "" {
 			return "", "end_day requires day and summary"
 		}
-		if err := g.tools.ArchiveDay(currentWorldName(g.fs), day, summary); err != nil {
+		if err := g.tools.ArchiveDay(ctx, currentWorldName(g.fs), day, summary); err != nil {
 			return "", err.Error()
 		}
 		return okJSON("archived"), ""

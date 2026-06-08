@@ -61,7 +61,7 @@ func setup(t *testing.T) (*Dispatcher, *storage.FileStore) {
 	require.NoError(t, os.MkdirAll(dataDir, 0o755))
 	fs, err := storage.NewFileStore(dataDir)
 	require.NoError(t, err)
-	tools := usecase.NewFileToolset(fs, zerolog.Nop(), slowlog.Discard(), nil, nil)
+	tools := usecase.NewFileToolset(fs, zerolog.Nop(), slowlog.Discard(), nil, nil, nil)
 	d := New(newCfg(t, workdir), fs, nil, tools, slowlog.Discard(), zerolog.Nop())
 	return d, fs
 }

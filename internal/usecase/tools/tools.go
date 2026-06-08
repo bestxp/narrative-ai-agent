@@ -117,7 +117,16 @@ type Tool interface {
 	UpdateState(snap StateSnapshot) error
 	AppendEvent(text string) error
 	AppendHistoryToState(world, summary string, at time.Time) error
-	ArchiveDay(world string, day int, summary string) error
+	// ArchiveDay appends a new day entry to memorise.md and
+	// triggers automatic 30-day window compression when the
+	// recorded day closes a window (day % 30 == 0, or any
+	// wider timeskip). The context carries the request
+	// deadline — the compression step is an LLM call that
+	// may take a few seconds, so the per-turn deadline
+	// applies. The summarizer is wired in cmd/bot/main.go
+	// (see tools.MemoriseSummarizer); nil summarizers are
+	// tolerated and the call is logged + skipped.
+	ArchiveDay(ctx context.Context, world string, day int, summary string) error
 	RotatePlan(world string, events []string) error
 
 	// --- memory.md / lore.md / NPC condensation ---

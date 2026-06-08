@@ -3,6 +3,7 @@ package usecase
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/rs/zerolog"
@@ -239,7 +240,7 @@ func (s *Summarizer) SummarizeNPC(ctx context.Context, displayName, world string
 	userBuf.Write(yamlBody)
 	userBuf.WriteString("\n```\n")
 	if len(memoriseTail) > 0 {
-		userBuf.WriteString("\n# Хвост memorise.md (последние дни, контекст)\n```\n")
+		userBuf.WriteString("\n# Полный memorise.md (контекст хронологии, без обрезки)\n```\n")
 		userBuf.Write(memoriseTail)
 		userBuf.WriteString("\n```\n")
 	}
@@ -395,7 +396,7 @@ func (s *Summarizer) SummarizeLore(ctx context.Context, world string, loreBody, 
 	userBuf.Write(loreBody)
 	userBuf.WriteString("\n```\n")
 	if len(memoriseTail) > 0 {
-		userBuf.WriteString("\n# Хвост memorise.md (последние 20 дней)\n```\n")
+		userBuf.WriteString("\n# Полный memorise.md (контекст хронологии, без обрезки)\n```\n")
 		userBuf.Write(memoriseTail)
 		userBuf.WriteString("\n```\n")
 	}
@@ -463,5 +464,103 @@ func stripMarkdownFence(s string) string {
 		s = s[:idx]
 	}
 	return strings.TrimSpace(s)
+}
+
+// MemoriseSummaryResult is what SummarizeMemorise returns.
+// Body is the compressed text the caller should append to
+// memorise.md as a single line; it must start with the
+// literal "д<start>-д<end>: " prefix. Compressed is true
+// when the body is non-empty and shorter than the input
+// window (i.e. a real shrink happened, not a no-op echo).
+type MemoriseSummaryResult struct {
+	Body       []byte
+	Compressed bool
+	OutputChars int
+	InputDays  int
+}
+
+// SummarizeMemorise asks the LLM to compact a window of
+// N consecutive day entries (default N=30, larger on
+// timeskips) into a single line "д<start>-д<end>: <10..N
+// sentences of distilled essence>". The system prompt
+// (loaded from internal/prompts/memorise_summary.md) sets
+// the rules: chronological, dedupe repetitions, preserve
+// canon-relevant facts (NPC introductions, death, player
+// actions that change the world).
+//
+// The summarizer receives the WHOLE current memorise.md
+// as context — earlier, already-compressed windows are
+// passed through so the model can keep the new summary
+// consistent with what has already been said (and dedupe
+// arcs that span the window boundary, like a 15-day
+// training run that started inside the previous window).
+//
+// Best-effort: the model may return an empty body (the
+// window is too thin to compress — e.g. only 3 real days
+// of activity in a 30-day calendar window). The caller
+// treats that as "no compression happened" and leaves
+// the file untouched.
+func (s *Summarizer) SummarizeMemorise(ctx context.Context, world string, startDay, endDay int, fullMemorise string) (MemoriseSummaryResult, error) {
+	res := MemoriseSummaryResult{Body: nil, Compressed: false, InputDays: endDay - startDay + 1}
+	if !s.IsConfigured() {
+		return res, nil
+	}
+	if endDay < startDay {
+		return res, fmt.Errorf("summarizer: memorise window invalid: start=%d end=%d", startDay, endDay)
+	}
+
+	var userBuf strings.Builder
+	userBuf.WriteString("# World: ")
+	userBuf.WriteString(world)
+	userBuf.WriteString("\n\n# Сжимаемое окно: д")
+	userBuf.WriteString(fmt.Sprintf("%05d", startDay))
+	userBuf.WriteString(" — д")
+	userBuf.WriteString(fmt.Sprintf("%05d", endDay))
+	userBuf.WriteString(" (")
+	userBuf.WriteString(strconv.Itoa(endDay - startDay + 1))
+	userBuf.WriteString(" дней)\n")
+	userBuf.WriteString("\n# Полный memorise.md (используй для контекста и дедупликации пересечений с предыдущими сводками)\n```\n")
+	userBuf.WriteString(fullMemorise)
+	userBuf.WriteString("\n```\n")
+	userBuf.WriteString("\nВерни ОДНУ строку. Формат: д<start>-д<end>: <суть>. Без обёрток, без markdown, без переносов строк внутри.")
+
+	role := s.role
+	if role.MaxTokens < 2000 {
+		role.MaxTokens = 2000
+	}
+	if role.Temperature == 0 || role.Temperature > 0.4 {
+		role.Temperature = 0.2
+	}
+
+	req := llm.ChatRequest{
+		Model: role.Model,
+		Messages: []llm.Message{
+			{Role: "system", Content: s.prompt},
+			{Role: "user", Content: userBuf.String()},
+		},
+		Temperature: role.Temperature,
+		MaxTokens:   role.MaxTokens,
+	}
+
+	var buf strings.Builder
+	streamErr := s.llm.Stream(ctx, req, func(ch llm.Chunk) error {
+		if ch.Done || ch.Content == "" {
+			return nil
+		}
+		buf.WriteString(ch.Content)
+		return nil
+	})
+	if streamErr != nil {
+		return res, fmt.Errorf("summarizer: memorise stream: %w", streamErr)
+	}
+	out := strings.TrimSpace(buf.String())
+	if out == "" {
+		return res, nil
+	}
+	cleaned := stripMarkdownFence(out)
+	res.Body = []byte(cleaned)
+	res.OutputChars = len(cleaned)
+	res.Compressed = true
+	return res, nil
 }
 

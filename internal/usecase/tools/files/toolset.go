@@ -40,15 +40,24 @@ type Toolset struct {
 // concern when needed (so a maintenance event and an NPC
 // event get different "component" fields in zerolog). slow
 // is the optional audit log; pass slowlog.Discard() in tests.
+//
 // summarizer is the LLM-driven NPC condensation hook used
-// by MaintainNPCs. loreSummarizer is the LLM-driven
-// lore.md compaction hook used by MaintainLore. Pass nil
-// to either to disable the LLM path — the file backend
-// will then log a warning and skip.
-func New(fs *storage.FileStore, log zerolog.Logger, slow *slowlog.Logger, summarizer tools.NPCSummarizer, loreSummarizer tools.LoreSummarizer) *Toolset {
+// by MaintainNPCs. loreSummarizer is the LLM-driven lore.md
+// compaction hook used by MaintainLore. memoriseSummarizer
+// is the LLM-driven 30-day window compression hook used by
+// ArchiveDay. Pass nil to any of them to disable the LLM
+// path — the file backend will then log a warning and skip.
+func New(fs *storage.FileStore, log zerolog.Logger, slow *slowlog.Logger, summarizer tools.NPCSummarizer, loreSummarizer tools.LoreSummarizer, memoriseSummarizer tools.MemoriseSummarizer) *Toolset {
+	mem := newMemory(fs, log, summarizer, loreSummarizer, memoriseSummarizer)
+	st := newState(fs, log)
+	// Wire the post-ArchiveDay hook so the state writer
+	// does not need a direct reference to the memory
+	// struct. The hook is nil-safe — it logs and skips
+	// when no summarizer is wired.
+	st.SetMemoriseCompress(mem.memoriseCompressAfterArchive)
 	return &Toolset{
-		State:     newState(fs, log),
-		Memory:    newMemory(fs, log, summarizer, loreSummarizer),
+		State:     st,
+		Memory:    mem,
 		World:     newWorld(fs, log),
 		Character: newCharacter(fs, log, slow),
 		NPC:       newNPC(fs, log),

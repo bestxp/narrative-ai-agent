@@ -3,6 +3,8 @@ package files
 import (
 	"context"
 	"fmt"
+	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -11,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
+	"github.com/bestxp/narrative-ai-agent/internal/domain"
 	"github.com/bestxp/narrative-ai-agent/internal/npcprofile"
 	"github.com/bestxp/narrative-ai-agent/internal/slowlog"
 	"github.com/bestxp/narrative-ai-agent/internal/usecase/tools"
@@ -75,7 +78,7 @@ func TestMaintainNPCs_NilSummarizerWarnsAndSkips(t *testing.T) {
 	fs, err := storage.NewFileStore(t.TempDir())
 	require.NoError(t, err)
 	writeLongNPC(t, fs, "naruto", "kakashi", "Какаши")
-	m := newMemory(fs, zerolog.Nop(), nil, nil)
+	m := newMemory(fs, zerolog.Nop(), nil, nil, nil)
 	touched, err := m.MaintainNPCs("naruto")
 	require.NoError(t, err)
 	assert.Empty(t, touched, "no summarizer — file should not be touched")
@@ -95,7 +98,7 @@ file_slug: "x"
 
 	// Summarizer records no calls.
 	stub := &stubSummarizer{}
-	m := newMemory(fs, zerolog.Nop(), stub, nil)
+	m := newMemory(fs, zerolog.Nop(), stub, nil, nil)
 	touched, err := m.MaintainNPCs("naruto")
 	require.NoError(t, err)
 	assert.Empty(t, touched)
@@ -118,7 +121,7 @@ func TestMaintainNPCs_ShrinksPersonalMemory(t *testing.T) {
 	require.NoError(t, err)
 
 	stub := &stubSummarizer{returnBody: []byte(newBody)}
-	m := newMemory(fs, zerolog.Nop(), stub, nil)
+	m := newMemory(fs, zerolog.Nop(), stub, nil, nil)
 	touched, err := m.MaintainNPCs("naruto")
 	require.NoError(t, err)
 	assert.Equal(t, []string{"Какаши"}, touched)
@@ -138,7 +141,7 @@ func TestMaintainNPCs_RejectsNoShrink(t *testing.T) {
 
 	// Stub summarizer returns the SAME body (no shrink).
 	stub := &stubSummarizer{returnBody: []byte("uncompressed")}
-	m := newMemory(fs, zerolog.Nop(), stub, nil)
+	m := newMemory(fs, zerolog.Nop(), stub, nil, nil)
 	touched, err := m.MaintainNPCs("naruto")
 	require.NoError(t, err)
 	assert.Empty(t, touched, "no shrink — no write")
@@ -150,7 +153,7 @@ func TestMaintainNPCs_RejectsInvalidYAML(t *testing.T) {
 
 	// Stub summarizer returns garbage.
 	stub := &stubSummarizer{returnBody: []byte("not valid yaml: [")}
-	m := newMemory(fs, zerolog.Nop(), stub, nil)
+	m := newMemory(fs, zerolog.Nop(), stub, nil, nil)
 	touched, err := m.MaintainNPCs("naruto")
 	require.NoError(t, err)
 	assert.Empty(t, touched, "invalid YAML — no write")
@@ -161,7 +164,7 @@ func TestMaintainNPCs_PropagatesError(t *testing.T) {
 	writeLongNPC(t, fs, "naruto", "kakashi", "Какаши")
 
 	stub := &stubSummarizer{err: errTest}
-	m := newMemory(fs, zerolog.Nop(), stub, nil)
+	m := newMemory(fs, zerolog.Nop(), stub, nil, nil)
 	// Per-NPC errors are isolated: a failed
 	// summarizer call is logged at warn level but
 	// does not abort the loop, and MaintainNPCs
@@ -184,7 +187,7 @@ func TestMaintainNPCs_LegacyMarkdownMigratedOnTheFly(t *testing.T) {
 		"# Какаши\nспокойный\n"))
 
 	stub := &stubSummarizer{}
-	m := newMemory(fs, zerolog.Nop(), stub, nil)
+	m := newMemory(fs, zerolog.Nop(), stub, nil, nil)
 	touched, err := m.MaintainNPCs("naruto")
 	require.NoError(t, err)
 	assert.Empty(t, touched)
@@ -216,7 +219,7 @@ file_slug: "short_npc"
 	newBody, _ := original.Save()
 	stub := &stubSummarizer{returnBody: []byte(newBody)}
 
-	m := newMemory(fs, zerolog.Nop(), stub, nil)
+	m := newMemory(fs, zerolog.Nop(), stub, nil, nil)
 	touched, err := m.MaintainNPCs("naruto")
 	require.NoError(t, err)
 	assert.Equal(t, []string{"Длинный NPC"}, touched, "only the long NPC is touched")
@@ -290,7 +293,7 @@ func writeLongLore(t *testing.T, fs *storage.FileStore, world string) string {
 func TestMaintainLore_NilSummarizerWarnsAndSkips(t *testing.T) {
 	fs, _ := storage.NewFileStore(t.TempDir())
 	writeLongLore(t, fs, "naruto")
-	m := newMemory(fs, zerolog.Nop(), nil, nil)
+	m := newMemory(fs, zerolog.Nop(), nil, nil, nil)
 	rewritten, err := m.MaintainLore(context.Background(), "naruto")
 	require.NoError(t, err)
 	assert.False(t, rewritten, "no summarizer — file should not be touched")
@@ -301,7 +304,7 @@ func TestMaintainLore_BelowThresholdSkips(t *testing.T) {
 	// 50 lines, well under 500.
 	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/lore.md", "# Lore\n\n## Day 1\n- fact\n\n## Day 2\n- fact\n"))
 	stub := &stubLoreSummarizer{}
-	m := newMemory(fs, zerolog.Nop(), nil, stub)
+	m := newMemory(fs, zerolog.Nop(), nil, stub, nil)
 	rewritten, err := m.MaintainLore(context.Background(), "naruto")
 	require.NoError(t, err)
 	assert.False(t, rewritten)
@@ -314,7 +317,7 @@ func TestMaintainLore_ShrinksLoreFile(t *testing.T) {
 	// Return a smaller body.
 	shortBody := "# Lore — мир naruto\n\n## День 1\n- ключевой факт\n"
 	stub := &stubLoreSummarizer{returnBody: []byte(shortBody)}
-	m := newMemory(fs, zerolog.Nop(), nil, stub)
+	m := newMemory(fs, zerolog.Nop(), nil, stub, nil)
 	rewritten, err := m.MaintainLore(context.Background(), "naruto")
 	require.NoError(t, err)
 	assert.True(t, rewritten)
@@ -333,7 +336,7 @@ func TestMaintainLore_RejectsNoShrink(t *testing.T) {
 	require.NoError(t, err)
 	// Return the same body (no shrink).
 	stub := &stubLoreSummarizer{returnBody: []byte(original)}
-	m := newMemory(fs, zerolog.Nop(), nil, stub)
+	m := newMemory(fs, zerolog.Nop(), nil, stub, nil)
 	rewritten, err := m.MaintainLore(context.Background(), "naruto")
 	require.NoError(t, err)
 	assert.False(t, rewritten, "no shrink — no write")
@@ -345,7 +348,7 @@ func TestMaintainLore_RejectsNoSections(t *testing.T) {
 	// Return prose with no "## " headers — would
 	// destroy the canonical section structure.
 	stub := &stubLoreSummarizer{returnBody: []byte("just one long sentence with no sections")}
-	m := newMemory(fs, zerolog.Nop(), nil, stub)
+	m := newMemory(fs, zerolog.Nop(), nil, stub, nil)
 	rewritten, err := m.MaintainLore(context.Background(), "naruto")
 	require.NoError(t, err)
 	assert.False(t, rewritten, "no sections — no write")
@@ -355,7 +358,7 @@ func TestMaintainLore_PropagatesError(t *testing.T) {
 	fs, _ := storage.NewFileStore(t.TempDir())
 	writeLongLore(t, fs, "naruto")
 	stub := &stubLoreSummarizer{err: errTest}
-	m := newMemory(fs, zerolog.Nop(), nil, stub)
+	m := newMemory(fs, zerolog.Nop(), nil, stub, nil)
 	_, err := m.MaintainLore(context.Background(), "naruto")
 	assert.Error(t, err)
 }
@@ -363,7 +366,7 @@ func TestMaintainLore_PropagatesError(t *testing.T) {
 func TestMaintainLore_MissingFileNoop(t *testing.T) {
 	fs, _ := storage.NewFileStore(t.TempDir())
 	stub := &stubLoreSummarizer{}
-	m := newMemory(fs, zerolog.Nop(), nil, stub)
+	m := newMemory(fs, zerolog.Nop(), nil, stub, nil)
 	rewritten, err := m.MaintainLore(context.Background(), "naruto")
 	require.NoError(t, err)
 	assert.False(t, rewritten)
@@ -377,3 +380,339 @@ var _ tools.LoreSummarizer = (*stubLoreSummarizer)(nil)
 // Reference to slowlog keeps the import live in case
 // the test ever needs a real Logger.
 var _ = slowlog.Discard
+
+// --- memorise window compression ----------------------------------------
+
+// stubMemoriseSummarizer is a deterministic test double
+// for tools.MemoriseSummarizer. It records every call and
+// returns a fixed body that follows the
+// "д<start>-д<end>: <text>" contract, unless the test
+// wants the model to misbehave (err / empty / bad prefix).
+type stubMemoriseSummarizer struct {
+	calls     int
+	lastBody  string
+	lastFrom  int
+	lastTo    int
+	firstFrom int
+	firstTo   int
+	// ReturnedBody is appended after the canonical prefix
+	// to produce the final line. Empty string yields a
+	// model that returned no content at all.
+	returnedBody string
+	// BadPrefix drops the canonical prefix, simulating a
+	// model that drifted.
+	badPrefix bool
+	err       error
+	// SkipOutput, when true, makes the stub return
+	// ([]byte{}, nil) regardless of returnedBody — the
+	// "too thin" code path.
+	skipOutput bool
+}
+
+func (s *stubMemoriseSummarizer) SummarizeMemorise(ctx context.Context, world string, startDay, endDay int, fullMemorise string) ([]byte, error) {
+	s.calls++
+	if s.calls == 1 {
+		s.firstFrom = startDay
+		s.firstTo = endDay
+	}
+	s.lastFrom = startDay
+	s.lastTo = endDay
+	s.lastBody = fullMemorise
+	if s.err != nil {
+		return nil, s.err
+	}
+	if s.skipOutput {
+		return []byte{}, nil
+	}
+	prefix := fmt.Sprintf("д%05d-д%05d: ", startDay, endDay)
+	if s.badPrefix {
+		return []byte("д00099-д00099: nonsense"), nil
+	}
+	return []byte(prefix + s.returnedBody), nil
+}
+
+var _ tools.MemoriseSummarizer = (*stubMemoriseSummarizer)(nil)
+
+// writeMemoriseDays writes a 1-day-per-line memorise.md
+// for the world. Days not in the `days` slice are
+// skipped (so the test can simulate a gap in the
+// calendar — e.g. 1..29, 31..60 with day 30 missing).
+func writeMemoriseDays(t *testing.T, fs *storage.FileStore, world string, days map[int]string) {
+	t.Helper()
+	var b strings.Builder
+	nums := make([]int, 0, len(days))
+	for n := range days {
+		nums = append(nums, n)
+	}
+	sort.Ints(nums)
+	for _, n := range nums {
+		b.WriteString(domain.FormatDay(n, days[n]))
+		b.WriteString("\n")
+	}
+	require.NoError(t, fs.WriteRawAtomic("worlds/"+world+"/memorise.md", b.String()))
+}
+
+// TestMemoriseCompressWindow_Basic30Days writes days
+// 1..30, calls ArchiveDay(30) which must compress
+// д00001-д00030 into a single line.
+func TestMemoriseCompressWindow_Basic30Days(t *testing.T) {
+	fs, _ := storage.NewFileStore(t.TempDir())
+	require.NoError(t, fs.EnsureDir("worlds/naruto"))
+	days := make(map[int]string, 30)
+	for i := 1; i <= 30; i++ {
+		days[i] = "день " + strconv.Itoa(i)
+	}
+	writeMemoriseDays(t, fs, "naruto", days)
+	stub := &stubMemoriseSummarizer{returnedBody: "выжимка 30 дней"}
+	mem := newMemory(fs, zerolog.Nop(), nil, nil, stub)
+	// ArchiveDay will call the hook after writing. We use
+	// the state struct directly because the tool wiring
+	// (State.ArchiveDay → Memory.memoriseCompressAfterArchive)
+	// is set up in NewFileToolset, but we can also call
+	// memoriseCompressAfterArchive directly.
+	err := mem.memoriseCompressAfterArchive(context.Background(), "naruto", 30)
+	require.NoError(t, err)
+	assert.Equal(t, 1, stub.calls)
+	assert.Equal(t, 1, stub.lastFrom)
+	assert.Equal(t, 30, stub.lastTo)
+	// File should now contain the summary line.
+	body, _ := fs.ReadRaw("worlds/naruto/memorise.md")
+	assert.Contains(t, body, "д00001-д00030: выжимка 30 дней")
+	// No more single-day lines for days 1..30.
+	for i := 1; i <= 30; i++ {
+		assert.NotContains(t, body, "д"+strconv.Itoa(i)+":", "day %d should be gone", i)
+		if i < 10 {
+			assert.NotContains(t, body, "д0000"+strconv.Itoa(i)+":")
+		}
+	}
+}
+
+// TestMemoriseCompressWindow_Ladder: archive up to day
+// 60 → must produce TWO summary lines, one per window.
+func TestMemoriseCompressWindow_Ladder(t *testing.T) {
+	fs, _ := storage.NewFileStore(t.TempDir())
+	require.NoError(t, fs.EnsureDir("worlds/naruto"))
+	days := make(map[int]string, 60)
+	for i := 1; i <= 60; i++ {
+		days[i] = "день " + strconv.Itoa(i)
+	}
+	writeMemoriseDays(t, fs, "naruto", days)
+	stub := &stubMemoriseSummarizer{returnedBody: "выжимка"}
+	mem := newMemory(fs, zerolog.Nop(), nil, nil, stub)
+	err := mem.memoriseCompressAfterArchive(context.Background(), "naruto", 60)
+	require.NoError(t, err)
+	assert.Equal(t, 2, stub.calls, "two windows → two LLM calls")
+	body, _ := fs.ReadRaw("worlds/naruto/memorise.md")
+	assert.Contains(t, body, "д00001-д00030:")
+	assert.Contains(t, body, "д00031-д00060:")
+}
+
+// TestMemoriseCompressWindow_Timeskip simulates a jump
+// from day 10 to day 90 in one ArchiveDay call (e.g. the
+// player left the world and returned). The file already
+// has days 1..10; the new archive brings the count to
+// 90. Three windows must be compressed: 1..30, 31..60,
+// 61..90.
+func TestMemoriseCompressWindow_Timeskip(t *testing.T) {
+	fs, _ := storage.NewFileStore(t.TempDir())
+	require.NoError(t, fs.EnsureDir("worlds/naruto"))
+	// Pre-existing: days 1..10.
+	pre := make(map[int]string, 10)
+	for i := 1; i <= 10; i++ {
+		pre[i] = "до таймскипа " + strconv.Itoa(i)
+	}
+	writeMemoriseDays(t, fs, "naruto", pre)
+	// Simulate the new days being written through the
+	// state.ArchiveDay path: write days 11..90 directly
+	// here, then call the hook as if day 90 was just
+	// archived.
+	var buf strings.Builder
+	for i := 1; i <= 90; i++ {
+		buf.WriteString(domain.FormatDay(i, "день "+strconv.Itoa(i)))
+		buf.WriteString("\n")
+	}
+	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/memorise.md", buf.String()))
+	stub := &stubMemoriseSummarizer{returnedBody: "окно"}
+	mem := newMemory(fs, zerolog.Nop(), nil, nil, stub)
+	err := mem.memoriseCompressAfterArchive(context.Background(), "naruto", 90)
+	require.NoError(t, err)
+	assert.Equal(t, 3, stub.calls, "three windows → three LLM calls")
+	body, _ := fs.ReadRaw("worlds/naruto/memorise.md")
+	assert.Contains(t, body, "д00001-д00030:")
+	assert.Contains(t, body, "д00031-д00060:")
+	assert.Contains(t, body, "д00061-д00090:")
+	// The single-day lines for 1..90 must be gone.
+	for i := 1; i <= 90; i++ {
+		if i < 10 {
+			assert.NotContains(t, body, "д0000"+strconv.Itoa(i)+": день")
+		} else {
+			assert.NotContains(t, body, "д"+strconv.Itoa(i)+": день")
+		}
+	}
+}
+
+// TestMemoriseCompressWindow_NoSummarizer: nil summarizer
+// must log a warning and leave the file untouched.
+func TestMemoriseCompressWindow_NoSummarizer(t *testing.T) {
+	fs, _ := storage.NewFileStore(t.TempDir())
+	require.NoError(t, fs.EnsureDir("worlds/naruto"))
+	days := make(map[int]string, 30)
+	for i := 1; i <= 30; i++ {
+		days[i] = "день"
+	}
+	writeMemoriseDays(t, fs, "naruto", days)
+	before, _ := fs.ReadRaw("worlds/naruto/memorise.md")
+	mem := newMemory(fs, zerolog.Nop(), nil, nil, nil)
+	err := mem.memoriseCompressAfterArchive(context.Background(), "naruto", 30)
+	require.NoError(t, err)
+	after, _ := fs.ReadRaw("worlds/naruto/memorise.md")
+	assert.Equal(t, before, after, "no summarizer → no write")
+}
+
+// TestMemoriseCompressWindow_BadPrefix: model returns a
+// line that does NOT start with the required prefix; the
+// window must be left untouched.
+func TestMemoriseCompressWindow_BadPrefix(t *testing.T) {
+	fs, _ := storage.NewFileStore(t.TempDir())
+	require.NoError(t, fs.EnsureDir("worlds/naruto"))
+	days := make(map[int]string, 30)
+	for i := 1; i <= 30; i++ {
+		days[i] = "день"
+	}
+	writeMemoriseDays(t, fs, "naruto", days)
+	before, _ := fs.ReadRaw("worlds/naruto/memorise.md")
+	stub := &stubMemoriseSummarizer{badPrefix: true}
+	mem := newMemory(fs, zerolog.Nop(), nil, nil, stub)
+	err := mem.memoriseCompressAfterArchive(context.Background(), "naruto", 30)
+	require.NoError(t, err)
+	after, _ := fs.ReadRaw("worlds/naruto/memorise.md")
+	assert.Equal(t, before, after, "bad prefix → no write")
+}
+
+// TestMemoriseCompressWindow_TooThin: only 3 days in a
+// 30-day window. Must skip the LLM call entirely.
+func TestMemoriseCompressWindow_TooThin(t *testing.T) {
+	fs, _ := storage.NewFileStore(t.TempDir())
+	require.NoError(t, fs.EnsureDir("worlds/naruto"))
+	days := map[int]string{1: "a", 5: "b", 10: "c"}
+	writeMemoriseDays(t, fs, "naruto", days)
+	stub := &stubMemoriseSummarizer{returnedBody: "should not be called"}
+	mem := newMemory(fs, zerolog.Nop(), nil, nil, stub)
+	err := mem.memoriseCompressAfterArchive(context.Background(), "naruto", 10)
+	require.NoError(t, err)
+	assert.Equal(t, 0, stub.calls, "window too thin (3 days out of 30) — no LLM call")
+}
+
+// TestMemoriseCompressWindow_WithGap: days 1..29 and
+// 31..60 are present, day 30 is missing. The window
+// 1..30 must still be compressed (29 days is plenty),
+// and the model receives the actual present-day list
+// (start=1, end=29 in actualStart/actualEnd).
+func TestMemoriseCompressWindow_WithGap(t *testing.T) {
+	fs, _ := storage.NewFileStore(t.TempDir())
+	require.NoError(t, fs.EnsureDir("worlds/naruto"))
+	days := make(map[int]string, 59)
+	for i := 1; i <= 29; i++ {
+		days[i] = "день " + strconv.Itoa(i)
+	}
+	for i := 31; i <= 60; i++ {
+		days[i] = "день " + strconv.Itoa(i)
+	}
+	writeMemoriseDays(t, fs, "naruto", days)
+	stub := &stubMemoriseSummarizer{returnedBody: "сжато"}
+	mem := newMemory(fs, zerolog.Nop(), nil, nil, stub)
+	err := mem.memoriseCompressAfterArchive(context.Background(), "naruto", 60)
+	require.NoError(t, err)
+	// First window saw 29 days (1..29); second saw 30
+	// days (31..60). Both compressed.
+	assert.Equal(t, 2, stub.calls)
+	// The LLM was called with the LATEST window's bounds
+	// as lastFrom/lastTo (31, 60) — that is the second
+	// call. The first call's bounds are (1, 29).
+	assert.Equal(t, 1, stub.firstFrom)
+	assert.Equal(t, 29, stub.firstTo)
+	assert.Equal(t, 31, stub.lastFrom)
+	assert.Equal(t, 60, stub.lastTo)
+	// And the prefix in the file must use the actual
+	// window bounds (1..29 and 31..60), not the
+	// "expected" 1..30 and 31..60.
+	body, _ := fs.ReadRaw("worlds/naruto/memorise.md")
+	assert.Contains(t, body, "д00001-д00029:")
+	assert.Contains(t, body, "д00031-д00060:")
+	assert.NotContains(t, body, "д00001-д00030:",
+		"window 1..30 was actually 1..29 — prefix must reflect that")
+}
+
+// TestMemoriseCompressWindow_KeepsEarlierSummaries: if
+// the file already has a summary line for д00001-д00030
+// and we archive day 60, only д00031-д00060 should be
+// rewritten. The earlier summary stays untouched.
+func TestMemoriseCompressWindow_KeepsEarlierSummaries(t *testing.T) {
+	fs, _ := storage.NewFileStore(t.TempDir())
+	require.NoError(t, fs.EnsureDir("worlds/naruto"))
+	pre := "д00001-д00030: старая сводка 1\n"
+	for i := 31; i <= 60; i++ {
+		pre += domain.FormatDay(i, "день "+strconv.Itoa(i)) + "\n"
+	}
+	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/memorise.md", pre))
+	stub := &stubMemoriseSummarizer{returnedBody: "новая сводка 2"}
+	mem := newMemory(fs, zerolog.Nop(), nil, nil, stub)
+	err := mem.memoriseCompressAfterArchive(context.Background(), "naruto", 60)
+	require.NoError(t, err)
+	assert.Equal(t, 1, stub.calls, "only one window left to compress")
+	assert.Equal(t, 31, stub.lastFrom)
+	assert.Equal(t, 60, stub.lastTo)
+	body, _ := fs.ReadRaw("worlds/naruto/memorise.md")
+	assert.Contains(t, body, "д00001-д00030: старая сводка 1",
+		"earlier summary must NOT be touched")
+	assert.Contains(t, body, "д00031-д00060: новая сводка 2")
+}
+
+// TestStateArchiveDay_TriggersCompression: end-to-end
+// through State.ArchiveDay, the MemoriseCompressWindow
+// hook must fire on a closing day. Day 30 closes the
+// 1..30 window — it BECOMES part of the compressed
+// summary line (the just-archived day's text "итог" is
+// included in the source body the LLM sees). The result
+// is a single summary line for the whole window.
+func TestStateArchiveDay_TriggersCompression(t *testing.T) {
+	fs, _ := storage.NewFileStore(t.TempDir())
+	require.NoError(t, fs.EnsureDir("worlds/naruto"))
+	days := make(map[int]string, 30)
+	for i := 1; i <= 30; i++ {
+		days[i] = "день"
+	}
+	writeMemoriseDays(t, fs, "naruto", days)
+	stub := &stubMemoriseSummarizer{returnedBody: "сводка"}
+	mem := newMemory(fs, zerolog.Nop(), nil, nil, stub)
+	st := newState(fs, zerolog.Nop())
+	st.SetMemoriseCompress(mem.memoriseCompressAfterArchive)
+	require.NoError(t, st.ArchiveDay(context.Background(), "naruto", 30, "итог"))
+	assert.Equal(t, 1, stub.calls)
+	assert.Equal(t, 30, stub.lastTo)
+	body, _ := fs.ReadRaw("worlds/naruto/memorise.md")
+	assert.Contains(t, body, "д00001-д00030: сводка",
+		"the 30-day window was compressed into a single summary line")
+	// The per-day line for day 30 ("д00030: итог") is
+	// GONE — it was absorbed into the summary.
+	assert.NotContains(t, body, "д00030: итог",
+		"day 30 itself is part of the compressed window")
+}
+
+// TestStateArchiveDay_NotMultipleOf30: archiving day
+// 25 must NOT trigger any compression (no window closes).
+func TestStateArchiveDay_NotMultipleOf30(t *testing.T) {
+	fs, _ := storage.NewFileStore(t.TempDir())
+	require.NoError(t, fs.EnsureDir("worlds/naruto"))
+	days := make(map[int]string, 25)
+	for i := 1; i <= 25; i++ {
+		days[i] = "день"
+	}
+	writeMemoriseDays(t, fs, "naruto", days)
+	stub := &stubMemoriseSummarizer{returnedBody: "no"}
+	mem := newMemory(fs, zerolog.Nop(), nil, nil, stub)
+	st := newState(fs, zerolog.Nop())
+	st.SetMemoriseCompress(mem.memoriseCompressAfterArchive)
+	require.NoError(t, st.ArchiveDay(context.Background(), "naruto", 25, "x"))
+	assert.Equal(t, 0, stub.calls, "day 25 is not a window boundary")
+}

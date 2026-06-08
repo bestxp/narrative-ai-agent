@@ -58,6 +58,43 @@ type LoreSummarizer interface {
 	SummarizeLore(ctx context.Context, world string, loreBody, memoriseTail, stateMD []byte) ([]byte, error)
 }
 
+// MemoriseSummarizer is the LLM-driven compaction hook for the
+// file-backed memorise maintainer. It is invoked automatically
+// after ArchiveDay records a day that closes a window, and on
+// any larger timeskip (the caller computes the actual day range
+// to compact, not a fixed 30).
+//
+// The summarizer receives the world name, the day range being
+// collapsed (start, end, both inclusive), and the WHOLE current
+// memorise.md file as read context. The whole-file context is
+// important: the model needs the earlier, already-compressed
+// summaries to keep its prose consistent (it must not invent
+// facts that contradict an earlier window, and it should
+// dedupe any cross-window repetitions such as a 15-day
+// training arc that spans the boundary).
+//
+// The contract mirrors NPCSummarizer / LoreSummarizer:
+//
+//  1. The returned body MUST start with the literal prefix
+//     "д<start>-д<end>: " (5-digit zero-padded day numbers,
+//     same shape as the day-line entries). The caller appends
+//     it to the file as a single line; malformed output is
+//     rejected by the caller (file is left untouched).
+//  2. The summarizer MUST NOT call back into the tools
+//     layer. It is read-only over the supplied context.
+//  3. Best-effort: the model may decide the window is already
+//     too thin to compress (e.g. only 5 days of real activity
+//     in a 30-day window) and return an empty body — the caller
+//     treats that as "no compression happened" and skips.
+//  4. The summarizer SHOULD aim for ~10 sentences for a
+//     30-day window, scaling roughly linearly for wider
+//     windows (60 days → ~20 sentences, 90 days → ~30). The
+//     exact target is in the system prompt.
+//  5. Respects ctx cancellation.
+type MemoriseSummarizer interface {
+	SummarizeMemorise(ctx context.Context, world string, startDay, endDay int, fullMemorise string) ([]byte, error)
+}
+
 // LoreMaintainThreshold is the line count at which
 // MaintainLore asks the LLM-driven summarizer to compact
 // a world's lore.md. 500 lines is roughly 60-80

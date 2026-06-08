@@ -226,19 +226,25 @@ func main() {
 	// layout made it trivial to forget to wire one of them;
 	// the single Tool surface fails closed.
 	//
-	// summarizer is the LLM-driven NPC condensation hook.
-	// May be nil if compaction is disabled in config; in
-	// that case the file backend keeps the legacy naive
-	// strip behaviour. We wrap *usecase.Summarizer into
-	// the tools.NPCSummarizer interface via the small
-	// adapter at the bottom of this file (the two
-	// signatures are different — the struct returns a
-	// rich result, the interface returns a flat []byte).
+	// summarizer is the LLM-driven compaction hook used for
+	// THREE different compaction kinds: NPC profiles, lore.md,
+	// and the 30-day memorise.md windows. The same
+	// *usecase.Summarizer implements all three (it has a
+	// SummarizeNPC / SummarizeLore / SummarizeMemorise
+	// method each); we pass the SAME adapter in all three
+	// slots so the production deployment gets the LLM path
+	// for every compaction. Pass nil to disable a slot
+	// (the file backend will log a warning and skip).
 	var npcSum tools.NPCSummarizer
+	var loreSum tools.LoreSummarizer
+	var memSum tools.MemoriseSummarizer
 	if summarizer != nil {
-		npcSum = summarizerAdapter{s: summarizer}
+		adapter := summarizerAdapter{s: summarizer}
+		npcSum = adapter
+		loreSum = adapter
+		memSum = adapter
 	}
-	fileTools := usecase.NewFileToolset(fs, log, slow, npcSum, nil)
+	fileTools := usecase.NewFileToolset(fs, log, slow, npcSum, loreSum, memSum)
 	log.Info().Str("source", fileTools.Source()).Msg("file-backed toolset ready")
 	disp := dispatcher.New(cfg, fs, gitOp, fileTools, slow, log)
 
@@ -734,17 +740,34 @@ func (d driverClient) Stream(ctx context.Context, req llm.ChatRequest, onChunk f
 }
 
 // summarizerAdapter wraps a *usecase.Summarizer (which
-// returns a struct) into the tools.NPCSummarizer
-// interface (which returns []byte). We cannot do this
-// inside the usecase package because that would create
-// a tools → usecase import cycle; main.go is the only
-// place that knows about both layers.
+// returns a struct) into the three tools summarizer
+// interfaces (NPCSummarizer, LoreSummarizer,
+// MemoriseSummarizer — all flat []byte). We cannot do
+// this inside the usecase package because that would
+// create a tools → usecase import cycle; main.go is the
+// only place that knows about both layers.
 type summarizerAdapter struct {
 	s *usecase.Summarizer
 }
 
 func (a summarizerAdapter) SummarizeNPC(ctx context.Context, displayName, world string, yamlBody, memoriseTail []byte) ([]byte, error) {
 	res, err := a.s.SummarizeNPC(ctx, displayName, world, yamlBody, memoriseTail)
+	if err != nil {
+		return nil, err
+	}
+	return res.Body, nil
+}
+
+func (a summarizerAdapter) SummarizeLore(ctx context.Context, world string, loreBody, memoriseTail, stateMD []byte) ([]byte, error) {
+	res, err := a.s.SummarizeLore(ctx, world, loreBody, memoriseTail, stateMD)
+	if err != nil {
+		return nil, err
+	}
+	return res.Body, nil
+}
+
+func (a summarizerAdapter) SummarizeMemorise(ctx context.Context, world string, startDay, endDay int, fullMemorise string) ([]byte, error) {
+	res, err := a.s.SummarizeMemorise(ctx, world, startDay, endDay, fullMemorise)
 	if err != nil {
 		return nil, err
 	}

@@ -369,7 +369,7 @@ func (d *Dispatcher) cmdEndDay(msg messaging.IncomingMessage) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := d.tools.ArchiveDay(sc.World, day, summary); err != nil {
+	if err := d.tools.ArchiveDay(context.Background(), sc.World, day, summary); err != nil {
 		return "", err
 	}
 	d.commit(fmt.Sprintf("День %d", day))
