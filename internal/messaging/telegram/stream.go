@@ -8,7 +8,7 @@ import (
 
 	tg "github.com/go-telegram-bot-api/telegram-bot-api"
 
-	"narrative/internal/messaging"
+	"github.com/bestxp/narrative-ai-agent/internal/messaging"
 )
 
 // stream is a streaming session: it edits a single Telegram message

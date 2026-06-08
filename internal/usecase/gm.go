@@ -11,12 +11,12 @@ import (
 
 	"github.com/rs/zerolog"
 
-	"narrative/internal/adapter/llm"
-	"narrative/internal/adapter/storage"
-	"narrative/internal/domain"
-	"narrative/internal/slowlog"
-	"narrative/internal/structured"
-	"narrative/internal/usecase/tools/files"
+	"github.com/bestxp/narrative-ai-agent/internal/adapter/llm"
+	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
+	"github.com/bestxp/narrative-ai-agent/internal/domain"
+	"github.com/bestxp/narrative-ai-agent/internal/slowlog"
+	"github.com/bestxp/narrative-ai-agent/internal/structured"
+	"github.com/bestxp/narrative-ai-agent/internal/usecase/tools/files"
 )
 
 // LLMClient is the minimal surface GM needs from the LLM. It
@@ -508,111 +508,38 @@ func (g *GM) Reply(ctx context.Context, chatID, userText string, cb Callbacks) (
 					Msg("llm emitted broken tool calls (no names) — treating as empty")
 			}
 			// Skip the format gate entirely when the round
-			// produced no content. Re-prompting on an empty
-			// string would force us to send "[system note]
-			// missing: 4 blocks" with no original to fix, and
-			// the model would either repeat nothing or invent
-			// text that ignores our blocks.
+			// produced no content. With the h4-by-default
+			// config (8 tools, tool_choice=auto) the model
+			// is expected to ALWAYS return either a
+			// tool_call round or a non-empty content
+			// round. An empty round is a hard error:
+			//   1. retrying the same request risks the
+			//      same broken response, AND burns 30-90s
+			//      of the player's time;
+			//   2. retrying with a "nudge" prompt silently
+			//      papers over real provider bugs;
+			//   3. returning a polite placeholder hides
+			//      the failure from the operator.
 			//
-			// We DO try up to g.role.MaxEmptyRetries automatic
-			// retries of the same request: cloud Ollama
-			// models (and o1 family) occasionally return a
-			// `finish_reason: stop` with 0 content on the
-			// first round and a normal reply on the second.
-			// Some flaky providers need two restarts to
-			// recover. The retry is identical (same
-			// messages, same temperature) — it just gives
-			// the model another chance. MaxEmptyRetries is
-			// the hard cap: if all retries return empty we
-			// surface the placeholder so the operator can
-			// diagnose via slowlog. The default of 2
-			// is set in config/config.go's Validate; the
-			// operator can raise it for particularly flaky
-			// cloud providers via config.yaml.
+			// We log the full SSE trace to slowlog so the
+			// operator has something to debug, then return
+			// the error to the dispatcher (which renders
+			// it to the player as "⚠️ <err>").
 			if len(assistantBuf.String()) == 0 {
-				// MaxEmptyRetries=0 explicitly disables
-				// auto-retry — the operator gets the polite
-				// placeholder immediately. Any positive
-				// value N yields exactly N retries.
-				if g.role.MaxEmptyRetries <= 0 {
-					if cb.OnDelta != nil {
-						_ = cb.OnDelta("⚠️ модель не вернула ответ — попробуй ещё раз")
-					}
-					g.log.Warn().
-						Int("round", round).
-						Str("finish", finishReason).
-						Msg("llm returned empty content; auto-retry disabled")
-					return totals, nil
+				if g.slow != nil {
+					_ = g.slow.Write("llm.empty", chatID, map[string]any{
+						"round":          round,
+						"finish":         finishReason,
+						"tool_calls_raw": len(storedCalls),
+						"all_broken":     allToolCallsBroken(storedCalls),
+					})
 				}
-				for attempt := 1; attempt <= g.role.MaxEmptyRetries; attempt++ {
-					// If the first round's finish reason
-					// was "tool_calls" the model did
-					// intend to act — likely a broken
-					// JSON in the arguments. Pass a
-					// nudge so the retry steers the
-					// model back to the КОНТЕКСТ-
-					// директивы path (which the parser
-					// also handles) instead of repeating
-					// the same broken tool call. We only
-					// nudge once (attempt==1); if the
-					// nudge itself comes back empty we
-					// fall through to the placeholder
-					// rather than accumulating hints.
-					nudge := attempt == 1 && finishReason == "tool_calls"
-					retryText, retryUsage, retryRawTrace, retryErr := g.retryEmptyOnce(ctx, messages, g.role.EmptyRetryTimeoutSeconds, nudge)
-					totals.PromptTokens += retryUsage.PromptTokens
-					totals.CompletionTokens += retryUsage.CompletionTokens
-					totals.TotalTokens += retryUsage.TotalTokens
-					if retryUsage.Source != "" && (totals.Source == "" || totals.Source == "off") {
-						totals.Source = retryUsage.Source
-					}
-					if retryErr != nil {
-						g.log.Warn().Err(retryErr).Int("attempt", attempt).Msg("empty-content retry failed; falling through to placeholder")
-						break
-					}
-					if retryText != "" {
-						// Success on retry — splice the
-						// recovered text into the visible
-						// buffer with a marker so the
-						// player sees what happened.
-						if cb.OnDelta != nil {
-							_ = cb.OnDelta("\n\n[ответ восстановлен после повтора]\n\n" + retryText)
-						}
-						conv.mu.Lock()
-						if len(conv.messages) > 0 {
-							last := conv.messages[len(conv.messages)-1]
-							if last.Role == "assistant" {
-								last.Content = "[первый ответ был пустым]\n\n" + retryText
-								conv.messages[len(conv.messages)-1] = last
-							}
-						}
-						conv.mu.Unlock()
-						g.log.Info().Int("attempt", attempt).Int("retry_chars", len(retryText)).Msg("empty-content retry succeeded")
-						return totals, nil
-					}
-					// Retry also empty — log the raw trace
-					// for diagnosis. Continue the loop to
-					// try the next attempt.
-					if g.slow != nil {
-						_ = g.slow.Write("llm.empty_retry", chatID, map[string]any{
-							"round":     round,
-							"attempt":   attempt,
-							"raw_trace": retryRawTrace,
-						})
-					}
-					g.log.Warn().
-						Int("round", round).
-						Int("attempt", attempt).
-						Msg("empty-content retry also returned 0; trying again")
-				}
-				if cb.OnDelta != nil {
-					_ = cb.OnDelta("⚠️ модель не вернула ответ — попробуй ещё раз")
-				}
-				g.log.Warn().
+				g.log.Error().
 					Int("round", round).
 					Str("finish", finishReason).
-					Msg("llm returned empty content; skipping format gate")
-				return totals, nil
+					Int("raw_trace_count", len(rawTrace)).
+					Msg("llm returned empty content (no tools, no text) — hard error, no retry")
+				return totals, fmt.Errorf("model returned no tool_use and no content (round=%d, finish=%s, raw_events=%d)", round, finishReason, len(rawTrace))
 			}
 			if !g.isFormatCompliant(assistantBuf.String()) {
 				fixed, fixedUsage, fixErr := g.repromptForFormat(ctx, chatID, history, assistantBuf.String(), cb)

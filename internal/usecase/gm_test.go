@@ -10,10 +10,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"narrative/internal/adapter/llm"
-	"narrative/internal/adapter/storage"
-	"narrative/internal/domain"
-	"narrative/internal/slowlog"
+	"github.com/bestxp/narrative-ai-agent/internal/adapter/llm"
+	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
+	"github.com/bestxp/narrative-ai-agent/internal/domain"
+	"github.com/bestxp/narrative-ai-agent/internal/slowlog"
 )
 
 // fakeLLM replays a deterministic sequence of chunks. The test
@@ -346,17 +346,17 @@ func (c *captureLLM) Stream(_ context.Context, req llm.ChatRequest, onChunk func
 	return c.run(req, onChunk)
 }
 
-// TestGM_BrokenToolCallsRetryAsEmpty covers the
-// minimax-m3:cloud case: the model decides to call a
-// tool, the stream cuts off before the head lands, we
-// see `delta.tool_calls: [{}]` fragments assembled into
-// one or more headless entries. The bot must (a) NOT
-// dispatch them as "unknown tool:", (b) treat the round
-// as empty, (c) retry once.
-func TestGM_BrokenToolCallsRetryAsEmpty(t *testing.T) {
+// TestGM_BrokenToolCallsIsHardError covers the
+// minimax-m3:cloud case where the model decides to call a
+// tool but the stream cuts off before the head lands, and
+// we see `delta.tool_calls: [{}]` fragments assembled into
+// one or more headless entries. With h4-by-default config,
+// the bot must (a) NOT dispatch them as "unknown tool:",
+// (b) NOT retry with a nudge, (c) treat the round as a
+// hard error so the operator can see the broken state in
+// slowlog instead of silently cycling.
+func TestGM_BrokenToolCallsIsHardError(t *testing.T) {
 	g, _, fake := newGMTestEnv(t)
-	// Round 0: headless tool call (broken stream).
-	// Round 1 (retry): proper content + finish.
 	fake.rounds = [][]fakeChunk{
 		{
 			// The model "decided" to call a tool, but only
@@ -364,18 +364,14 @@ func TestGM_BrokenToolCallsRetryAsEmpty(t *testing.T) {
 			// through the stream.
 			{toolID: "call_X", toolName: "", toolArgs: `{`, finish: "stop"},
 		},
-		{
-			{content: "**диалоги и действия**\nok\n\n**КОНТЕКСТ И ИЗМЕНЕНИЯ**\nбез изменений\n\n**БУДУЩЕЕ**\n- продолжение\n\n**ВАЛИДАЦИЯ ПРАВИЛ**\n- ok"},
-			{finish: "stop"},
-		},
 	}
 	var got strings.Builder
 	_, err := g.Reply(context.Background(), "chat1", "ping", deltaOnly(&got))
-	require.NoError(t, err)
-	assert.Equal(t, 2, fake.calls, "broken tool calls must trigger the same retry path as empty content")
-	assert.Contains(t, got.String(), "ответ восстановлен после повтора")
-	// The assistant turn in conv.messages must NOT carry the
-	// broken tool calls — they would poison the next round.
+	require.Error(t, err, "broken tool calls must propagate as a hard error under h4")
+	assert.Contains(t, err.Error(), "no tool_use and no content")
+	assert.Equal(t, 1, fake.calls, "no nudge-retry on broken tool calls; h4 is hard-error")
+	// The assistant turn must not be persisted (no half-broken
+	// state in history that would poison the next round).
 	conv := g.getConversation("chat1")
 	conv.mu.Lock()
 	defer conv.mu.Unlock()
@@ -421,118 +417,43 @@ func TestAllToolCallsBroken(t *testing.T) {
 	}))
 }
 
-// TestGM_EmptyContentRetrySucceeds is the happy path of the
-// new auto-retry: model returns 0 chars on round 0, the
-// retry hits the same prompt and gets a real reply back.
-// Exactly 2 LLM calls; visible delta splices the recovered
-// text with a "[ответ восстановлен после повтора]" marker.
-func TestGM_EmptyContentRetrySucceeds(t *testing.T) {
+// TestGM_EmptyContentIsHardError covers the h4-by-default
+// behaviour: when the model returns 0 tool_use AND 0
+// content, the bot must surface a hard error to the
+// dispatcher (no retry, no polite placeholder). The error
+// message identifies the round, the finish_reason, and the
+// raw SSE event count so the operator has something to
+// debug via slowlog.
+func TestGM_EmptyContentIsHardError(t *testing.T) {
 	g, _, fake := newGMTestEnv(t)
 	fake.rounds = [][]fakeChunk{
-		{{finish: "stop"}}, // round 0: empty
-		{
-			{content: "**диалоги и действия**\nok\n\n**КОНТЕКСТ И ИЗМЕНЕНИЯ**\nбез изменений\n\n**БУДУЩЕЕ**\n- продолжение\n\n**ВАЛИДАЦИЯ ПРАВИЛ**\n- ok"},
-			{finish: "stop"},
-		}, // round 1: recovered
+		{{finish: "stop"}}, // round 0: 0 chars, 0 tool calls
 	}
 	var got strings.Builder
 	_, err := g.Reply(context.Background(), "chat1", "ping", deltaOnly(&got))
-	require.NoError(t, err)
-	assert.Equal(t, 2, fake.calls, "one retry on empty content")
-	assert.Contains(t, got.String(), "ответ восстановлен после повтора")
-	assert.Contains(t, got.String(), "ok")
-	// The placeholder must NOT have fired — we recovered.
-	assert.NotContains(t, got.String(), "не вернула ответ")
+	require.Error(t, err, "empty content must propagate as an error")
+	assert.Contains(t, err.Error(), "no tool_use and no content")
+	assert.Contains(t, err.Error(), "round=0")
+	assert.Contains(t, err.Error(), "finish=stop")
+	// Exactly one LLM call — no retry.
+	assert.Equal(t, 1, fake.calls, "no retry on empty content")
+	// The visible buffer is empty (no polite placeholder).
+	assert.Empty(t, got.String())
 }
 
-// TestGM_EmptyContentRetryFallsToPlaceholder is the unhappy
-// path: every retry round is empty, the bot surfaces the
-// polite placeholder. With the default MaxEmptyRetries=2
-// the bot issues exactly 3 LLM calls (1 original + 2
-// retries); the slowlog captures every raw SSE trace.
-func TestGM_EmptyContentRetryFallsToPlaceholder(t *testing.T) {
+// TestGM_EmptyWithToolCallsFinish_StillError covers the
+// "model intended to act but stream cut off" path: the
+// finish reason is "tool_calls" but no calls survived the
+// accumulator, no content was streamed. The bot returns
+// the same hard error as a fully empty round.
+func TestGM_EmptyWithToolCallsFinish_StillError(t *testing.T) {
 	g, _, fake := newGMTestEnv(t)
 	fake.rounds = [][]fakeChunk{
-		{{finish: "stop"}}, // round 0: empty
-		{{finish: "stop"}}, // round 1: retry 1, still empty
-		{{finish: "stop"}}, // round 2: retry 2, still empty
+		{{finish: "tool_calls"}}, // 0 chars, 0 surviving calls
 	}
 	var got strings.Builder
 	_, err := g.Reply(context.Background(), "chat1", "ping", deltaOnly(&got))
-	require.NoError(t, err)
-	assert.Equal(t, 3, fake.calls, "1 original + MaxEmptyRetries(2) retries")
-	assert.Equal(t, "⚠️ модель не вернула ответ — попробуй ещё раз", got.String())
-}
-
-// TestGM_EmptyContentRetryDisabled covers the operator-facing
-// "off switch": when MaxEmptyRetries is set to 0 (or any
-// non-positive value), the bot surfaces the placeholder
-// immediately on the first empty round without retrying.
-// Useful for operators who would rather have a fast
-// placeholder than a 60-90s pause.
-func TestGM_EmptyContentRetryDisabled(t *testing.T) {
-	g, _, fake := newGMTestEnv(t)
-	g.role.MaxEmptyRetries = 0
-	fake.rounds = [][]fakeChunk{
-		{{finish: "stop"}}, // round 0: empty
-		// No retry rounds — the bot must surface the
-		// placeholder after this one call.
-	}
-	var got strings.Builder
-	_, err := g.Reply(context.Background(), "chat1", "ping", deltaOnly(&got))
-	require.NoError(t, err)
-	assert.Equal(t, 1, fake.calls, "MaxEmptyRetries=0 disables auto-retry")
-	assert.Equal(t, "⚠️ модель не вернула ответ — попробуй ещё раз", got.String())
-}
-
-// TestGM_RetryWithToolCallsNudge covers the
-// minimax-m3:cloud "broken tool_calls" recovery path:
-// the first round finishes with finish="tool_calls"
-// but the dropped accumulator leaves us with no
-// surviving tool calls and no visible content. The
-// retry must append a synthetic user message
-// nudging the model to skip native tool calls and
-// use the КОНТЕКСТ-директивы path instead. We assert
-// the second Stream call's messages slice contains
-// the nudge text.
-func TestGM_RetryWithToolCallsNudge(t *testing.T) {
-	g, _, fake := newGMTestEnv(t)
-	// Round 0: headless tool call (broken stream) +
-	// finish="tool_calls". allToolCallsBroken trips,
-	// toolCalls reset to nil, content buffer is empty,
-	// finish reason is "tool_calls" — the nudge flag
-	// is set for the retry.
-	fake.rounds = [][]fakeChunk{
-		{
-			{toolID: "call_X", toolName: "", toolArgs: `{`, finish: "tool_calls"},
-		},
-		// Round 1: model recovers with a proper reply.
-		{
-			{content: "**диалоги и действия**\nok\n\n**КОНТЕКСТ И ИЗМЕНЕНИЯ**\nбез изменений\n\n**БУДУЩЕЕ**\n- продолжение\n\n**ВАЛИДАЦИЯ ПРАВИЛ**\n- ok"},
-			{finish: "stop"},
-		},
-	}
-	// Use captureLLM so we can inspect the second-call
-	// messages slice for the nudge.
-	var firstMsgs, secondMsgs []llm.Message
-	captured := &captureLLM{run: func(req llm.ChatRequest, onChunk func(llm.Chunk) error) error {
-		if len(firstMsgs) == 0 {
-			firstMsgs = req.Messages
-		} else {
-			secondMsgs = req.Messages
-		}
-		return fake.Stream(context.Background(), req, onChunk)
-	}}
-	g.llm = captured
-	var got strings.Builder
-	_, err := g.Reply(context.Background(), "chat1", "ping", deltaOnly(&got))
-	require.NoError(t, err)
-	require.NotEmpty(t, secondMsgs, "second round must have been issued")
-	// The second round's last message is the nudge.
-	last := secondMsgs[len(secondMsgs)-1]
-	assert.Equal(t, "user", last.Role)
-	assert.Contains(t, last.Content, "Предыдущий вызов tool_calls не прошёл парсинг")
-	assert.Contains(t, last.Content, "КОНТЕКСТ")
-	// And the visible reply must have been recovered.
-	assert.Contains(t, got.String(), "ответ восстановлен после повтора")
+	require.Error(t, err)
+	assert.Equal(t, 1, fake.calls, "no retry on empty after tool_calls finish")
+	assert.Empty(t, got.String())
 }

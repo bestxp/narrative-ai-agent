@@ -8,9 +8,9 @@ import (
 
 	"github.com/rs/zerolog"
 
-	"narrative/internal/adapter/storage"
-	"narrative/internal/domain"
-	"narrative/internal/usecase/tools"
+	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
+	"github.com/bestxp/narrative-ai-agent/internal/domain"
+	"github.com/bestxp/narrative-ai-agent/internal/usecase/tools"
 )
 
 // World is the file-backed implementation of tools.WorldTool:

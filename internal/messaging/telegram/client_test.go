@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"narrative/internal/messaging"
+	"github.com/bestxp/narrative-ai-agent/internal/messaging"
 )
 
 // Compile-time check: telegram.Client satisfies messaging.Client.

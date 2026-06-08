@@ -13,13 +13,13 @@ import (
 
 	"github.com/rs/zerolog"
 
-	"narrative/internal/adapter/gitops"
-	"narrative/internal/adapter/storage"
-	"narrative/internal/config"
-	"narrative/internal/domain"
-	"narrative/internal/messaging"
-	"narrative/internal/slowlog"
-	"narrative/internal/usecase"
+	"github.com/bestxp/narrative-ai-agent/internal/adapter/gitops"
+	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
+	"github.com/bestxp/narrative-ai-agent/internal/config"
+	"github.com/bestxp/narrative-ai-agent/internal/domain"
+	"github.com/bestxp/narrative-ai-agent/internal/messaging"
+	"github.com/bestxp/narrative-ai-agent/internal/slowlog"
+	"github.com/bestxp/narrative-ai-agent/internal/usecase"
 )
 
 // Dispatcher turns an IncomingMessage into a reply string. It is the

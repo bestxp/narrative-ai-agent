@@ -7,8 +7,8 @@ import (
 
 	"github.com/rs/zerolog"
 
-	"narrative/internal/adapter/llm"
-	"narrative/internal/slowlog"
+	"github.com/bestxp/narrative-ai-agent/internal/adapter/llm"
+	"github.com/bestxp/narrative-ai-agent/internal/slowlog"
 )
 
 // Summarizer compresses old conversation turns into a short

@@ -11,11 +11,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"narrative/internal/adapter/storage"
-	"narrative/internal/config"
-	"narrative/internal/messaging"
-	"narrative/internal/slowlog"
-	"narrative/internal/usecase"
+	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
+	"github.com/bestxp/narrative-ai-agent/internal/config"
+	"github.com/bestxp/narrative-ai-agent/internal/messaging"
+	"github.com/bestxp/narrative-ai-agent/internal/slowlog"
+	"github.com/bestxp/narrative-ai-agent/internal/usecase"
 )
 
 func initRepo(t *testing.T) string {

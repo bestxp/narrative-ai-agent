@@ -8,9 +8,9 @@ import (
 
 	"github.com/rs/zerolog"
 
-	"narrative/internal/adapter/storage"
-	"narrative/internal/slowlog"
-	"narrative/internal/usecase/tools"
+	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
+	"github.com/bestxp/narrative-ai-agent/internal/slowlog"
+	"github.com/bestxp/narrative-ai-agent/internal/usecase/tools"
 )
 
 // Character is the file-backed implementation of

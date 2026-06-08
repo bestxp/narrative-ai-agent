@@ -11,10 +11,10 @@ import (
 
 	"github.com/rs/zerolog"
 
-	"narrative/internal/adapter/storage"
-	"narrative/internal/slowlog"
-	"narrative/internal/usecase/tools"
-	"narrative/internal/usecase/tools/files"
+	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
+	"github.com/bestxp/narrative-ai-agent/internal/slowlog"
+	"github.com/bestxp/narrative-ai-agent/internal/usecase/tools"
+	"github.com/bestxp/narrative-ai-agent/internal/usecase/tools/files"
 )
 
 // Tool re-exports tools.Tool — the single interface the

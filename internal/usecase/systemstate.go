@@ -5,9 +5,9 @@ import (
 
 	"github.com/rs/zerolog"
 
-	"narrative/internal/adapter/storage"
-	"narrative/internal/domain"
-	"narrative/internal/slowlog"
+	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
+	"github.com/bestxp/narrative-ai-agent/internal/domain"
+	"github.com/bestxp/narrative-ai-agent/internal/slowlog"
 )
 
 // SystemState is the persistence layer for domain.SystemState.

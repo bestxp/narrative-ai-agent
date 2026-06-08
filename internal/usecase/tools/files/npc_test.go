@@ -3,8 +3,8 @@ package files
 import (
 	"testing"
 
-	"narrative/internal/adapter/storage"
-	"narrative/internal/worldregistry"
+	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
+	"github.com/bestxp/narrative-ai-agent/internal/worldregistry"
 	"github.com/rs/zerolog"
 )
 

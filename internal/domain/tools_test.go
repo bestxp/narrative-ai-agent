@@ -38,7 +38,10 @@ func TestTools_SchemaIsValidObject(t *testing.T) {
 		assert.Equal(t, "object", probe["type"], "tool %s", tl.Function.Name)
 		props, ok := probe["properties"].(map[string]any)
 		assert.True(t, ok, "tool %s missing properties", tl.Function.Name)
-		assert.NotEmpty(t, props, "tool %s has no properties", tl.Function.Name)
+		// tools with no arguments (maintain_npcs,
+		// maintain_lore) have an empty properties map; that
+		// is the canonical "no-args" shape.
+		_ = props
 	}
 }
 

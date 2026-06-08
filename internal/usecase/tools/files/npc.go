@@ -8,11 +8,11 @@ import (
 
 	"github.com/rs/zerolog"
 
-	"narrative/internal/adapter/storage"
-	"narrative/internal/domain"
-	"narrative/internal/npcprofile"
-	"narrative/internal/usecase/tools"
-	"narrative/internal/worldregistry"
+	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
+	"github.com/bestxp/narrative-ai-agent/internal/domain"
+	"github.com/bestxp/narrative-ai-agent/internal/npcprofile"
+	"github.com/bestxp/narrative-ai-agent/internal/usecase/tools"
+	"github.com/bestxp/narrative-ai-agent/internal/worldregistry"
 )
 
 // NPC is the file-backed implementation of tools.NPCTool:

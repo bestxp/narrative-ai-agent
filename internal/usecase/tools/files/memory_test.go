@@ -10,10 +10,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"narrative/internal/adapter/storage"
-	"narrative/internal/npcprofile"
-	"narrative/internal/slowlog"
-	"narrative/internal/usecase/tools"
+	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
+	"github.com/bestxp/narrative-ai-agent/internal/npcprofile"
+	"github.com/bestxp/narrative-ai-agent/internal/slowlog"
+	"github.com/bestxp/narrative-ai-agent/internal/usecase/tools"
 )
 
 // stubSummarizer is a hand-rolled mock for the

@@ -11,9 +11,9 @@ import (
 
 	"github.com/rs/zerolog"
 
-	"narrative/internal/adapter/storage"
-	"narrative/internal/slowlog"
-	"narrative/internal/usecase/tools"
+	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
+	"github.com/bestxp/narrative-ai-agent/internal/slowlog"
+	"github.com/bestxp/narrative-ai-agent/internal/usecase/tools"
 )
 
 // Toolset is the file-backed Tool implementation. It

@@ -8,8 +8,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"narrative/internal/adapter/storage"
-	"narrative/internal/usecase/tools"
+	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
+	"github.com/bestxp/narrative-ai-agent/internal/usecase/tools"
 )
 
 // newTestToolset is the canonical fixture for state-level tests.

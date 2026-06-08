@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"time"
 
-	"narrative/internal/adapter/llm"
-	"narrative/internal/domain"
+	"github.com/bestxp/narrative-ai-agent/internal/adapter/llm"
+	"github.com/bestxp/narrative-ai-agent/internal/domain"
 )
 
 // EstimateConversationTokens is a coarse approximation of the

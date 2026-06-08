@@ -8,8 +8,8 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
 
-	"narrative/internal/adapter/storage"
-	"narrative/internal/domain"
+	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
+	"github.com/bestxp/narrative-ai-agent/internal/domain"
 )
 
 // newBufLogger returns a JSON zerolog logger that writes to the given

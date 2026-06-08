@@ -16,7 +16,7 @@ import (
 	tg "github.com/go-telegram-bot-api/telegram-bot-api"
 	"github.com/rs/zerolog"
 
-	"narrative/internal/messaging"
+	"github.com/bestxp/narrative-ai-agent/internal/messaging"
 )
 
 // Config holds the per-transport settings. main.go is responsible

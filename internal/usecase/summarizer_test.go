@@ -9,9 +9,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"narrative/internal/adapter/llm"
-	"narrative/internal/adapter/storage"
-	"narrative/internal/slowlog"
+	"github.com/bestxp/narrative-ai-agent/internal/adapter/llm"
+	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
+	"github.com/bestxp/narrative-ai-agent/internal/slowlog"
 )
 
 func TestSummarizer_NotConfigured(t *testing.T) {
