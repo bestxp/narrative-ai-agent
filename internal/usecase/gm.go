@@ -397,20 +397,19 @@ func (g *GM) Reply(ctx context.Context, chatID, userText string, cb Callbacks) (
 			Role: "assistant", Content: assistantBuf.String(), ToolCalls: storedCalls,
 		})
 
-		// Context-directive parser. Ollama Cloud
-		// silently ignores tool_choice=required
-		// (cmd/test-openapi), so the model can write
-		// "⦁ update_npc: Хината — статус: смущена"
-		// in **КОНТЕКСТ** and never actually call the
-		// tool. We parse the rendered assistant turn
-		// and run the directives locally so a turn
-		// that LOOKS like an update actually updates
-		// the file. Errors here are non-fatal; the
-		// user-visible narrative has already been
-		// streamed. See extractContextCommands for
-		// the grammar.
-		cmds := extractContextCommands(assistantBuf.String())
-		g.executeExtractedCommands(ctx, chatID, currentWorldName(g.fs), cmds)
+		// Context-directive parser: fallback when
+		// native tool_calls did not fire. With
+		// tool_choice=required (probe confirmed
+		// working on minimax-m3:cloud, 2026-06-08)
+		// the model calls tools natively; we only
+		// parse markers when tools were skipped
+		// (empty/broken round). Errors here are
+		// non-fatal; the user-visible narrative
+		// has already been streamed.
+		if len(toolCalls) == 0 {
+			cmds := extractContextCommands(assistantBuf.String())
+			g.executeExtractedCommands(ctx, chatID, currentWorldName(g.fs), cmds)
+		}
 
 		// Accumulate per-round token accounting.
 		roundUsage := g.accountRound(messages, roundCompChars, assistantBuf.String(), gotUsage, usageFromAPI)

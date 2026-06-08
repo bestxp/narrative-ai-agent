@@ -164,14 +164,17 @@ llm:
   #                  (gpt-4o-2024-08-06+) и OpenRouter strict
   #                  — оставлено для будущей миграции провайдера.
   #
-  # tool_choice и strict_tools: НЕ работают на Ollama Cloud,
-  # модель полностью игнорирует. Оставлено auto / false —
-  # legacy-путь (парсинг КОНТЕКСТ блока в narrative.md).
+  # tool_choice / strict_tools: подтверждено работает на
+  # minimax-m3:cloud (probe H2 + H5, 2026-06-08, см.
+  # cmd/test-openapi). Модель возвращает валидные tool_calls
+  # с strict-schema, бот исполняет их нативно, КОНТЕКСТ
+  # парсинг становится fallback'ом (если модель всё-таки
+  # выдала маркеры в content — парсер их тоже подхватит).
   structured_output:
     mode: "json_object"        # off | json_object | json_schema
     schema_name: "narrative_response"
-    tool_choice: "auto"        # auto | required | none | function:<name>
-    strict_tools: false        # Ollama Cloud игнорирует strict tools
+    tool_choice: "required"    # auto | required | none | function:<name>
+    strict_tools: true         # strict schema на tool declarations
 
   roles:
     # --------------------------------------------------------------------
