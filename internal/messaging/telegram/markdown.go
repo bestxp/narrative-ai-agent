@@ -207,27 +207,35 @@ const maxTelegramMessageLen = 4096
 // emits a giant line of code in <pre>) we fall back to a
 // hard split at the cap.
 //
-// The first chunk is returned as-is (no header) so the first
-// message looks like a normal reply; subsequent chunks are
-// prefixed with a small marker so the player can see "this
-// is a continuation of the previous message".
+// The cut is measured in RUNES, not bytes. Telegram measures
+// the limit in characters, and a rune-aligned cut also
+// guarantees we never split a multi-byte UTF-8 sequence in
+// the middle — which would emit invalid UTF-8 and make the
+// Telegram API return "text must be encoded in UTF-8" (a
+// common failure mode when the LLM streams a long Russian
+// reply that happens to land a cut on the second byte of a
+// Cyrillic letter).
 func splitForTelegram(text string) []string {
-	if len(text) <= maxTelegramMessageLen {
+	runes := []rune(text)
+	if len(runes) <= maxTelegramMessageLen {
 		return []string{text}
 	}
 	out := make([]string, 0, 2)
-	rest := text
-	for len(rest) > maxTelegramMessageLen {
-		// Look for a paragraph break within the first cap
-		// characters. If we find one, split right after it.
+	rest := string(runes)
+	for runeCount := len(runes); runeCount > maxTelegramMessageLen; runeCount = len([]rune(rest)) {
+		head := string([]rune(rest)[:maxTelegramMessageLen])
+		// Look for a paragraph break within the
+		// first cap characters. We do the search
+		// in the rune-bounded head so a "\n\n" near
+		// the edge is still a real boundary, not
+		// a byte-coincidence.
 		cut := -1
-		head := rest[:maxTelegramMessageLen]
 		if i := strings.LastIndex(head, "\n\n"); i > 0 {
-			cut = i + 2
+			cut = i + len("\n\n")
 		} else if i := strings.LastIndex(head, "\n"); i > 0 {
-			cut = i + 1
+			cut = i + len("\n")
 		} else {
-			cut = maxTelegramMessageLen
+			cut = len(head)
 		}
 		out = append(out, rest[:cut])
 		rest = rest[cut:]

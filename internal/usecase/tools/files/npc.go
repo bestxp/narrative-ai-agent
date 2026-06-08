@@ -12,6 +12,7 @@ import (
 	"narrative/internal/domain"
 	"narrative/internal/npcprofile"
 	"narrative/internal/usecase/tools"
+	"narrative/internal/worldregistry"
 )
 
 // NPC is the file-backed implementation of tools.NPCTool:
@@ -162,6 +163,106 @@ func splitList(s string) []string {
 	return out
 }
 
+// loadRegistry reads worlds/<w>/characters.yaml
+// (with legacy characters.md fallback inside
+// worldregistry.Load). Cheap: a few hundred bytes
+// of YAML at most, parsed on every call. The
+// dispatcher calls UpdateNPC and Load many times
+// per turn, so the cost matters; the registry is
+// small enough that re-parsing is fine. We
+// deliberately do NOT cache across calls because
+// Create mutates the registry and a stale cache
+// would route subsequent UpdateNPCs to a deleted
+// file.
+func (n *NPC) loadRegistry(world string) (*worldregistry.Registry, error) {
+	return worldregistry.Load(n.fs, world)
+}
+
+// findNPCFile resolves a display name to the
+// on-disk YAML file. The lookup is
+// registry-driven: display_name → slug, NOT
+// transliteration-driven. "Хината" matches
+// "Хината Хьюга" via the registry, not via
+// "khinata". The operator's hand-picked slugs
+// (hinata, anbu_dog, iruka, kurotsuba) are
+// preserved exactly as the legacy files carry
+// them.
+//
+// Lookup strategy:
+//  1. Try the registry. If the world has a
+//     characters.yaml (or characters.md bootstrap)
+//     and the display name matches one of the
+//     entries, return the registry's slug.
+//  2. If the registry has NO entry for the name
+//     (regardless of why — empty registry,
+//     missing file, no match) fall through to a
+//     directory scan of worlds/<w>/characters/.
+//     The scan reads each profile's display_name
+//     and applies the same substring heuristic the
+//     registry would have. This is the survival
+//     path for operator setups that have not been
+//     migrated to characters.yaml yet.
+//
+// Returns (rel, slug, true) on a hit. On no hit
+// returns ("", "", false) — the caller maps that
+// to ErrNPCNotFound and the GM surfaces "create_npc
+// first" to the model.
+func (n *NPC) findNPCFile(world, displayName string) (string, string, bool) {
+	if reg, err := n.loadRegistry(world); err == nil {
+		if e, ok := reg.Lookup(displayName); ok {
+			rel := "worlds/" + world + "/characters/" + e.Slug + ".yaml"
+			if n.fs.Exists(rel) {
+				return rel, e.Slug, true
+			}
+			// Registry points at a file that is
+			// not on disk. Do NOT fall through to
+			// the scan — the operator may be
+			// mid-rename, and UpdateNPC must not
+			// silently create a profile. We
+			// return a hard "not found" so the
+			// GM surfaces a clear error.
+			return "", "", false
+		}
+	}
+	return n.findNPCFileFallback(world, displayName)
+}
+
+// findNPCFileFallback is the last-resort path used
+// when characters.yaml is missing or unreadable.
+// It scans worlds/<w>/characters/*.yaml and tries
+// to find a matching display_name inside the
+// profile body. This is what kept the bot working
+// before the registry existed; it survives a
+// deleted/empty characters.yaml but loses the
+// nickname + substring matching the registry
+// offers.
+func (n *NPC) findNPCFileFallback(world, displayName string) (string, string, bool) {
+	dir := "worlds/" + world + "/characters"
+	entries, err := n.fs.ListChildren(dir)
+	if err != nil {
+		return "", "", false
+	}
+	want := strings.ToLower(strings.TrimSpace(displayName))
+	if want == "" {
+		return "", "", false
+	}
+	for _, fn := range entries {
+		if !strings.HasSuffix(fn, ".yaml") {
+			continue
+		}
+		rel := dir + "/" + fn
+		raw, _ := n.fs.ReadRaw(rel)
+		slug := strings.TrimSuffix(fn, ".yaml")
+		if p, err := npcprofile.Load(raw); err == nil && p.DisplayName != "" {
+			if strings.EqualFold(strings.TrimSpace(p.DisplayName), want) ||
+				strings.Contains(strings.ToLower(p.DisplayName), want) {
+				return rel, slug, true
+			}
+		}
+	}
+	return "", "", false
+}
+
 // UpdateNPC appends fresh facts to an existing NPC's
 // profile. The `section` argument is the canonical
 // section name (case-insensitive, English aliases
@@ -181,12 +282,11 @@ func splitList(s string) []string {
 // not summaries. "Стал читать мысли после Дня 5" not
 // "произошло много всего". Each call adds ONE fact.
 func (n *NPC) UpdateNPC(world, npc, section, appendText string) error {
-	name, err := domain.SanitizeName(npc)
-	if err != nil {
-		return fmt.Errorf("npc name: %w", err)
+	rel, slug, ok := n.findNPCFile(world, npc)
+	if !ok {
+		return ErrNPCNotFound
 	}
-	rel := "worlds/" + world + "/characters/" + name + ".yaml"
-	profile, err := n.loadProfile(rel, name)
+	profile, err := n.loadProfile(rel, npc)
 	if err != nil {
 		return err
 	}
@@ -213,7 +313,7 @@ func (n *NPC) UpdateNPC(world, npc, section, appendText string) error {
 	}
 	n.log.Info().
 		Str("world", world).
-		Str("npc", name).
+		Str("npc", slug).
 		Str("section", kind.CanonicalSectionName()).
 		Int("bytes_added", len(appendText)).
 		Msg("npc_updated")
@@ -284,15 +384,54 @@ func BuildNPCMarkdown(p tools.NPCProfile) string {
 	return b.String()
 }
 
+// appendRegistry adds a freshly-created NPC to
+// worlds/<w>/characters.yaml. The entry's slug is
+// the on-disk file name; the registry is the
+// canonical index of who exists in this world.
+// On any failure to persist the registry we still
+// return nil — the file itself was written, and
+// the next call to loadRegistry will pick up the
+// entry via the directory-scan fallback. Better
+// to have a working profile with a stale registry
+// than no profile at all.
 func (n *NPC) appendRegistry(world, display, file string, nicks []string) error {
-	rel := "worlds/" + world + "/characters.md"
-	cur, _ := n.fs.ReadRaw(rel)
-	if cur != "" && !strings.HasSuffix(cur, "\n") {
-		cur += "\n"
+	reg, err := worldregistry.Load(n.fs, world)
+	if err != nil {
+		n.log.Warn().Err(err).Str("world", world).Msg("registry load failed during append")
+		return nil
 	}
-	nickStr := strings.Join(nicks, ", ")
-	cur += "| " + display + " | characters/" + file + " | " + nickStr + " |\n"
-	return n.fs.WriteRawAtomic(rel, cur)
+	// Idempotency: if the slug is already there
+	// (operator hand-edited the file, or this
+	// is a retry of a failed Create) leave it
+	// alone and just rewrite the YAML with the
+	// latest entry set.
+	for _, e := range reg.All() {
+		if e.Slug == file {
+			break
+		}
+	}
+	if err := reg.Add(worldregistry.Entry{
+		Slug:        file,
+		DisplayName: display,
+		Nicknames:   nicks,
+	}); err != nil {
+		// Duplicate slug (already in the
+		// registry) is not a fatal error: the
+		// profile itself was just created, and
+		// a second registry write would lose
+		// nickname edits. Log and move on.
+		n.log.Info().Err(err).Str("world", world).Str("slug", file).Msg("registry add skipped")
+		return nil
+	}
+	body, err := reg.Save()
+	if err != nil {
+		n.log.Warn().Err(err).Str("world", world).Msg("registry marshal failed during append")
+		return nil
+	}
+	if err := n.fs.WriteRawAtomic("worlds/"+world+"/characters.yaml", body); err != nil {
+		n.log.Warn().Err(err).Str("world", world).Msg("registry write failed during append")
+	}
+	return nil
 }
 
 // Load returns the NPC's profile rendered as markdown
@@ -307,12 +446,11 @@ func (n *NPC) appendRegistry(world, display, file string, nicks []string) error 
 // so callers always see the canonical layout. The
 // model never sees the YAML keys.
 func (n *NPC) Load(world, npc string) (string, error) {
-	name, err := domain.SanitizeName(npc)
-	if err != nil {
-		return "", fmt.Errorf("npc name: %w", err)
+	rel, _, ok := n.findNPCFile(world, npc)
+	if !ok {
+		return "", ErrNPCNotFound
 	}
-	rel := "worlds/" + world + "/characters/" + name + ".yaml"
-	profile, err := n.loadProfile(rel, name)
+	profile, err := n.loadProfile(rel, npc)
 	if err != nil {
 		return "", err
 	}
