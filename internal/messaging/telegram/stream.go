@@ -3,6 +3,7 @@ package telegram
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -32,6 +33,16 @@ func (s *stream) Append(ctx context.Context, text string) error {
 		return nil
 	}
 	wire := s.client.formatText(text, "")
+	// When the model rounds produce no visible text (e.g.
+	// finish_reason=tool_calls with empty content), the
+	// formatted wire text can be empty or contain only HTML
+	// tags. Sending that to Telegram triggers "Bad Request:
+	// message text is empty". Skip the edit entirely; the
+	// next Append call with real content will update the
+	// placeholder.
+	if strings.TrimSpace(stripHTMLTags(wire)) == "" {
+		return nil
+	}
 	// Telegram caps messages at 4096 chars; if the LLM
 	// produced a 7k-block in one go we have to split it.
 	// The first chunk fits in the placeholder message,

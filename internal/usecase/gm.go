@@ -427,6 +427,54 @@ func (g *GM) Reply(ctx context.Context, chatID, userText string, cb Callbacks) (
 			})
 		}
 
+		// Slowlog: log the full request before sending so an
+		// operator can reproduce the exact payload that produced
+		// a broken or empty response. This is the only place
+		// where we see the wire-shape of every message and tool
+		// spec — the Driver does not emit its own request log.
+		if g.slow != nil {
+			reqFields := map[string]any{
+				"round":            round,
+				"model":            g.role.Model,
+				"temperature":      g.role.Temperature,
+				"max_tokens":       g.role.MaxTokens,
+				"messages":         len(messages),
+				"prompt_chars":     promptCharSize(messages),
+				"tool_count":       len(g.toolSpecs),
+				"tool_names":       toolNames(g.toolSpecs),
+				"reasoning_effort": g.role.ReasoningEffort,
+			}
+			reqMsgs := make([]map[string]any, 0, len(messages))
+			for _, m := range messages {
+				entry := map[string]any{
+					"role":        m.Role,
+					"content_len": len(m.Content),
+				}
+				if m.Content != "" {
+					entry["content"] = m.Content
+				}
+				if len(m.ToolCalls) > 0 {
+					calls := make([]map[string]any, 0, len(m.ToolCalls))
+					for _, tc := range m.ToolCalls {
+						calls = append(calls, map[string]any{
+							"name": tc.Function.Name,
+							"args": tc.Function.Arguments,
+						})
+					}
+					entry["tool_calls"] = calls
+				}
+				if m.Name != "" {
+					entry["name"] = m.Name
+				}
+				if m.ToolCallID != "" {
+					entry["tool_call_id"] = m.ToolCallID
+				}
+				reqMsgs = append(reqMsgs, entry)
+			}
+			reqFields["request_messages"] = reqMsgs
+			_ = g.slow.Write("llm.request", chatID, reqFields)
+		}
+
 		var (
 			assistantBuf   strings.Builder
 			toolCalls      []llm.ToolCall
@@ -476,6 +524,56 @@ func (g *GM) Reply(ctx context.Context, chatID, userText string, cb Callbacks) (
 		})
 		if streamErr != nil {
 			return totals, streamErr
+		}
+
+		// Slowlog: log the full response immediately after the
+		// stream finishes. This captures everything the model
+		// produced — content, tool calls, finish reason, and
+		// usage — in a single structured event. Combined with
+		// llm.request above, an operator has the full round-trip.
+		if g.slow != nil {
+			respFields := map[string]any{
+				"round":           round,
+				"finish":          finishReason,
+				"content_len":     assistantBuf.Len(),
+				"tool_call_count": len(toolCalls),
+			}
+			if len(toolCalls) > 0 {
+				tcNames := make([]string, 0, len(toolCalls))
+				for _, tc := range toolCalls {
+					tcNames = append(tcNames, tc.Function.Name)
+				}
+				respFields["tool_call_names"] = tcNames
+				// Log full tool call arguments when tool_calls
+				// were emitted — this is the only way to see
+				// what the model tried to do on a broken call.
+				tcDetails := make([]map[string]any, 0, len(toolCalls))
+				for _, tc := range toolCalls {
+					tcDetails = append(tcDetails, map[string]any{
+						"name":      tc.Function.Name,
+						"arguments": tc.Function.Arguments,
+						"id":        tc.ID,
+					})
+				}
+				respFields["tool_call_details"] = tcDetails
+			}
+			if assistantBuf.Len() > 0 {
+				// Full content on every round — operators need it
+				// to diagnose format compliance issues and empty
+				// tool_calls rounds where the model wrote
+				// directive text in the content field instead of
+				// using native tool calls.
+				respFields["content"] = assistantBuf.String()
+			}
+			if gotUsage {
+				respFields["usage_prompt_tokens"] = usageFromAPI.PromptTokens
+				respFields["usage_completion_tokens"] = usageFromAPI.CompletionTokens
+				respFields["usage_total_tokens"] = usageFromAPI.TotalTokens
+			}
+			if len(rawTrace) > 0 {
+				respFields["raw_trace"] = rawTrace
+			}
+			_ = g.slow.Write("llm.response", chatID, respFields)
 		}
 
 		// Persist the assistant turn regardless of finish reason.
@@ -2755,4 +2853,12 @@ func formatToolsForLog(specs []llm.ToolSchema) []map[string]any {
 		})
 	}
 	return out
+}
+
+func toolNames(specs []llm.ToolSchema) []string {
+	names := make([]string, 0, len(specs))
+	for _, s := range specs {
+		names = append(names, s.Name)
+	}
+	return names
 }

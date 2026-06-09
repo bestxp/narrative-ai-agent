@@ -58,6 +58,14 @@ func Discard() *Logger {
 	return &Logger{w: io.Discard, mu: &sync.Mutex{}, now: time.Now}
 }
 
+// Writer returns the underlying io.Writer so callers (e.g. the
+// logging package) can wrap it in a mutex-serializing adapter
+// for zerolog duplication without losing the append-only
+// guarantee that slowlog.Write already has.
+func (l *Logger) Writer() io.Writer {
+	return l.w
+}
+
 // Entry is the wire format of a slowlog line. The caller picks a
 // "kind" tag (e.g. "llm.request", "tool.update_state") and adds
 // any structured fields via Fields.

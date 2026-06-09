@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -16,8 +17,8 @@ import (
 
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/gitops"
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/llm"
-	llmopenai "github.com/bestxp/narrative-ai-agent/internal/adapter/llm/openai"
 	llmanthropic "github.com/bestxp/narrative-ai-agent/internal/adapter/llm/anthropic"
+	llmopenai "github.com/bestxp/narrative-ai-agent/internal/adapter/llm/openai"
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
 	"github.com/bestxp/narrative-ai-agent/internal/config"
 	"github.com/bestxp/narrative-ai-agent/internal/dispatcher"
@@ -68,12 +69,16 @@ func main() {
 	}
 	gitOp := gitops.NewWithLogger(cfg.Paths.GitWorkdir, cfg.Git.Remote, cfg.Git.Branch, cfg.Git.CommitAuthor, cfg.Git.CommitEmail, cfg.Git.RemoteDisabled, log)
 
-	slow, err := buildSlowlog(cfg, log)
+	slow, slowWriter, err := buildSlowlog(cfg, log)
 	if err != nil {
 		log.Fatal().Err(err).Msg("slowlog init")
 	}
 	if cfg.Slowlog.Enabled {
 		log.Info().Str("path", cfg.Slowlog.File).Msg("slowlog enabled")
+		// Replace the logger with one that duplicates every
+		// JSON line into the slowlog file alongside the
+		// structured llm.request / llm.response events.
+		log = logging.NewWithSlowlog(logging.Config{Level: level, Pretty: *prettyLog}, slowWriter)
 	}
 
 	// role / systemPrompt / driver / summarizer must be
@@ -110,29 +115,29 @@ func main() {
 	switch cfg.LLM.Driver {
 	case "", "openai":
 		driver = llmopenai.New(llm.RoleConfig{
-			APIURL:                  role.APIURL,
-			APIKey:                  role.APIKey,
-			Model:                   role.Model,
-			MaxTokens:               role.MaxTokens,
-			Temperature:             role.Temperature,
-			RequestTimeoutSeconds:   role.RequestTimeoutSeconds,
-			DisableThinking:         role.DisableThinking,
-			ReasoningEffort:         role.ReasoningEffort,
-			MaxEmptyRetries:         role.MaxEmptyRetries,
+			APIURL:                   role.APIURL,
+			APIKey:                   role.APIKey,
+			Model:                    role.Model,
+			MaxTokens:                role.MaxTokens,
+			Temperature:              role.Temperature,
+			RequestTimeoutSeconds:    role.RequestTimeoutSeconds,
+			DisableThinking:          role.DisableThinking,
+			ReasoningEffort:          role.ReasoningEffort,
+			MaxEmptyRetries:          role.MaxEmptyRetries,
 			EmptyRetryTimeoutSeconds: role.EmptyRetryTimeoutSeconds,
 		}, log)
 		log.Info().Str("driver", "openai").Str("model", role.Model).Msg("llm driver ready")
 	case "anthropic":
 		driver = llmanthropic.NewWithSlowlog(llm.RoleConfig{
-			APIURL:                  role.APIURL,
-			APIKey:                  role.APIKey,
-			Model:                   role.Model,
-			MaxTokens:               role.MaxTokens,
-			Temperature:             role.Temperature,
-			RequestTimeoutSeconds:   role.RequestTimeoutSeconds,
-			DisableThinking:         role.DisableThinking,
-			ReasoningEffort:         role.ReasoningEffort,
-			MaxEmptyRetries:         role.MaxEmptyRetries,
+			APIURL:                   role.APIURL,
+			APIKey:                   role.APIKey,
+			Model:                    role.Model,
+			MaxTokens:                role.MaxTokens,
+			Temperature:              role.Temperature,
+			RequestTimeoutSeconds:    role.RequestTimeoutSeconds,
+			DisableThinking:          role.DisableThinking,
+			ReasoningEffort:          role.ReasoningEffort,
+			MaxEmptyRetries:          role.MaxEmptyRetries,
 			EmptyRetryTimeoutSeconds: role.EmptyRetryTimeoutSeconds,
 		}, log, slow)
 		log.Info().Str("driver", "anthropic").Str("model", role.Model).Msg("llm driver ready")
@@ -162,15 +167,15 @@ func main() {
 		var ok bool
 		if sumRoleCfg, hasSummary := cfg.Role("summary"); hasSummary {
 			sumRole = llm.RoleConfig{
-				APIURL:                  sumRoleCfg.APIURL,
-				APIKey:                  sumRoleCfg.APIKey,
-				Model:                   sumRoleCfg.Model,
-				MaxTokens:               sumRoleCfg.MaxTokens,
-				Temperature:             sumRoleCfg.Temperature,
-				RequestTimeoutSeconds:   sumRoleCfg.RequestTimeoutSeconds,
-				DisableThinking:         sumRoleCfg.DisableThinking,
-				ReasoningEffort:         sumRoleCfg.ReasoningEffort,
-				MaxEmptyRetries:         sumRoleCfg.MaxEmptyRetries,
+				APIURL:                   sumRoleCfg.APIURL,
+				APIKey:                   sumRoleCfg.APIKey,
+				Model:                    sumRoleCfg.Model,
+				MaxTokens:                sumRoleCfg.MaxTokens,
+				Temperature:              sumRoleCfg.Temperature,
+				RequestTimeoutSeconds:    sumRoleCfg.RequestTimeoutSeconds,
+				DisableThinking:          sumRoleCfg.DisableThinking,
+				ReasoningEffort:          sumRoleCfg.ReasoningEffort,
+				MaxEmptyRetries:          sumRoleCfg.MaxEmptyRetries,
 				EmptyRetryTimeoutSeconds: sumRoleCfg.EmptyRetryTimeoutSeconds,
 			}
 			sumPrompt, err = promptpkg.LoadSystemPrompt(sumRoleCfg.SystemPromptPath, "summary.md")
@@ -266,10 +271,10 @@ func main() {
 
 	gm := usecase.NewGM(usecase.GMConfig{
 		Role: llm.RoleConfig{
-			Model:                   role.Model,
-			MaxTokens:               role.MaxTokens,
-			Temperature:             role.Temperature,
-			MaxEmptyRetries:         role.MaxEmptyRetries,
+			Model:                    role.Model,
+			MaxTokens:                role.MaxTokens,
+			Temperature:              role.Temperature,
+			MaxEmptyRetries:          role.MaxEmptyRetries,
 			EmptyRetryTimeoutSeconds: role.EmptyRetryTimeoutSeconds,
 		},
 		SystemPrompt: string(systemPrompt),
@@ -720,12 +725,25 @@ func runAutoSave(ctx context.Context, log zerolog.Logger, c messaging.Client, op
 // buildSlowlog picks between File-mode and Discard based on the
 // config. The path is opened in append mode; the parent
 // directory is created if missing.
-func buildSlowlog(cfg *config.Config, log zerolog.Logger) (*slowlog.Logger, error) {
+//
+// It returns both the slowlog.Logger (for structured events)
+// and a logging.SlowlogWriter (for zerolog console→slowlog
+// duplication). When slowlog is disabled both are no-ops.
+func buildSlowlog(cfg *config.Config, log zerolog.Logger) (*slowlog.Logger, *logging.SlowlogWriter, error) {
 	if !cfg.Slowlog.Enabled {
 		log.Info().Msg("slowlog disabled (config: slowlog.enabled=false)")
-		return slowlog.Discard(), nil
+		return slowlog.Discard(), logging.NewSlowlogWriter(io.Discard), nil
 	}
-	return slowlog.File(cfg.Slowlog.File)
+	sl, err := slowlog.File(cfg.Slowlog.File)
+	if err != nil {
+		return nil, nil, err
+	}
+	// The SlowlogWriter wraps the same *os.File so that
+	// zerolog's MultiWriter and slowlog.Logger.Write()
+	// both serialize through their own mutexes — no
+	// interleaving between JSON-line entries and
+	// slowlog's own structured events.
+	return sl, logging.NewSlowlogWriter(sl.Writer()), nil
 }
 
 // recv type-erases the per-client Recv() channel via a tiny

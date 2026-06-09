@@ -114,8 +114,19 @@ func (d *Driver) Stream(ctx context.Context, req llm.ChatRequest, onChunk func(l
 	defer stream.Close()
 
 	acc := newToolAccumulator(d.log)
+	var rawTrace []string
 	for stream.Next() {
 		chunk := stream.Current()
+		// Capture raw SSE payload for diagnostics on broken
+		// responses (empty content + empty tools). We keep
+		// only the last 5 chunks so the trace does not grow
+		// unbounded on healthy round-trips.
+		if raw, err := json.Marshal(chunk); err == nil {
+			rawTrace = append(rawTrace, string(raw))
+			if len(rawTrace) > 5 {
+				rawTrace = rawTrace[len(rawTrace)-5:]
+			}
+		}
 		for _, choice := range chunk.Choices {
 			out := llm.Chunk{Finish: choice.FinishReason}
 			if choice.Delta.Content != "" {
@@ -139,6 +150,7 @@ func (d *Driver) Stream(ctx context.Context, req llm.ChatRequest, onChunk func(l
 					TotalTokens:      int(chunk.Usage.TotalTokens),
 				}
 			}
+			out.RawTrace = rawTrace
 			if err := onChunk(out); err != nil {
 				return fmt.Errorf("openai: chunk callback: %w", err)
 			}
@@ -150,7 +162,7 @@ func (d *Driver) Stream(ctx context.Context, req llm.ChatRequest, onChunk func(l
 		}
 		return fmt.Errorf("openai: stream: %w", err)
 	}
-	if err := onChunk(llm.Chunk{Done: true}); err != nil {
+	if err := onChunk(llm.Chunk{Done: true, RawTrace: rawTrace}); err != nil {
 		return fmt.Errorf("openai: done callback: %w", err)
 	}
 	return nil

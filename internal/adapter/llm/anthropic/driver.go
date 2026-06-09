@@ -102,6 +102,14 @@ func newWithSlowlog(role llm.RoleConfig, log zerolog.Logger, slow *slowlog.Logge
 	clientOpts := []option.RequestOption{
 		option.WithBaseURL(role.APIURL),
 		option.WithRequestTimeout(time.Duration(orDefault(role.RequestTimeoutSeconds, 120)) * time.Second),
+		// Prompt caching: marks system prompt, tools, and
+		// long-lived user content as cacheable breakpoints so
+		// repeated turns reuse the cached prefix instead of
+		// re-reading the full prompt. The beta header is
+		// required by ollama.com and older Anthropic API
+		// versions; newer deployments recognise cache_control
+		// natively.
+		option.WithHeaderAdd("anthropic-beta", string(anthropic.AnthropicBetaPromptCaching2024_07_31)),
 	}
 	if d.thinkingAsAuthToken {
 		clientOpts = append(clientOpts, option.WithAuthToken(role.APIKey))
@@ -115,24 +123,60 @@ func newWithSlowlog(role llm.RoleConfig, log zerolog.Logger, slow *slowlog.Logge
 		if err != nil {
 			panic(fmt.Sprintf("anthropic: marshal tool %q: %v", t.Function.Name, err))
 		}
-		// Anthropic strict input_schema is the same shape
-		// as OpenAI's: top-level {type, properties, required}.
-		// We pass it as a raw FunctionParameters map; the
-		// SDK marshals to the wire.
-		var fp map[string]any
-		if err := json.Unmarshal(paramsBytes, &fp); err != nil {
+		// Anthropic's input_schema has specific top-level fields:
+		//   {type, properties, required}
+		// with additionalProperties passed through ExtraFields.
+		// We cannot dump the whole schema into Properties like
+		// OpenAI — that puts "additionalProperties" (a bool) inside
+		// the properties dict, and the Anthropic SDK tries to
+		// unmarshal it as api.ToolProperty (a struct), producing
+		// "cannot unmarshal bool into Go struct field".
+		var schema map[string]any
+		if err := json.Unmarshal(paramsBytes, &schema); err != nil {
 			panic(fmt.Sprintf("anthropic: reparse tool %q: %v", t.Function.Name, err))
+		}
+		inputSchema := anthropic.ToolInputSchemaParam{}
+		if props, ok := schema["properties"].(map[string]any); ok {
+			inputSchema.Properties = props
+		}
+		if req, ok := schema["required"].([]any); ok {
+			required := make([]string, 0, len(req))
+			for _, r := range req {
+				if s, ok := r.(string); ok {
+					required = append(required, s)
+				}
+			}
+			inputSchema.Required = required
+		}
+		// Pass through additionalProperties (bool) and any
+		// other top-level schema keys the API might accept.
+		// This must go through ExtraFields so the SDK
+		// MarshalJSON picks it up and does not try to type-
+		// coerce it into api.ToolProperty.
+		extra := make(map[string]any)
+		if ap, ok := schema["additionalProperties"]; ok {
+			extra["additionalProperties"] = ap
+		}
+		if len(extra) > 0 {
+			inputSchema.ExtraFields = extra
 		}
 		d.prodTools = append(d.prodTools, anthropic.ToolUnionParam{
 			OfTool: &anthropic.ToolParam{
 				Name:        t.Function.Name,
 				Description: anthropic.String(t.Function.Description),
-				InputSchema: anthropic.ToolInputSchemaParam{
-					Properties: fp,
-				},
-				Strict: anthropic.Bool(true),
+				InputSchema: inputSchema,
+				Strict:      anthropic.Bool(true),
 			},
 		})
+	}
+	// Prompt caching: mark the last tool as a cache breakpoint
+	// so the tools prefix is cached across turns. This saves
+	// ~1.5k tokens of tool declarations on every request.
+	if len(d.prodTools) > 0 {
+		tool := d.prodTools[len(d.prodTools)-1].OfTool
+		if tool != nil {
+			tool.CacheControl = anthropic.NewCacheControlEphemeralParam()
+		}
 	}
 	return d
 }
@@ -177,7 +221,13 @@ func (d *Driver) Stream(ctx context.Context, req llm.ChatRequest, onChunk func(l
 		}
 		return fmt.Errorf("anthropic: request: %w", err)
 	}
-	return d.emitBlocks(ctx, resp, onChunk)
+	// Capture raw response for diagnostics on broken/empty
+	// responses. Non-streaming API, so this is the full body.
+	var rawTrace []string
+	if raw, err := json.Marshal(resp); err == nil {
+		rawTrace = []string{string(raw)}
+	}
+	return d.emitBlocks(ctx, resp, rawTrace, onChunk)
 }
 
 // emitBlocks walks the Anthropic response.Content blocks in
@@ -185,7 +235,7 @@ func (d *Driver) Stream(ctx context.Context, req llm.ChatRequest, onChunk func(l
 // blocks (Type="thinking" or non-standard `tool_use` blocks
 // with empty name+input that some providers emit) are logged
 // to slowlog and dropped.
-func (d *Driver) emitBlocks(ctx context.Context, resp *anthropic.Message, onChunk func(llm.Chunk) error) error {
+func (d *Driver) emitBlocks(ctx context.Context, resp *anthropic.Message, rawTrace []string, onChunk func(llm.Chunk) error) error {
 	// OpenAI finish vocabulary mapping.
 	finish := mapAnthropicStopReason(resp.StopReason)
 
@@ -215,7 +265,7 @@ func (d *Driver) emitBlocks(ctx context.Context, resp *anthropic.Message, onChun
 		})
 	}
 	if len(tools) > 0 {
-		if err := onChunk(llm.Chunk{ToolCalls: tools, Finish: finish}); err != nil {
+		if err := onChunk(llm.Chunk{ToolCalls: tools, Finish: finish, RawTrace: rawTrace}); err != nil {
 			return err
 		}
 	}
@@ -230,7 +280,7 @@ func (d *Driver) emitBlocks(ctx context.Context, resp *anthropic.Message, onChun
 		text.WriteString(tb.Text)
 	}
 	if text.Len() > 0 {
-		if err := onChunk(llm.Chunk{Content: text.String(), Finish: finish}); err != nil {
+		if err := onChunk(llm.Chunk{Content: text.String(), Finish: finish, RawTrace: rawTrace}); err != nil {
 			return err
 		}
 	}
@@ -238,7 +288,8 @@ func (d *Driver) emitBlocks(ctx context.Context, resp *anthropic.Message, onChun
 	// Usage + terminal marker.
 	if resp.Usage.InputTokens > 0 || resp.Usage.OutputTokens > 0 {
 		_ = onChunk(llm.Chunk{
-			Finish: finish,
+			Finish:   finish,
+			RawTrace: rawTrace,
 			Usage: llm.Usage{
 				PromptTokens:     int(resp.Usage.InputTokens),
 				CompletionTokens: int(resp.Usage.OutputTokens),
@@ -246,7 +297,7 @@ func (d *Driver) emitBlocks(ctx context.Context, resp *anthropic.Message, onChun
 			},
 		})
 	}
-	if err := onChunk(llm.Chunk{Done: true}); err != nil {
+	if err := onChunk(llm.Chunk{Done: true, RawTrace: rawTrace}); err != nil {
 		return fmt.Errorf("anthropic: done callback: %w", err)
 	}
 	return nil
@@ -300,6 +351,30 @@ func (d *Driver) buildRequest(req llm.ChatRequest) (anthropic.MessageNewParams, 
 		}
 	}
 
+	// Prompt caching: mark the last system block as a cache
+	// breakpoint. The system prompt is ~24k chars and rarely
+	// changes between turns — caching it saves ~6k input tokens
+	// per request after the first.
+	if len(systemBlocks) > 0 {
+		systemBlocks[len(systemBlocks)-1].CacheControl = anthropic.NewCacheControlEphemeralParam()
+	}
+
+	// Prompt caching: mark the first user message content as a
+	// cache breakpoint (index:1 caching). The first user message
+	// carries the full world state (state.md, NPC profiles, etc.)
+	// which changes slowly across turns. This is the most
+	// impactful cache target: it caches everything from system
+	// prompt through tools through the first user message.
+	for i, msg := range messages {
+		if msg.Role == anthropic.MessageParamRoleUser {
+			messages[i] = anthropic.MessageParam{
+				Role:    msg.Role,
+				Content: appendCacheControlToFirstUserBlock(msg.Content),
+			}
+			break
+		}
+	}
+
 	params := anthropic.MessageNewParams{
 		Model:     anthropic.Model(req.Model),
 		MaxTokens: int64(orDefault(req.MaxTokens, 1500)),
@@ -311,15 +386,47 @@ func (d *Driver) buildRequest(req llm.ChatRequest) (anthropic.MessageNewParams, 
 		},
 	}
 	if req.Temperature > 0 {
-		// Anthropic v1.48 has Temperature directly on params.
 		params.Temperature = anthropic.Float(req.Temperature)
+	}
+	// When the operator set disable_thinking=true (or
+	// reasoning_effort=none), explicitly send
+	// thinking:{type:"disabled"} so Anthropic-compatible
+	// providers do not force extended thinking. Without
+	// this, RouterAI and other proxies default to enabled
+	// thinking, which leaks reasoning text into the stream
+	// and wastes ~1.5k output tokens per turn.
+	if d.role.DisableThinking || d.role.ReasoningEffort == "none" {
+		disabled := anthropic.NewThinkingConfigDisabledParam()
+		params.Thinking = anthropic.ThinkingConfigParamUnion{
+			OfDisabled: &disabled,
+		}
 	}
 	return params, nil
 }
 
-	// logThinking records a thinking-block to slowlog. Provider
-	// convention: openrouter returns empty-name tool_use blocks;
-	// we treat them as thinking.
+// appendCacheControlToFirstUserBlock walks a Content slice and
+// sets CacheControl on the first text-like block. This marks
+// the index:1 cache breakpoint so Anthropic caches system
+// prompt + tools + the world-state user message across turns.
+// Subsequent user messages (narrative turns) are NOT cached.
+func appendCacheControlToFirstUserBlock(content []anthropic.ContentBlockParamUnion) []anthropic.ContentBlockParamUnion {
+	for i := range content {
+		b := &content[i]
+		if b.OfText != nil {
+			b.OfText.CacheControl = anthropic.NewCacheControlEphemeralParam()
+			return content
+		}
+		if b.OfToolResult != nil {
+			b.OfToolResult.CacheControl = anthropic.NewCacheControlEphemeralParam()
+			return content
+		}
+	}
+	return content
+}
+
+// logThinking records a thinking-block to slowlog. Provider
+// convention: openrouter returns empty-name tool_use blocks;
+// we treat them as thinking.
 func (d *Driver) logThinking(id, raw string) {
 	if d.slow == nil {
 		return

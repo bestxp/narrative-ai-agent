@@ -18,6 +18,7 @@
 package telegram
 
 import (
+	"regexp"
 	"sort"
 	"strings"
 	"unicode/utf16"
@@ -162,6 +163,19 @@ func htmlEscape(s string) string {
 		}
 	}
 	return b.String()
+}
+
+// stripHTMLTags removes all HTML markup from s, returning just
+// the text content. Used by the stream layer to detect cases
+// where the formatted wire text contains only tags — e.g.
+// "<b></b>" — which Telegram rejects with "Bad Request: message
+// text is empty". A simple regexp is enough here because
+// Telegram's HTML dialect is constrained (no nested quotes in
+// attributes, no CDATA, no comments).
+var htmlTagRe = regexp.MustCompile(`<[^>]*>`)
+
+func stripHTMLTags(s string) string {
+	return htmlTagRe.ReplaceAllString(s, "")
 }
 
 // isMessageNotModified reports whether err is the harmless
