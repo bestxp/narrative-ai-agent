@@ -1,6 +1,6 @@
 module github.com/bestxp/narrative-ai-agent
 
-go 1.26.0
+go 1.26.4
 
 require (
 	github.com/anthropics/anthropic-sdk-go v1.48.0

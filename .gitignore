@@ -7,3 +7,5 @@ AGENTS.MD
 /cmd/migrate-npc-yaml
 /cmd/migrate-registry
 .opencode
+/test-anthropic
+/test-openapi
