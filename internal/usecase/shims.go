@@ -11,10 +11,10 @@ import (
 
 	"github.com/rs/zerolog"
 
-	"narrative/internal/adapter/storage"
-	"narrative/internal/slowlog"
-	"narrative/internal/usecase/tools"
-	"narrative/internal/usecase/tools/files"
+	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
+	"github.com/bestxp/narrative-ai-agent/internal/slowlog"
+	"github.com/bestxp/narrative-ai-agent/internal/usecase/tools"
+	"github.com/bestxp/narrative-ai-agent/internal/usecase/tools/files"
 )
 
 // Tool re-exports tools.Tool — the single interface the
@@ -50,8 +50,18 @@ const FileBackend = "files"
 // file-backed toolset. main.go calls this once and hands
 // the result to gm and dispatcher. The returned *files.Toolset
 // satisfies tools.Tool and tools.Reloadable.
-func NewFileToolset(fs *storage.FileStore, log zerolog.Logger, slow *slowlog.Logger) *files.Toolset {
-	return files.New(fs, log, slow)
+//
+// summarizer is the LLM-driven NPC condensation hook used
+// by MaintainNPCs. loreSummarizer is the LLM-driven
+// lore.md compaction hook used by MaintainLore.
+// memoriseSummarizer is the LLM-driven 30-day window
+// compression hook used by ArchiveDay (automatic on
+// day%30==0 and on timeskips). Pass nil to any of them
+// to disable the LLM path — the file backend will then
+// log a warning and skip. Tests typically pass nil for
+// all three (or stubs).
+func NewFileToolset(fs *storage.FileStore, log zerolog.Logger, slow *slowlog.Logger, summarizer tools.NPCSummarizer, loreSummarizer tools.LoreSummarizer, memoriseSummarizer tools.MemoriseSummarizer) *files.Toolset {
+	return files.New(fs, log, slow, summarizer, loreSummarizer, memoriseSummarizer)
 }
 
 // --- format / threshold / header helpers ---------------------------------

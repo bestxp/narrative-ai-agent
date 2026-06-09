@@ -9,9 +9,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"narrative/internal/adapter/llm"
-	"narrative/internal/adapter/storage"
-	"narrative/internal/slowlog"
+	"github.com/bestxp/narrative-ai-agent/internal/adapter/llm"
+	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
+	"github.com/bestxp/narrative-ai-agent/internal/slowlog"
 )
 
 func TestSummarizer_NotConfigured(t *testing.T) {
@@ -127,7 +127,7 @@ func TestAppendHistoryToState_AppendsToEnd(t *testing.T) {
 	require.NoError(t, fs.WriteRawAtomic("info.yaml", "active_world: naruto\n"))
 	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/state.md",
 		"# Состояние мира: naruto\n\n## Текущий момент\nДень 5 (в процессе).\nМомент: допрос.\n\n## Хронология дня\n- Ход 1: Аньбу подошла.\n"))
-	tools := NewFileToolset(fs, zerolog.Nop(), slowlog.Discard())
+	tools := NewFileToolset(fs, zerolog.Nop(), slowlog.Discard(), nil, nil, nil)
 	require.NoError(t, tools.AppendHistoryToState("naruto", "- Акацуки собраны\n- Хокаге вызвал", mustParseTime("2026-06-06T14:00:00Z")))
 	got, _ := fs.ReadRaw("worlds/naruto/state.md")
 	assert.Contains(t, got, "[history сжато 2026-06-06 14:00 UTC]")
@@ -141,7 +141,7 @@ func TestAppendHistoryToState_AppendsToEnd(t *testing.T) {
 func TestAppendHistoryToState_EmptySummaryNoop(t *testing.T) {
 	fs, _ := storage.NewFileStore(t.TempDir())
 	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/state.md", "old"))
-	tools := NewFileToolset(fs, zerolog.Nop(), slowlog.Discard())
+	tools := NewFileToolset(fs, zerolog.Nop(), slowlog.Discard(), nil, nil, nil)
 	require.NoError(t, tools.AppendHistoryToState("naruto", "", mustParseTime("2026-06-06T14:00:00Z")))
 	got, _ := fs.ReadRaw("worlds/naruto/state.md")
 	assert.Equal(t, "old", got, "empty summary should be a no-op")
@@ -149,7 +149,7 @@ func TestAppendHistoryToState_EmptySummaryNoop(t *testing.T) {
 
 func TestAppendHistoryToState_EmptyWorldErrors(t *testing.T) {
 	fs, _ := storage.NewFileStore(t.TempDir())
-	tools := NewFileToolset(fs, zerolog.Nop(), slowlog.Discard())
+	tools := NewFileToolset(fs, zerolog.Nop(), slowlog.Discard(), nil, nil, nil)
 	assert.Error(t, tools.AppendHistoryToState("", "stuff", mustParseTime("2026-06-06T14:00:00Z")))
 }
 

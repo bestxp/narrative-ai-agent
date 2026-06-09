@@ -28,7 +28,10 @@
 // (files.Toolset exposes each as a separate field).
 package tools
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 // StateSnapshot is the trimmed "here and now" written to
 // state.md. AppendEvents is the day's log: each entry is
@@ -114,13 +117,42 @@ type Tool interface {
 	UpdateState(snap StateSnapshot) error
 	AppendEvent(text string) error
 	AppendHistoryToState(world, summary string, at time.Time) error
-	ArchiveDay(world string, day int, summary string) error
+	// ArchiveDay appends a new day entry to memorise.md and
+	// triggers automatic 30-day window compression when the
+	// recorded day closes a window (day % 30 == 0, or any
+	// wider timeskip). The context carries the request
+	// deadline — the compression step is an LLM call that
+	// may take a few seconds, so the per-turn deadline
+	// applies. The summarizer is wired in cmd/bot/main.go
+	// (see tools.MemoriseSummarizer); nil summarizers are
+	// tolerated and the call is logged + skipped.
+	ArchiveDay(ctx context.Context, world string, day int, summary string) error
 	RotatePlan(world string, events []string) error
 
 	// --- memory.md / lore.md / NPC condensation ---
 	AppendMemory(character, line string) error
 	AppendLore(world, header, bullet string) error
-	CompactNPCs(world string) ([]string, error)
+	// MaintainNPCs walks the active world's NPC files
+	// and asks the LLM-driven summarizer to compact
+	// any profile whose personal_memory has grown past
+	// the threshold (see npcprofile.NPCPersonalMemoryLimit).
+	// Returns the list of NPC display names that were
+	// actually rewritten. The implementation in
+	// files.Memory takes a Summarizer dependency (see
+	// NPCSummarizer interface) which is wired at
+	// construction time in cmd/bot/main.go.
+	MaintainNPCs(world string) ([]string, error)
+	// MaintainLore compacts the active world's lore.md
+	// when it grows past tools.LoreMaintainThreshold
+	// (500 lines by default). Returns true when the
+	// file was rewritten. canon.md is NEVER touched —
+	// it is operator-owned, the bot only reads it.
+	// (Lore is the only world-scoped file the bot
+	// writes via summarizer; canon stays external.)
+	// The context carries the request deadline (the
+	// GM is in a per-turn deadline, /maintenance is
+	// operator-triggered with a longer one).
+	MaintainLore(ctx context.Context, world string) (bool, error)
 
 	// --- world transitions ---
 	Leave(fromWorld, toWorld, skipNote, character string) (*LeaveResult, error)

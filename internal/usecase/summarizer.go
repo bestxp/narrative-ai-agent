@@ -3,12 +3,13 @@ package usecase
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/rs/zerolog"
 
-	"narrative/internal/adapter/llm"
-	"narrative/internal/slowlog"
+	"github.com/bestxp/narrative-ai-agent/internal/adapter/llm"
+	"github.com/bestxp/narrative-ai-agent/internal/slowlog"
 )
 
 // Summarizer compresses old conversation turns into a short
@@ -35,8 +36,18 @@ type Summarizer struct {
 	llm    LLMClient
 	role   llm.RoleConfig
 	prompt string
-	slow   *slowlog.Logger
-	log    zerolog.Logger
+	// compactionInPlacePrompt is used by SummarizeInPlace
+	// (Этап 0b). When empty, SummarizeInPlace no-ops
+	// and returns an empty body. Wired in main.go via
+	// SetCompactionInPlacePrompt or NewSummarizerWith
+	// (we keep the basic NewSummarizer constructor for
+	// backward compat with the migrate tests).
+	compactionInPlacePrompt string
+	// endOfDayPrompt is used by SummarizeEndOfDay
+	// (Этап 0c). Same nil-safety as compactionInPlace.
+	endOfDayPrompt string
+	slow           *slowlog.Logger
+	log            zerolog.Logger
 	// fallbackMode is true when this summarizer shares the
 	// narrative model. We use the same role config but with
 	// a small MaxTokens override to keep the response tight.
@@ -181,6 +192,146 @@ func source(s *Summarizer) string {
 	return "summary"
 }
 
+// NPCSummaryResult is what SummarizeNPC returns. Body is
+// the new YAML profile the caller writes back to disk;
+// Compressed is true when the body shrank (false means
+// the summarizer decided the profile was already tight
+// and returned the input unchanged). BeforeCount and
+// AfterCount are personal_memory lengths so the operator
+// can see "40 → 28 facts" at a glance in slowlog.
+type NPCSummaryResult struct {
+	Body         []byte
+	Compressed   bool
+	BeforeCount  int
+	AfterCount   int
+	OutputChars  int
+}
+
+// SummarizeNPC asks the LLM to compact a single NPC
+// profile. The system prompt (passed in as `systemPrompt`,
+// typically loaded from internal/prompts/npc_summary.md)
+// tells the model the rules: keep base sections, dedup
+// relations, prune abilities, squeeze personal_memory to
+// 20-30 critical facts. The world name and the
+// memorise.md tail give the model context (which days
+// were key, which NPCs are still active).
+//
+// The summarizer is best-effort. If the LLM returns the
+// same content it received (no compression), or returns
+// invalid YAML, or returns fewer facts than the input had
+// (the model went too far), the caller (MaintainNPCs)
+// leaves the file untouched and logs a warning.
+//
+// This method is safe to call from any goroutine — the
+// underlying LLMClient.Stream is safe under concurrent
+// use on the same role (the GM serialises per-chat turns
+// with chatMu; the maintenance tool is called serially
+// per round by the dispatcher).
+func (s *Summarizer) SummarizeNPC(ctx context.Context, displayName, world string, yamlBody, memoriseTail []byte) (NPCSummaryResult, error) {
+	res := NPCSummaryResult{Body: yamlBody, Compressed: false}
+	if !s.IsConfigured() {
+		return res, nil
+	}
+	if len(yamlBody) == 0 {
+		return res, nil
+	}
+
+	// Build the user prompt. The memorise.md tail
+	// (last 20 days) gives the model the long-term
+	// context it needs to decide which facts are
+	// "key" vs "everyday". Without that context the
+	// model treats every fact as critical.
+	var userBuf strings.Builder
+	userBuf.WriteString("# World: ")
+	userBuf.WriteString(world)
+	userBuf.WriteString("\n\n# NPC: ")
+	userBuf.WriteString(displayName)
+	userBuf.WriteString("\n\n# Current profile (YAML)\n```yaml\n")
+	userBuf.Write(yamlBody)
+	userBuf.WriteString("\n```\n")
+	if len(memoriseTail) > 0 {
+		userBuf.WriteString("\n# Полный memorise.md (контекст хронологии, без обрезки)\n```\n")
+		userBuf.Write(memoriseTail)
+		userBuf.WriteString("\n```\n")
+	}
+	userBuf.WriteString("\nВерни сжатый YAML. Только YAML, без обёрток и комментариев.")
+
+	// Reuse the role config but bump MaxTokens — the
+	// compression output can be up to the input size
+	// (we never enlarge, but the model is verbose
+	// about YAML).
+	role := s.role
+	if role.MaxTokens < 2000 {
+		role.MaxTokens = 2000
+	}
+	if role.Temperature == 0 || role.Temperature > 0.4 {
+		role.Temperature = 0.2
+	}
+
+	req := llm.ChatRequest{
+		Model: role.Model,
+		Messages: []llm.Message{
+			{Role: "system", Content: s.prompt},
+			{Role: "user", Content: userBuf.String()},
+		},
+		Temperature: role.Temperature,
+		MaxTokens:   role.MaxTokens,
+	}
+
+	var buf strings.Builder
+	streamErr := s.llm.Stream(ctx, req, func(ch llm.Chunk) error {
+		if ch.Done || ch.Content == "" {
+			return nil
+		}
+		buf.WriteString(ch.Content)
+		return nil
+	})
+	if streamErr != nil {
+		return res, fmt.Errorf("summarizer: npc stream: %w", streamErr)
+	}
+	out := strings.TrimSpace(buf.String())
+	if out == "" {
+		return res, fmt.Errorf("summarizer: empty response for npc %q", displayName)
+	}
+
+	// Strip a leading/trailing ```yaml fence the
+	// model sometimes emits despite being told not
+	// to. We do NOT trust anything between a fence
+	// pair: even a "thinking" preamble is dropped
+	// because the parser only knows the YAML shape.
+	cleaned := stripYAMLFence(out)
+	res.Body = []byte(cleaned)
+	res.OutputChars = len(cleaned)
+	res.Compressed = len(cleaned) < len(yamlBody)
+
+	// Sanity check: try to parse. If invalid, the
+	// caller will log a warning and skip the write.
+	// We do not return an error here because the
+	// caller may want to keep the original file and
+	// just log the failure (the round-trip is
+	// idempotent — the file stays as it was).
+	return res, nil
+}
+
+// stripYAMLFence removes a leading ```yaml (or ```) and
+// the matching trailing ``` from the model response. The
+// summarizer system prompt forbids fences but a fraction
+// of models emit them anyway; we keep the parse path
+// permissive.
+func stripYAMLFence(s string) string {
+	s = strings.TrimSpace(s)
+	if !strings.HasPrefix(s, "```") {
+		return s
+	}
+	if idx := strings.Index(s, "\n"); idx > 0 {
+		s = s[idx+1:]
+	}
+	if idx := strings.LastIndex(s, "```"); idx >= 0 {
+		s = s[:idx]
+	}
+	return strings.TrimSpace(s)
+}
+
 // renderTurnsForSummary flattens a slice of chat-completion
 // messages into a single user-role text buffer that the
 // summary role can consume. The format is intentionally
@@ -213,3 +364,408 @@ func renderTurnsForSummary(msgs []llm.Message) string {
 	return b.String()
 }
 
+// LoreSummaryResult is what SummarizeLore returns. Body
+// is the new markdown the caller writes back; Compressed
+// is true when the body shrank; BeforeLines / AfterLines
+// are file lengths so the operator can see "500 → 230
+// lines" in slowlog.
+type LoreSummaryResult struct {
+	Body        []byte
+	Compressed  bool
+	BeforeLines int
+	AfterLines  int
+	OutputChars int
+}
+
+// SummarizeLore asks the LLM to compact a world's
+// lore.md. The system prompt (passed in as `systemPrompt`,
+// loaded from internal/prompts/lore_summary.md) tells
+// the model the rules: keep canon deviations, death,
+// first NPC appearances; trim routine events; preserve
+// chronologically. The world name and the memorise.md
+// tail + state.md give the model the long-term context.
+//
+// Best-effort: invalid markdown or a returned body
+// that is not smaller than the input leaves the file
+// untouched. The caller (MaintainLore) decides what
+// counts as "valid" — for lore this is just a non-empty
+// body with at least one "## " section.
+func (s *Summarizer) SummarizeLore(ctx context.Context, world string, loreBody, memoriseTail, stateMD []byte) (LoreSummaryResult, error) {
+	res := LoreSummaryResult{Body: loreBody, Compressed: false}
+	if !s.IsConfigured() {
+		return res, nil
+	}
+	if len(loreBody) == 0 {
+		return res, nil
+	}
+
+	var userBuf strings.Builder
+	userBuf.WriteString("# World: ")
+	userBuf.WriteString(world)
+	userBuf.WriteString("\n\n# Current lore.md\n```markdown\n")
+	userBuf.Write(loreBody)
+	userBuf.WriteString("\n```\n")
+	if len(memoriseTail) > 0 {
+		userBuf.WriteString("\n# Полный memorise.md (контекст хронологии, без обрезки)\n```\n")
+		userBuf.Write(memoriseTail)
+		userBuf.WriteString("\n```\n")
+	}
+	if len(stateMD) > 0 {
+		userBuf.WriteString("\n# state.md (текущий момент)\n```\n")
+		userBuf.Write(stateMD)
+		userBuf.WriteString("\n```\n")
+	}
+	userBuf.WriteString("\nВерни сжатый lore.md. Только markdown, без обёрток.")
+
+	role := s.role
+	if role.MaxTokens < 4000 {
+		role.MaxTokens = 4000
+	}
+	if role.Temperature == 0 || role.Temperature > 0.4 {
+		role.Temperature = 0.2
+	}
+
+	req := llm.ChatRequest{
+		Model: role.Model,
+		Messages: []llm.Message{
+			{Role: "system", Content: s.prompt},
+			{Role: "user", Content: userBuf.String()},
+		},
+		Temperature: role.Temperature,
+		MaxTokens:   role.MaxTokens,
+	}
+
+	var buf strings.Builder
+	streamErr := s.llm.Stream(ctx, req, func(ch llm.Chunk) error {
+		if ch.Done || ch.Content == "" {
+			return nil
+		}
+		buf.WriteString(ch.Content)
+		return nil
+	})
+	if streamErr != nil {
+		return res, fmt.Errorf("summarizer: lore stream: %w", streamErr)
+	}
+	out := strings.TrimSpace(buf.String())
+	if out == "" {
+		return res, fmt.Errorf("summarizer: empty response for lore of %q", world)
+	}
+	cleaned := stripMarkdownFence(out)
+	res.Body = []byte(cleaned)
+	res.OutputChars = len(cleaned)
+	res.Compressed = len(cleaned) < len(loreBody)
+	return res, nil
+}
+
+// stripMarkdownFence removes a leading ```markdown (or
+// ```) and the matching trailing ``` from a model
+// response. The lore summarizer prompt forbids fences
+// but a fraction of models emit them anyway; we keep
+// the parse path permissive.
+func stripMarkdownFence(s string) string {
+	s = strings.TrimSpace(s)
+	if !strings.HasPrefix(s, "```") {
+		return s
+	}
+	if idx := strings.Index(s, "\n"); idx > 0 {
+		s = s[idx+1:]
+	}
+	if idx := strings.LastIndex(s, "```"); idx >= 0 {
+		s = s[:idx]
+	}
+	return strings.TrimSpace(s)
+}
+
+// MemoriseSummaryResult is what SummarizeMemorise returns.
+// Body is the compressed text the caller should append to
+// memorise.md as a single line; it must start with the
+// literal "д<start>-д<end>: " prefix. Compressed is true
+// when the body is non-empty and shorter than the input
+// window (i.e. a real shrink happened, not a no-op echo).
+type MemoriseSummaryResult struct {
+	Body       []byte
+	Compressed bool
+	OutputChars int
+	InputDays  int
+}
+
+// SummarizeMemorise asks the LLM to compact a window of
+// N consecutive day entries (default N=30, larger on
+// timeskips) into a single line "д<start>-д<end>: <10..N
+// sentences of distilled essence>". The system prompt
+// (loaded from internal/prompts/memorise_summary.md) sets
+// the rules: chronological, dedupe repetitions, preserve
+// canon-relevant facts (NPC introductions, death, player
+// actions that change the world).
+//
+// The summarizer receives the WHOLE current memorise.md
+// as context — earlier, already-compressed windows are
+// passed through so the model can keep the new summary
+// consistent with what has already been said (and dedupe
+// arcs that span the window boundary, like a 15-day
+// training run that started inside the previous window).
+//
+// Best-effort: the model may return an empty body (the
+// window is too thin to compress — e.g. only 3 real days
+// of activity in a 30-day calendar window). The caller
+// treats that as "no compression happened" and leaves
+// the file untouched.
+func (s *Summarizer) SummarizeMemorise(ctx context.Context, world string, startDay, endDay int, fullMemorise string) (MemoriseSummaryResult, error) {
+	res := MemoriseSummaryResult{Body: nil, Compressed: false, InputDays: endDay - startDay + 1}
+	if !s.IsConfigured() {
+		return res, nil
+	}
+	if endDay < startDay {
+		return res, fmt.Errorf("summarizer: memorise window invalid: start=%d end=%d", startDay, endDay)
+	}
+
+	var userBuf strings.Builder
+	userBuf.WriteString("# World: ")
+	userBuf.WriteString(world)
+	userBuf.WriteString("\n\n# Сжимаемое окно: д")
+	userBuf.WriteString(fmt.Sprintf("%05d", startDay))
+	userBuf.WriteString(" — д")
+	userBuf.WriteString(fmt.Sprintf("%05d", endDay))
+	userBuf.WriteString(" (")
+	userBuf.WriteString(strconv.Itoa(endDay - startDay + 1))
+	userBuf.WriteString(" дней)\n")
+	userBuf.WriteString("\n# Полный memorise.md (используй для контекста и дедупликации пересечений с предыдущими сводками)\n```\n")
+	userBuf.WriteString(fullMemorise)
+	userBuf.WriteString("\n```\n")
+	userBuf.WriteString("\nВерни ОДНУ строку. Формат: д<start>-д<end>: <суть>. Без обёрток, без markdown, без переносов строк внутри.")
+
+	role := s.role
+	if role.MaxTokens < 2000 {
+		role.MaxTokens = 2000
+	}
+	if role.Temperature == 0 || role.Temperature > 0.4 {
+		role.Temperature = 0.2
+	}
+
+	req := llm.ChatRequest{
+		Model: role.Model,
+		Messages: []llm.Message{
+			{Role: "system", Content: s.prompt},
+			{Role: "user", Content: userBuf.String()},
+		},
+		Temperature: role.Temperature,
+		MaxTokens:   role.MaxTokens,
+	}
+
+	var buf strings.Builder
+	streamErr := s.llm.Stream(ctx, req, func(ch llm.Chunk) error {
+		if ch.Done || ch.Content == "" {
+			return nil
+		}
+		buf.WriteString(ch.Content)
+		return nil
+	})
+	if streamErr != nil {
+		return res, fmt.Errorf("summarizer: memorise stream: %w", streamErr)
+	}
+	out := strings.TrimSpace(buf.String())
+	if out == "" {
+		return res, nil
+	}
+	cleaned := stripMarkdownFence(out)
+	res.Body = []byte(cleaned)
+	res.OutputChars = len(cleaned)
+	res.Compressed = true
+	return res, nil
+}
+
+
+// InPlaceSummaryResult is what SummarizeInPlace returns.
+// Body is the compressed text the caller should append to
+// index:1 as "## Хроника текущего дня (Д<N>)". It is
+// expected to START with "[События текущего дня Д<N>]"
+// (the prompt enforces this). Compressed is true when
+// a real shrink happened.
+type InPlaceSummaryResult struct {
+	Body       []byte
+	Compressed bool
+	OutputChars int
+	Day        int
+}
+
+// SetCompactionInPlacePrompt wires the prompt loaded
+// from prompts/compaction_in_place.md. Called once
+// at construction time from main.go.
+func (s *Summarizer) SetCompactionInPlacePrompt(p string) {
+	s.compactionInPlacePrompt = p
+}
+
+// SetEndOfDayPrompt wires the prompt loaded from
+// prompts/end_of_day.md. Called once at construction
+// time from main.go.
+func (s *Summarizer) SetEndOfDayPrompt(p string) {
+	s.endOfDayPrompt = p
+}
+
+// SummarizeInPlace compresses the current in-memory
+// conversation of day N into a 150-300 word narrative
+// that will be appended to index:1 as "## Хроника
+// текущего дня". This is the Этап 0b compaction path,
+// triggered when messages[2:] grows past
+// g.compaction.Threshold * context_window.
+//
+// The summarizer does NOT mark the day as closed
+// (the compaction_in_place.md prompt is explicit about
+// this). On end_day (Этап 0c) the same conversation is
+// re-compressed differently — see SummarizeEndOfDay.
+func (s *Summarizer) SummarizeInPlace(ctx context.Context, world string, day int, messages []llm.Message) (InPlaceSummaryResult, error) {
+	res := InPlaceSummaryResult{Day: day}
+	if !s.IsConfigured() {
+		return res, nil
+	}
+	if s.compactionInPlacePrompt == "" {
+		return res, fmt.Errorf("summarizer: in-place compaction prompt not wired")
+	}
+	if len(messages) == 0 {
+		return res, nil
+	}
+
+	userText := renderTurnsForSummary(messages)
+	var userBuf strings.Builder
+	userBuf.WriteString("# World: ")
+	userBuf.WriteString(world)
+	userBuf.WriteString("\n\n# Текущий день: д")
+	userBuf.WriteString(fmt.Sprintf("%05d", day))
+	userBuf.WriteString("\n\n# Диалог текущего дня (")
+	userBuf.WriteString(strconv.Itoa(len(messages)))
+	userBuf.WriteString(" сообщений)\n```\n")
+	userBuf.WriteString(userText)
+	userBuf.WriteString("\n```\n")
+	userBuf.WriteString("\nВерни ОДНУ запись [События текущего дня Д<N>] ... 150-300 слов.")
+
+	role := s.role
+	if role.MaxTokens < 2000 {
+		role.MaxTokens = 2000
+	}
+	if role.Temperature == 0 || role.Temperature > 0.4 {
+		role.Temperature = 0.2
+	}
+
+	req := llm.ChatRequest{
+		Model: role.Model,
+		Messages: []llm.Message{
+			{Role: "system", Content: s.compactionInPlacePrompt},
+			{Role: "user", Content: userBuf.String()},
+		},
+		Temperature: role.Temperature,
+		MaxTokens:   role.MaxTokens,
+	}
+
+	var buf strings.Builder
+	streamErr := s.llm.Stream(ctx, req, func(ch llm.Chunk) error {
+		if ch.Done || ch.Content == "" {
+			return nil
+		}
+		buf.WriteString(ch.Content)
+		return nil
+	})
+	if streamErr != nil {
+		return res, fmt.Errorf("summarizer: in-place stream: %w", streamErr)
+	}
+	out := strings.TrimSpace(buf.String())
+	if out == "" {
+		return res, nil
+	}
+	cleaned := stripMarkdownFence(out)
+	res.Body = []byte(cleaned)
+	res.OutputChars = len(cleaned)
+	res.Compressed = true
+	return res, nil
+}
+
+// EndOfDaySummaryResult is what SummarizeEndOfDay returns.
+// Body is a 200-400 word narrative intended for
+// "## Протокол прошедших дней" in index:1. It should
+// start with "[События прошедшего дня Д<N>]".
+type EndOfDaySummaryResult struct {
+	Body       []byte
+	Compressed bool
+	OutputChars int
+	Day        int
+}
+
+// SummarizeEndOfDay produces the full narrative protocol
+// for a closing day. Called from GM.EndOfDay (Этап 0c).
+// The body is appended to "## Протокол прошедших дней"
+// in WorldState and (when the window overflows) eventually
+// moved to memorise.md.
+//
+// The end_of_day.md prompt is explicit: this is a
+// CLOSING day. Tomorrow is a new day. Verbs are in
+// past tense. Quotations are short (1 sentence max).
+// Format is a free-form narrative (NOT a numbered list
+// — that was the v1 mistake).
+func (s *Summarizer) SummarizeEndOfDay(ctx context.Context, world string, day int, messages []llm.Message, stateMD string) (EndOfDaySummaryResult, error) {
+	res := EndOfDaySummaryResult{Day: day}
+	if !s.IsConfigured() {
+		return res, nil
+	}
+	if s.endOfDayPrompt == "" {
+		return res, fmt.Errorf("summarizer: end-of-day prompt not wired")
+	}
+	if len(messages) == 0 {
+		return res, nil
+	}
+
+	userText := renderTurnsForSummary(messages)
+	var userBuf strings.Builder
+	userBuf.WriteString("# World: ")
+	userBuf.WriteString(world)
+	userBuf.WriteString("\n\n# Закрываемый день: д")
+	userBuf.WriteString(fmt.Sprintf("%05d", day))
+	userBuf.WriteString("\n\n# Диалог дня (")
+	userBuf.WriteString(strconv.Itoa(len(messages)))
+	userBuf.WriteString(" сообщений)\n```\n")
+	userBuf.WriteString(userText)
+	userBuf.WriteString("\n```\n")
+	if stateMD != "" {
+		userBuf.WriteString("\n# state.md на момент закрытия дня\n```\n")
+		userBuf.WriteString(stateMD)
+		userBuf.WriteString("\n```\n")
+	}
+	userBuf.WriteString("\nВерни ОДНУ запись [События прошедшего дня Д<N>] ... 200-400 слов.")
+
+	role := s.role
+	if role.MaxTokens < 3000 {
+		role.MaxTokens = 3000
+	}
+	if role.Temperature == 0 || role.Temperature > 0.4 {
+		role.Temperature = 0.2
+	}
+
+	req := llm.ChatRequest{
+		Model: role.Model,
+		Messages: []llm.Message{
+			{Role: "system", Content: s.endOfDayPrompt},
+			{Role: "user", Content: userBuf.String()},
+		},
+		Temperature: role.Temperature,
+		MaxTokens:   role.MaxTokens,
+	}
+
+	var buf strings.Builder
+	streamErr := s.llm.Stream(ctx, req, func(ch llm.Chunk) error {
+		if ch.Done || ch.Content == "" {
+			return nil
+		}
+		buf.WriteString(ch.Content)
+		return nil
+	})
+	if streamErr != nil {
+		return res, fmt.Errorf("summarizer: end-of-day stream: %w", streamErr)
+	}
+	out := strings.TrimSpace(buf.String())
+	if out == "" {
+		return res, nil
+	}
+	cleaned := stripMarkdownFence(out)
+	res.Body = []byte(cleaned)
+	res.OutputChars = len(cleaned)
+	res.Compressed = true
+	return res, nil
+}

@@ -1,17 +1,17 @@
 package files
 
 import (
+	"context"
 	"errors"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/rs/zerolog"
 
-	"narrative/internal/adapter/storage"
-	"narrative/internal/domain"
-	"narrative/internal/usecase/tools"
+	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
+	"github.com/bestxp/narrative-ai-agent/internal/domain"
+	"github.com/bestxp/narrative-ai-agent/internal/usecase/tools"
 )
 
 // State is the file-backed implementation of tools.StateTool:
@@ -19,10 +19,39 @@ import (
 type State struct {
 	fs  *storage.FileStore
 	log zerolog.Logger
+	// memoriseCompress is invoked after a successful
+	// memorise.md append. The implementation lives on
+	// *Memory (MemoriseCompressWindow). It is wired by
+	// NewFileToolset so that the state writer does not
+	// need a direct dependency on the memory struct.
+	// The hook is expected to be nil-safe and to no-op
+	// when no summarizer is wired.
+	memoriseCompress func(ctx context.Context, world string, dayJustArchived int) error
+	// worldStateInvalidate is invoked after the day is
+	// closed (ArchiveDay, end_day). Wired by NewFileToolset
+	// to call GM.InvalidateWorldState so the next turn
+	// rebuilds index:1 from disk (the "Протокол прошедших
+	// дней" section changed). It is also invoked by
+	// /reload (dispatcher) and leave_world (world.go).
+	worldStateInvalidate func(reason string)
 }
 
 func newState(fs *storage.FileStore, log zerolog.Logger) *State {
 	return &State{fs: fs, log: log.With().Str("component", "state").Logger()}
+}
+
+// SetMemoriseCompress wires the post-ArchiveDay hook.
+// Called once at construction time from NewFileToolset.
+func (s *State) SetMemoriseCompress(fn func(ctx context.Context, world string, dayJustArchived int) error) {
+	s.memoriseCompress = fn
+}
+
+// SetWorldStateInvalidate wires the post-day-close hook.
+// Called once at construction time from NewFileToolset.
+// Nil is fine — the dispatcher /reload path will call it
+// directly via GM.InvalidateWorldState.
+func (s *State) SetWorldStateInvalidate(fn func(reason string)) {
+	s.worldStateInvalidate = fn
 }
 
 // NPCCompactLineThreshold is exported so the dispatcher's
@@ -50,7 +79,7 @@ func (s *State) UpdateState(snap tools.StateSnapshot) error {
 	}
 	rel := "worlds/" + snap.World + "/state.md"
 	cur, _ := s.fs.ReadRaw(rel)
-	existing := parseStateMD(cur)
+	existing := ParseStateMD(cur)
 	existing.World = snap.World
 	existing.Day = snap.Day
 	existing.InFlight = snap.InFlight
@@ -96,12 +125,12 @@ func (s *State) UpdateState(snap tools.StateSnapshot) error {
 	return s.fs.WriteRawAtomic(rel, body)
 }
 
-// parseStateMD is the inverse of BuildStateMarkdown — it
+// ParseStateMD is the inverse of BuildStateMarkdown — it
 // recovers the StateSnapshot from a state.md body so UpdateState
 // can append to the chronology without clobbering earlier events.
 // We tolerate a missing "## Хронология дня" section (returns
 // empty Events).
-func parseStateMD(body string) domain.StateSnapshot {
+func ParseStateMD(body string) domain.StateSnapshot {
 	out := domain.StateSnapshot{}
 	if body == "" {
 		return out
@@ -174,10 +203,22 @@ func (e *PlanRangeError) Error() string {
 	return "plan.md must contain 3-5 events, got " + strconv.Itoa(e.Given)
 }
 
-// ArchiveDay appends a new day entry to memorise.md (and
-// compresses 30-day windows per the skill rules) and resets
-// the state's хронология дня for the new day.
-func (s *State) ArchiveDay(world string, day int, summary string) error {
+// ArchiveDay appends a new day entry to memorise.md, then
+// triggers the memorise-compression hook whenever a window
+// closes. The compression hook is wired by NewFileToolset
+// to Memory.MemoriseCompressWindow.
+//
+// Window rule (default Window=30, configurable in code):
+// the hook is called when the day JustArchived equals
+// `lastDay + Window - 1 + 1` modulo Window's multiplier —
+// in plain terms, any day that is a multiple of Window
+// (30, 60, 90, ...) closes the previous window. Wider
+// timeskips are handled by MemoriseCompressWindow itself:
+// if the last day in the file is, say, д00010 and we just
+// archived д00090, the hook will collapse д00001-д00030,
+// д00031-д00060, and д00061-д00090 in three separate
+// LLM calls.
+func (s *State) ArchiveDay(ctx context.Context, world string, day int, summary string) error {
 	if strings.TrimSpace(summary) == "" {
 		s.log.Debug().Int("day", day).Msg("archive_day: empty summary, skipping")
 		return nil
@@ -196,14 +237,42 @@ func (s *State) ArchiveDay(world string, day int, summary string) error {
 		current += "\n"
 	}
 	next := current + line + "\n"
-	next = s.compressIfNeeded(next)
 	s.log.Info().Str("world", world).Int("day", day).Msg("archive_day")
 	if err := s.fs.WriteRawAtomic(rel, next); err != nil {
 		return err
 	}
+	// Always run the compression hook. The hook
+	// (MemoriseCompressWindow) is a no-op when:
+	//   - no summarizer is wired (logs a warning),
+	//   - the just-archived day is not on a window
+	//     boundary AND no earlier window is unfilled
+	//     (i.e. nothing to collapse),
+	//   - the just-archived window is too thin to
+	//     compress (e.g. only 3 real days of activity
+	//     inside a 30-day window).
+	// We never gate on a flag from the caller — a missed
+	// window must not silently fall through, because the
+	// LLM has no other chance to compress the data.
+	if s.memoriseCompress != nil {
+		if err := s.memoriseCompress(ctx, world, day); err != nil {
+			// Compression is best-effort. The day
+			// entry is already on disk, so a failed
+			// compression does not lose data — the
+			// NEXT ArchiveDay will re-evaluate and
+			// collapse the open window. Log and
+			// continue, do not surface the error to
+			// the player (they would see "end_day
+			// failed" for a maintenance hiccup).
+			s.log.Warn().
+				Err(err).
+				Str("world", world).
+				Int("day", day).
+				Msg("archive_day: memorise compress hook failed; will retry next call")
+		}
+	}
 	if world != "" {
 		st, _ := s.fs.ReadRaw("worlds/" + world + "/state.md")
-		parsed := parseStateMD(st)
+		parsed := ParseStateMD(st)
 		parsed.Day = day + 1
 		parsed.InFlight = true
 		parsed.Events = nil
@@ -211,6 +280,16 @@ func (s *State) ArchiveDay(world string, day int, summary string) error {
 		if err := s.fs.WriteRawAtomic("worlds/"+world+"/state.md", body); err != nil {
 			return err
 		}
+	}
+	// Этап 0a/0c: end-of-day closes the scene. Drop the
+	// world-state snapshot so the next turn rebuilds
+	// index:1 with the freshly appended "## Протокол
+	// прошедших дней" section. (ArchiveDay is the only
+	// place in the production flow that does this — the
+	// dispatcher /reload path calls GM.InvalidateWorldState
+	// directly.)
+	if s.worldStateInvalidate != nil {
+		s.worldStateInvalidate("end_day")
 	}
 	return nil
 }
@@ -226,7 +305,7 @@ func (s *State) AppendEvent(text string) error {
 	}
 	rel := "worlds/" + world + "/state.md"
 	cur, _ := s.fs.ReadRaw(rel)
-	parsed := parseStateMD(cur)
+	parsed := ParseStateMD(cur)
 	parsed.World = world
 	parsed.Events = append(parsed.Events, text)
 	body := domain.BuildStateMarkdown(parsed)
@@ -251,27 +330,6 @@ func (s *State) AppendHistoryToState(world, summary string, at time.Time) error 
 	}
 	next := cur + header + "\n" + summary + "\n"
 	return s.fs.WriteRawAtomic(rel, next)
-}
-
-// compressIfNeeded collapses 30-entry windows into a single block.
-var windowRe = regexp.MustCompile(`д(\d{5}):\s+(.+?)(?:\n|$)`)
-
-func (s *State) compressIfNeeded(body string) string {
-	entries, err := domain.ParseDays(body)
-	if err != nil || len(entries) <= 30 {
-		return body
-	}
-	head := entries[:30]
-	tail := entries[30:]
-	var b strings.Builder
-	b.WriteString(domain.FormatDay(head[0].Number, "сводка 30 дней ("))
-	b.WriteString(strconv.Itoa(len(head)))
-	b.WriteString(" дн.) — удалено построчно\n")
-	for _, e := range tail {
-		b.WriteString(domain.FormatDay(e.Number, e.Text))
-		b.WriteString("\n")
-	}
-	return b.String()
 }
 
 // normaliseEventKey collapses an event string to a

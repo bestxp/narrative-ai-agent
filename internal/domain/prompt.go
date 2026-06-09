@@ -16,12 +16,20 @@ type PromptContext struct {
 	CharacterSOUL     string
 	CharacterSKILL    string
 	CharacterMemory   string
+	// CharacterSections lists `## <name>` headers
+	// currently present in the character's three
+	// files. Rendered into the system prompt so
+	// the model picks an existing section name
+	// (no guessing, no duplicates) when issuing
+	// `update_character`. Empty until the
+	// character has at least one file body.
+	CharacterSections string
 	World             string
 	WorldCanon        string
 	WorldState        string
 	WorldPlan         string
 	WorldLore         string
-	WorldMemoriseTail string // last ~20 days, no archive
+	WorldMemorise     string // full file, including earlier compressed windows
 	NPCs              []NPCSnapshot
 }
 
@@ -78,13 +86,18 @@ func BuildSystemPrompt(staticRules string, ctx PromptContext, disableThinking ..
 			b.WriteString(ctx.CharacterMemory)
 			b.WriteString("\n\n")
 		}
+		if ctx.CharacterSections != "" {
+			b.WriteString("### Доступные секции для `update_character`\n")
+			b.WriteString(ctx.CharacterSections)
+			b.WriteString("\n\n")
+		}
 	}
 
 	if ctx.World != "" {
 		fmt.Fprintf(&b, "## Активный мир: %s\n\n", ctx.World)
 		if ctx.WorldCanon != "" {
 			b.WriteString("### Канон\n")
-			b.WriteString(truncate(ctx.WorldCanon, 4000))
+			b.WriteString(ctx.WorldCanon)
 			b.WriteString("\n\n")
 		}
 		if ctx.WorldState != "" {
@@ -102,35 +115,21 @@ func BuildSystemPrompt(staticRules string, ctx PromptContext, disableThinking ..
 			b.WriteString(ctx.WorldPlan)
 			b.WriteString("\n\n")
 		}
-		if ctx.WorldMemoriseTail != "" {
-			b.WriteString("### Хвост memorise.md (последние дни)\n")
-			b.WriteString(ctx.WorldMemoriseTail)
+		if ctx.WorldMemorise != "" {
+			b.WriteString("### Хронология (memorise.md)\n")
+			b.WriteString(ctx.WorldMemorise)
 			b.WriteString("\n\n")
 		}
 	}
 
-	if len(ctx.NPCs) > 0 {
-		b.WriteString("## Активные NPC\n")
-		for _, npc := range ctx.NPCs {
-			fmt.Fprintf(&b, "### %s\n", npc.DisplayName)
-			b.WriteString(truncate(npc.Profile, 2000))
-			b.WriteString("\n\n")
+		if len(ctx.NPCs) > 0 {
+			b.WriteString("## Активные NPC\n")
+			for _, npc := range ctx.NPCs {
+				fmt.Fprintf(&b, "### %s\n", npc.DisplayName)
+				b.WriteString(npc.Profile)
+				b.WriteString("\n\n")
+			}
 		}
-	}
 
 	return strings.TrimSpace(b.String())
-}
-
-// truncate caps a body at n runes and adds a marker if the content
-// was cut. The cap protects the LLM's context window from very long
-// canonical descriptions.
-func truncate(s string, n int) string {
-	if n <= 0 {
-		return ""
-	}
-	runes := []rune(s)
-	if len(runes) <= n {
-		return s
-	}
-	return string(runes[:n]) + "\n[…truncated…]"
 }

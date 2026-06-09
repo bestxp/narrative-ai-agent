@@ -8,9 +8,9 @@ import (
 
 	"github.com/rs/zerolog"
 
-	"narrative/internal/adapter/storage"
-	"narrative/internal/slowlog"
-	"narrative/internal/usecase/tools"
+	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
+	"github.com/bestxp/narrative-ai-agent/internal/slowlog"
+	"github.com/bestxp/narrative-ai-agent/internal/usecase/tools"
 )
 
 // Character is the file-backed implementation of
@@ -126,7 +126,17 @@ func upsertSection(body, section, appendText string) string {
 			break
 		}
 	}
-	tail := make([]string, 0, endIdx-headerIdx)
+	// State sections REPLACE (current appearance,
+	// weapons, philosophy); log sections APPEND
+	// (memory, actions, preferences). See
+	// classifySection for the canonical list.
+	mode := classifySection(section)
+	if mode == sectionModeState {
+		return replaceSection(body, section, appendText, lines, headerIdx, endIdx)
+	}
+	// Log section: keep existing body, dedup
+	// against appendText, then append the new line.
+	tail := make([]string, 0, endIdx-headerIdx+1)
 	for _, ln := range lines[headerIdx:endIdx] {
 		if strings.TrimSpace(ln) == strings.TrimSpace(appendText) {
 			return body
@@ -134,13 +144,183 @@ func upsertSection(body, section, appendText string) string {
 		tail = append(tail, ln)
 	}
 	tail = append(tail, strings.TrimSpace(appendText))
+	// Stitch: lines BEFORE the header, the section
+	// body (header at tail[0]), then everything AFTER.
+	// The earlier implementation emitted lines[:endIdx]
+	// instead of lines[:headerIdx] and double-counted
+	// the header — producing duplicate `## <section>`
+	// headers on every Append.
 	out := make([]string, 0, len(lines)+1)
-	out = append(out, lines[:endIdx]...)
+	out = append(out, lines[:headerIdx]...)
 	out = append(out, tail...)
 	if endIdx < len(lines) {
 		out = append(out, lines[endIdx:]...)
 	}
 	return strings.Join(out, "\n")
+}
+
+// sectionMode enumerates the two update semantics
+// for a per-character file. State sections REPLACE
+// their body (snapshot of "what I am right now"),
+// log sections APPEND (journal). Unknown names
+// default to ModeLog.
+type sectionMode int
+
+const (
+	sectionModeLog   sectionMode = iota // append journal
+	sectionModeState                    // replace snapshot
+)
+
+// stateSectionNames is the canonical list of
+// section names that describe the character's
+// CURRENT state. Updates land as REPLACE — a player
+// who switched costumes does not want the old and
+// new description stacked. Anything not on this
+// list defaults to ModeLog (journal APPEND).
+// All matches are case-insensitive. The split:
+//
+//   SOUL.md:  истинная сущность, истинный возраст,
+//             визуальный возраст, внешний вид,
+//             особое свойство, философия и принципы,
+//             личностные качества, главная цель,
+//             статус, сильные стороны, слабые стороны
+//   SKILL.md: ранг, оружие, базовые способности,
+//             фундаментальные стихии, особые проявления,
+//             универсальные навыки, ограничения,
+//             глаза, доспех
+//   memory.md state-flavour: текущий статус, эмоции
+var stateSectionNames = []string{
+	// SOUL.md
+	"истинная сущность",
+	"истинный возраст",
+	"визуальный возраст",
+	"внешний вид",
+	"особое свойство",
+	"философия и принципы",
+	"личностные качества",
+	"главная цель",
+	"статус",
+	"сильные стороны",
+	"слабые стороны",
+	// SKILL.md
+	"ранг",
+	"оружие",
+	"базовые способности",
+	"фундаментальные стихии",
+	"особые проявления",
+	"универсальные навыки",
+	"ограничения",
+	"глаза",
+	"доспех",
+	// memory.md — state-flavoured snapshots
+	"текущий статус",
+	"эмоции",
+}
+
+func classifySection(section string) sectionMode {
+	key := strings.ToLower(strings.TrimSpace(section))
+	for _, n := range stateSectionNames {
+		if n == key {
+			return sectionModeState
+		}
+	}
+	return sectionModeLog
+}
+
+// replaceSection rebuilds the file body with the
+// section at [headerIdx, endIdx) replaced by a
+// fresh header + the new text. The old body is
+// dropped (the player is changing state, not adding
+// to it). For a not-yet-written section this is
+// identical to the "new section" branch in
+// upsertSection. No dedup against the previous body
+// — REPLACE is by definition saying "the old state
+// is no longer current".
+func replaceSection(body, section, appendText string, lines []string, headerIdx, endIdx int) string {
+	newBody := strings.TrimSpace(appendText)
+	if newBody == "" {
+		return body
+	}
+	out := make([]string, 0, len(lines)+2)
+	out = append(out, lines[:headerIdx]...)
+	out = append(out, "## "+section)
+	out = append(out, newBody)
+	// Keep a blank line between the new body and the
+	// next section so a reader can tell where this
+	// section ends and the next one starts.
+	out = append(out, "")
+	if endIdx < len(lines) {
+		rest := lines[endIdx:]
+		if len(rest) > 0 && strings.TrimSpace(rest[0]) == "" {
+			rest = rest[1:]
+		}
+		out = append(out, rest...)
+	}
+	return strings.Join(out, "\n")
+}
+
+// ExtractSections returns the ordered, deduplicated
+// list of `## <name>` headers in body. Casing is
+// preserved so the prompt surfaces the exact
+// spellings the operator used — the model does not
+// invent variants that get a duplicate-header file.
+func ExtractSections(body string) []string {
+	if strings.TrimSpace(body) == "" {
+		return nil
+	}
+	var (
+		out   []string
+		seen  = map[string]struct{}{}
+	)
+	for _, ln := range strings.Split(body, "\n") {
+		t := strings.TrimSpace(ln)
+		if !strings.HasPrefix(t, "## ") {
+			continue
+		}
+		name := strings.TrimSpace(t[3:])
+		if name == "" {
+			continue
+		}
+		if _, dup := seen[name]; dup {
+			continue
+		}
+		seen[name] = struct{}{}
+		out = append(out, name)
+	}
+	return out
+}
+
+// FormatSectionList renders the per-character
+// "available sections" block the GM injects into
+// the system prompt. Plain text so an operator can
+// grep it when an `update_character` lands in the
+// wrong place.
+func FormatSectionList(soul, skill, mem string) string {
+	var b strings.Builder
+	any := false
+	for _, sec := range []struct {
+		heading string
+		body    string
+	}{
+		{"SOUL.md", soul},
+		{"SKILL.md", skill},
+		{"memory.md", mem},
+	} {
+		names := ExtractSections(sec.body)
+		if len(names) == 0 {
+			continue
+		}
+		any = true
+		fmt.Fprintf(&b, "### %s\n", sec.heading)
+		for _, n := range names {
+			fmt.Fprintf(&b, "- %s\n", n)
+		}
+		b.WriteString("\n")
+	}
+	if !any {
+		return ""
+	}
+	return strings.TrimRight(b.String(), "\n")
 }
 
 // Read returns the snapshot of the current character.

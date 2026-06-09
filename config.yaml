@@ -119,59 +119,22 @@ llm:
   # include_in_reply: дописать "🔢 ~123 tok" в конец ответа GM.
   # Независимо от этого slowlog всё равно пишет фактические числа.
   include_in_reply: true
-  # driver: какую реализацию LLM-клиента использовать.
-  #   "legacy" — самописный HTTP+JSON клиент в internal/adapter/llm.
-  #              Default; без structured output, markdown-режим.
-  #   "openai"  — openai-go v3 SDK (internal/adapter/llm/openai).
-  #               Поддерживает strict tools, response_format,
-  #               reasoning_effort, include_usage streaming.
-  #               Включает автоматический structured output для
-  #               4-блочного narrative (narration/context/future/validation)
-  #               через response_format=json_object.
-  #               Требует narrative.md с описанием JSON-формата
-  #               (Режим A в начале файла).
-  # Обе реализации совместимы по wire-формату; переключение в одно поле.
+  # driver: какой LLM SDK использовать. h4-by-default wire surface
+  # (json_object + 8 tools + tool_choice=auto + strict_tools=true
+  # на openai; system-prompt + 8 tools + tool_choice=auto + strict
+  # на anthropic) зашит в коде драйвера. Никаких других настроек
+  # structured_output / tool_choice / strict_tools — они hardcoded.
+  #
+  #   "openai" (default) — github.com/openai/openai-go/v3
+  #                        через /v1/chat/completions
+  #                        (Ollama Cloud, OpenAI, OpenRouter, routerai.ru).
+  #   "anthropic"        — github.com/anthropics/anthropic-sdk-go
+  #                        через /v1/messages
+  #                        (Ollama Cloud /v1/messages, OpenRouter).
+  #                        Auth-header авто-детект по api_url: ollama.com
+  #                        берёт Authorization: Bearer, остальные
+  #                        берут стандартный x-api-key.
   driver: "openai"
-  # structured_output: режим структурированного вывода для openai-драйвера.
-  # legacy-драйвер игнорирует эту секцию.
-  #
-  # Режимы (выбрано по результатам probe на https://ollama.com/v1
-  # на 3 моделях — см. cmd/test-openapi):
-  #
-  #   "off"        — НЕ использовать response_format. Модель пишет
-  #                  markdown как раньше. Fallback для провайдеров
-  #                  без поддержки JSON mode.
-  #
-  #   "json_object" — response_format.type="json_object". Модель
-  #                  выдаёт чистый JSON-объект с 4 полями
-  #                  (narration/context/future/validation),
-  #                  описанными в system prompt. **РАБОТАЕТ
-  #                  стабильно** на Ollama Cloud (minimax-m3:cloud
-  #                  и nemotron-3-ultra:cloud) — модель следует
-  #                  инструкциям из system prompt, выдаёт чистый
-  #                  JSON без fence wrap. GM парсит ответ
-  #                  (internal/structured) и рендерит в тот же
-  #                  4-блочный markdown, что и legacy. Игрок не
-  #                  видит разницы в форматировании.
-  #
-  #   "json_schema" — response_format с strict json_schema.
-  #                  **НЕ РАБОТАЕТ** на Ollama Cloud
-  #                  (minimax-m3:cloud / nemotron-3-ultra:cloud) —
-  #                  модель игнорирует schema, придумывает
-  #                  свою ("title"/"setting"/"characters"/...),
-  #                  иногда оборачивает в ```json fence.
-  #                  Будет работать на OpenAI strict mode
-  #                  (gpt-4o-2024-08-06+) и OpenRouter strict
-  #                  — оставлено для будущей миграции провайдера.
-  #
-  # tool_choice и strict_tools: НЕ работают на Ollama Cloud,
-  # модель полностью игнорирует. Оставлено auto / false —
-  # legacy-путь (парсинг КОНТЕКСТ блока в narrative.md).
-  structured_output:
-    mode: "json_object"        # off | json_object | json_schema
-    schema_name: "narrative_response"
-    tool_choice: "auto"        # auto | required | none | function:<name>
-    strict_tools: false        # Ollama Cloud игнорирует strict tools
 
   roles:
     # --------------------------------------------------------------------
@@ -209,19 +172,6 @@ llm:
       context_window: 32000
       compaction_threshold: 0.7
       compaction_keep_recent: 5
-      # max_empty_retries: сколько раз бот автоматически
-      # повторит запрос, если LLM вернул 0 chars (cloud
-      # Ollama иногда "зависает в размышлениях" и шлёт пустой
-      # finish_reason: stop). Default 2. Увеличь до 3-4 для
-      # очень flaky провайдеров.
-      max_empty_retries: 2
-      # empty_retry_timeout_seconds: таймаут на КАЖДЫЙ retry
-      # round. Cloud Ollama медленная (50-90s на ответ), а
-      # дефолтный request_timeout_seconds может быть 60s —
-      # тогда retry обрывается прямо на полпути. Default =
-      # request_timeout_seconds (120). Для cloud Ollama
-      # рекомендую 180.
-      empty_retry_timeout_seconds: 180
       # disable_thinking: отключить chain-of-thought reasoning
       # на провайдерах, которые уважают OpenAI-compat поле
       # `reasoning_effort` (Ollama /v1/chat/completions, OpenAI

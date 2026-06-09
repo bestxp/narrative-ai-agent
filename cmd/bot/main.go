@@ -14,20 +14,22 @@ import (
 
 	"github.com/rs/zerolog"
 
-	"narrative/internal/adapter/gitops"
-	"narrative/internal/adapter/llm"
-	llmopenai "narrative/internal/adapter/llm/openai"
-	"narrative/internal/adapter/storage"
-	"narrative/internal/config"
-	"narrative/internal/dispatcher"
-	"narrative/internal/domain"
-	"narrative/internal/logging"
-	"narrative/internal/messaging"
-	"narrative/internal/messaging/telegram"
-	promptpkg "narrative/internal/prompts"
-	"narrative/internal/slowlog"
-	"narrative/internal/structured"
-	"narrative/internal/usecase"
+	"github.com/bestxp/narrative-ai-agent/internal/adapter/gitops"
+	"github.com/bestxp/narrative-ai-agent/internal/adapter/llm"
+	llmopenai "github.com/bestxp/narrative-ai-agent/internal/adapter/llm/openai"
+	llmanthropic "github.com/bestxp/narrative-ai-agent/internal/adapter/llm/anthropic"
+	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
+	"github.com/bestxp/narrative-ai-agent/internal/config"
+	"github.com/bestxp/narrative-ai-agent/internal/dispatcher"
+	"github.com/bestxp/narrative-ai-agent/internal/domain"
+	"github.com/bestxp/narrative-ai-agent/internal/logging"
+	"github.com/bestxp/narrative-ai-agent/internal/messaging"
+	"github.com/bestxp/narrative-ai-agent/internal/messaging/telegram"
+	promptpkg "github.com/bestxp/narrative-ai-agent/internal/prompts"
+	"github.com/bestxp/narrative-ai-agent/internal/slowlog"
+	"github.com/bestxp/narrative-ai-agent/internal/structured"
+	"github.com/bestxp/narrative-ai-agent/internal/usecase"
+	"github.com/bestxp/narrative-ai-agent/internal/usecase/tools"
 )
 
 func main() {
@@ -74,15 +76,14 @@ func main() {
 		log.Info().Str("path", cfg.Slowlog.File).Msg("slowlog enabled")
 	}
 
-	// One Tool bundles every concern. main.go constructs it
-	// once, hands it to the dispatcher and the GM, and that's
-	// the entire wiring. The previous five-concrete-objects
-	// layout made it trivial to forget to wire one of them;
-	// the single Tool surface fails closed.
-	tools := usecase.NewFileToolset(fs, log, slow)
-	log.Info().Str("source", tools.Source()).Msg("file-backed toolset ready")
-	disp := dispatcher.New(cfg, fs, gitOp, tools, slow, log)
-
+	// role / systemPrompt / driver / summarizer must be
+	// wired BEFORE NewFileToolset: the file backend's
+	// memory concern now takes the LLM-driven summarizer
+	// so it can call back into a cheap model to compact
+	// overgrown NPC profiles. Without that wiring
+	// MaintainNPCs is a no-op and the legacy naive strip
+	// path stays in place (still safe, just less
+	// accurate).
 	role, ok := cfg.Role(config.NarrativeRole)
 	if !ok {
 		log.Fatal().Str("role", config.NarrativeRole).Msg("narrative role not configured")
@@ -93,27 +94,22 @@ func main() {
 		log.Fatal().Err(err).Str("path", role.SystemPromptPath).Msg("read system prompt")
 	}
 	// Build the LLM driver. Two implementations are
-	// supported:
-	//   - legacy: custom HTTP+JSON client in
-	//     internal/adapter/llm. The default; used in
-	//     production for months.
-	//   - openai: openai-go v3 SDK
-	//     (github.com/openai/openai-go/v3). Same wire
-	//     format, full feature coverage (strict tools,
-	//     json_schema, reasoning_effort, include_usage
-	//     streaming). The two are interchangeable from
-	//     the GM's point of view because both implement
-	//     llm.Driver.
+	// supported (h4 hardcoded wire surface in both):
+	//   - "openai" (default): openai-go v3 SDK
+	//     (github.com/openai/openai-go/v3) over
+	//     /v1/chat/completions. response_format=json_object
+	//     + tool_choice=auto + strict_tools=true baked in.
+	//   - "anthropic": anthropic-sdk-go v1.48.0 over
+	//     /v1/messages. tool_choice=auto + strict_tools=true;
+	//     no response_format (the 4-field narrative shape is
+	//     described in the system prompt).
 	//
 	// The choice is per-process, not per-role: drivers
-	// are constructed at boot and serve every chat
-	// turn for the lifetime of the bot. Per-role
-	// overrides would force us to keep two parallel
-	// driver instances in memory.
+	// are constructed at boot and serve every chat turn.
 	var driver llm.Driver
 	switch cfg.LLM.Driver {
-	case "", "legacy":
-		driver = llm.New(llm.RoleConfig{
+	case "", "openai":
+		driver = llmopenai.New(llm.RoleConfig{
 			APIURL:                  role.APIURL,
 			APIKey:                  role.APIKey,
 			Model:                   role.Model,
@@ -125,31 +121,23 @@ func main() {
 			MaxEmptyRetries:         role.MaxEmptyRetries,
 			EmptyRetryTimeoutSeconds: role.EmptyRetryTimeoutSeconds,
 		}, log)
-		log.Info().Str("driver", "legacy").Str("model", role.Model).Msg("llm driver ready")
-	case "openai":
-		driver = llmopenai.New(llm.RoleConfig{
-			APIURL:                role.APIURL,
-			APIKey:                role.APIKey,
-			Model:                 role.Model,
-			MaxTokens:             role.MaxTokens,
-			Temperature:           role.Temperature,
-			RequestTimeoutSeconds: role.RequestTimeoutSeconds,
-			DisableThinking:       role.DisableThinking,
-			ReasoningEffort:       role.ReasoningEffort,
-			// MaxEmptyRetries / EmptyRetryTimeoutSeconds
-			// are not relevant to the driver layer —
-			// they are applied by the GM around the
-			// Stream call.
-		}, llm.StructuredOutputConfig{
-			Mode:         cfg.LLM.StructuredOutput.Mode,
-			Schema:       cfg.LLM.StructuredOutput.Schema,
-			SchemaName:   cfg.LLM.StructuredOutput.SchemaName,
-			ToolChoice:   cfg.LLM.StructuredOutput.ToolChoice,
-			StrictTools:  cfg.LLM.StructuredOutput.StrictTools,
-		}, log)
 		log.Info().Str("driver", "openai").Str("model", role.Model).Msg("llm driver ready")
+	case "anthropic":
+		driver = llmanthropic.NewWithSlowlog(llm.RoleConfig{
+			APIURL:                  role.APIURL,
+			APIKey:                  role.APIKey,
+			Model:                   role.Model,
+			MaxTokens:               role.MaxTokens,
+			Temperature:             role.Temperature,
+			RequestTimeoutSeconds:   role.RequestTimeoutSeconds,
+			DisableThinking:         role.DisableThinking,
+			ReasoningEffort:         role.ReasoningEffort,
+			MaxEmptyRetries:         role.MaxEmptyRetries,
+			EmptyRetryTimeoutSeconds: role.EmptyRetryTimeoutSeconds,
+		}, log, slow)
+		log.Info().Str("driver", "anthropic").Str("model", role.Model).Msg("llm driver ready")
 	default:
-		log.Fatal().Str("driver", cfg.LLM.Driver).Msg("unknown llm.driver; expected legacy|openai")
+		log.Fatal().Str("driver", cfg.LLM.Driver).Msg("unknown llm.driver; expected openai|anthropic")
 	}
 	// The usecase layer (gm, summarizer) depends on a
 	// narrow LLMClient interface that does not include
@@ -160,15 +148,13 @@ func main() {
 	// in main.go's responsibility).
 	llmCli := driverClient{driver: driver}
 	defer driver.Close()
-	ss := usecase.NewSessionStartWithLogger(fs, log)
-	fl := usecase.NewFirstLaunchWithLogger(fs, log)
-	sysSt := usecase.NewSystemState(fs, log, slow)
 
-	// summarizer: three modes.
-	//   1. Dedicated `summary` role in config → use it.
-	//   2. No summary role, but `narrative` is wired → fallback
-	//      to narrative with clamped max_tokens/temperature.
-	//   3. Neither → no summariser, drop-only compaction.
+	// summarizer: reuses the same LLM SDK as the primary
+	// driver (openai or anthropic per cfg.LLM.Driver), but
+	// with a different system_prompt and lower max_tokens.
+	// We construct a fresh driver instance for the summary
+	// role so the per-call parameters (model, max_tokens,
+	// temperature) can differ from the GM's role.
 	var summarizer *usecase.Summarizer
 	{
 		var sumRole llm.RoleConfig
@@ -215,14 +201,68 @@ func main() {
 			log.Info().Str("model", role.Model).Msg("summarizer: fallback to narrative role (clamped)")
 		}
 		if ok {
-			sumLLM := llm.New(sumRole, log)
+			var sumLLM llm.Driver
+			switch cfg.LLM.Driver {
+			case "anthropic":
+				sumLLM = llmanthropic.New(sumRole, log)
+			default:
+				sumLLM = llmopenai.New(sumRole, log)
+			}
 			if _, hasSummary := cfg.Role("summary"); hasSummary {
 				summarizer = usecase.NewSummarizer(sumLLM, sumRole, sumPrompt, slow, log)
 			} else {
 				summarizer = usecase.NewFallbackSummarizer(sumLLM, sumRole, sumPrompt, slow, log)
 			}
+			// Этап 0b/0c: wire the in-place and end-of-day
+			// compaction prompts onto the same Summarizer.
+			// Both use the same model/role as the regular
+			// compaction path; the prompt differences
+			// (150-300 words, current-day vs 200-400
+			// words, past-day) live in the .md files.
+			if inPlacePrompt, err := promptpkg.LoadSystemPrompt("", "compaction_in_place.md"); err == nil && inPlacePrompt != "" {
+				summarizer.SetCompactionInPlacePrompt(inPlacePrompt)
+			} else {
+				log.Warn().Err(err).Msg("compaction_in_place.md unreadable; in-place compaction will no-op")
+			}
+			if eodPrompt, err := promptpkg.LoadSystemPrompt("", "end_of_day.md"); err == nil && eodPrompt != "" {
+				summarizer.SetEndOfDayPrompt(eodPrompt)
+			} else {
+				log.Warn().Err(err).Msg("end_of_day.md unreadable; end-of-day protocol will no-op")
+			}
 		}
 	}
+
+	ss := usecase.NewSessionStartWithLogger(fs, log)
+	fl := usecase.NewFirstLaunchWithLogger(fs, log)
+	sysSt := usecase.NewSystemState(fs, log, slow)
+
+	// One Tool bundles every concern. main.go constructs it
+	// once, hands it to the dispatcher and the GM, and that's
+	// the entire wiring. The previous five-concrete-objects
+	// layout made it trivial to forget to wire one of them;
+	// the single Tool surface fails closed.
+	//
+	// summarizer is the LLM-driven compaction hook used for
+	// THREE different compaction kinds: NPC profiles, lore.md,
+	// and the 30-day memorise.md windows. The same
+	// *usecase.Summarizer implements all three (it has a
+	// SummarizeNPC / SummarizeLore / SummarizeMemorise
+	// method each); we pass the SAME adapter in all three
+	// slots so the production deployment gets the LLM path
+	// for every compaction. Pass nil to disable a slot
+	// (the file backend will log a warning and skip).
+	var npcSum tools.NPCSummarizer
+	var loreSum tools.LoreSummarizer
+	var memSum tools.MemoriseSummarizer
+	if summarizer != nil {
+		adapter := summarizerAdapter{s: summarizer}
+		npcSum = adapter
+		loreSum = adapter
+		memSum = adapter
+	}
+	fileTools := usecase.NewFileToolset(fs, log, slow, npcSum, loreSum, memSum)
+	log.Info().Str("source", fileTools.Source()).Msg("file-backed toolset ready")
+	disp := dispatcher.New(cfg, fs, gitOp, fileTools, slow, log)
 
 	gm := usecase.NewGM(usecase.GMConfig{
 		Role: llm.RoleConfig{
@@ -238,7 +278,15 @@ func main() {
 			Threshold:     role.CompactionThreshold,
 			KeepRecent:    role.CompactionKeepRecent,
 		},
-	}, fs, llmCli, ss, fl, tools, summarizer, sysSt, slow, cfg.LLM.TokenTracking, cfg.LLM.IncludeInReply, log)
+	}, fs, llmCli, ss, fl, fileTools, summarizer, sysSt, slow, cfg.LLM.TokenTracking, cfg.LLM.IncludeInReply, log)
+	// Этап 0a: wire the worldStateInvalidate hook on
+	// the file-backed toolset so ArchiveDay (end_day)
+	// and Leave (leave_world) drop the cached WorldState
+	// in GM, forcing the next turn to rebuild index:1
+	// from disk. /reload (dispatcher) calls
+	// gm.InvalidateWorldState directly — it does not go
+	// through the toolset.
+	fileTools.SetWorldStateInvalidate(gm.InvalidateWorldState)
 	if !*disableLLM {
 		disp.AttachGM(gm)
 		log.Info().Str("model", role.Model).Str("url", role.APIURL).Msg("gm attached")
@@ -713,4 +761,39 @@ type driverClient struct {
 
 func (d driverClient) Stream(ctx context.Context, req llm.ChatRequest, onChunk func(llm.Chunk) error) error {
 	return d.driver.Stream(ctx, req, onChunk)
+}
+
+// summarizerAdapter wraps a *usecase.Summarizer (which
+// returns a struct) into the three tools summarizer
+// interfaces (NPCSummarizer, LoreSummarizer,
+// MemoriseSummarizer — all flat []byte). We cannot do
+// this inside the usecase package because that would
+// create a tools → usecase import cycle; main.go is the
+// only place that knows about both layers.
+type summarizerAdapter struct {
+	s *usecase.Summarizer
+}
+
+func (a summarizerAdapter) SummarizeNPC(ctx context.Context, displayName, world string, yamlBody, memoriseTail []byte) ([]byte, error) {
+	res, err := a.s.SummarizeNPC(ctx, displayName, world, yamlBody, memoriseTail)
+	if err != nil {
+		return nil, err
+	}
+	return res.Body, nil
+}
+
+func (a summarizerAdapter) SummarizeLore(ctx context.Context, world string, loreBody, memoriseTail, stateMD []byte) ([]byte, error) {
+	res, err := a.s.SummarizeLore(ctx, world, loreBody, memoriseTail, stateMD)
+	if err != nil {
+		return nil, err
+	}
+	return res.Body, nil
+}
+
+func (a summarizerAdapter) SummarizeMemorise(ctx context.Context, world string, startDay, endDay int, fullMemorise string) ([]byte, error) {
+	res, err := a.s.SummarizeMemorise(ctx, world, startDay, endDay, fullMemorise)
+	if err != nil {
+		return nil, err
+	}
+	return res.Body, nil
 }

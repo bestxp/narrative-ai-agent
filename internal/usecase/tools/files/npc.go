@@ -8,15 +8,27 @@ import (
 
 	"github.com/rs/zerolog"
 
-	"narrative/internal/adapter/storage"
-	"narrative/internal/domain"
-	"narrative/internal/usecase/tools"
+	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
+	"github.com/bestxp/narrative-ai-agent/internal/domain"
+	"github.com/bestxp/narrative-ai-agent/internal/npcprofile"
+	"github.com/bestxp/narrative-ai-agent/internal/usecase/tools"
+	"github.com/bestxp/narrative-ai-agent/internal/worldregistry"
 )
 
 // NPC is the file-backed implementation of tools.NPCTool:
 // create on first appearance, plus the knowledge-isolation
 // helper that filters a candidate reply down to what the
 // active NPC may say.
+//
+// Storage shape: the on-disk file is YAML (the canonical
+// representation in internal/npcprofile), stored at
+// worlds/<world>/characters/<slug>.yaml. The model and
+// the dispatcher never see YAML — Load returns the
+// rendered markdown (Profile.BuildMarkdown) so existing
+// prompts, parser markers, and operator reads do not
+// need to change. The flip side: every Load-then-Save
+// round-trip goes through Profile, so the file is
+// normalised on every update (no stale line layouts).
 type NPC struct {
 	fs  *storage.FileStore
 	log zerolog.Logger
@@ -37,31 +49,91 @@ var ErrNPCExists = errors.New("npc file already exists")
 var ErrNPCNotFound = errors.New("npc profile not found; call create_npc first")
 
 // datedEventRe matches "2026-06-01: ..." style dated events
-// that CompactNPCBody strips from NPC files. The 4-digit year
-// keeps false positives low (a regular line rarely starts with
-// "YYYY-MM-DD:").
+// that CompactNPCBody strips from NPC files. Kept for
+// backward compatibility — the new summarizer path does
+// not need it, but the legacy run_maintenance tool may
+// still be called and the data is here.
 var datedEventRe = regexp.MustCompile(`(?m)^-\s+\d{4}-\d{2}-\d{2}.*$`)
 
+// loadProfile reads the on-disk file and returns the
+// canonical Profile. If the file is missing or empty,
+// returns ErrNPCFound. If the file exists but is the
+// legacy markdown shape, MigrateFromMarkdown lifts it
+// into a Profile on the fly (the file is rewritten in
+// YAML on the next Save).
+func (n *NPC) loadProfile(rel, name string) (npcprofile.Profile, error) {
+	raw, err := n.fs.ReadRaw(rel)
+	if err != nil || strings.TrimSpace(raw) == "" {
+		return npcprofile.Profile{}, ErrNPCNotFound
+	}
+	// Try YAML first (the canonical shape). If the
+	// unmarshal fails AND the body looks like markdown
+	// (starts with "# " or "## "), fall back to the
+	// legacy migrator. A truly corrupt file (neither
+	// YAML nor markdown) bubbles up as a hard error so
+	// the operator notices.
+	p, yamlErr := npcprofile.Load(raw)
+	if yamlErr == nil && p.DisplayName != "" {
+		return p, nil
+	}
+	if looksLikeMarkdown(raw) {
+		n.log.Info().Str("file", rel).Msg("npc: migrating legacy markdown to YAML")
+		return npcprofile.MigrateFromMarkdown(raw, name)
+	}
+	if yamlErr != nil {
+		return npcprofile.Profile{}, fmt.Errorf("npc %q: %w", name, yamlErr)
+	}
+	return npcprofile.Profile{}, fmt.Errorf("npc %q: file exists but is empty/invalid", name)
+}
+
+// looksLikeMarkdown returns true when the body starts
+// with a "# " or "## " heading. We use this to decide
+// whether to fall back to the legacy markdown migrator
+// when YAML unmarshalling fails (a YAML file with no
+// required fields will look like an empty struct, not
+// a parse error — distinguishing the two is what this
+// helper is for).
+func looksLikeMarkdown(s string) bool {
+	t := strings.TrimSpace(s)
+	return strings.HasPrefix(t, "# ") || strings.HasPrefix(t, "## ")
+}
+
+// saveProfile serialises a Profile back to disk in the
+// canonical YAML form. The directory is ensured to
+// exist so the caller does not have to.
+func (n *NPC) saveProfile(rel string, p npcprofile.Profile) error {
+	body, err := p.Save()
+	if err != nil {
+		return err
+	}
+	return n.fs.WriteRawAtomic(rel, body)
+}
+
 // Create writes a new NPC profile to disk. The body is
-// rendered in the order the canonical section names
-// appear in canonicalNPCSections; missing sections are
-// dropped. The fixed order matters: a future UpdateNPC
-// call can find the "## Способности" header by line position
-// without a parser.
+// rendered in YAML form (Profile.Save), the markdown
+// view (Profile.BuildMarkdown) is what Load returns
+// when callers want the human-readable shape.
 func (n *NPC) Create(world string, p tools.NPCProfile) error {
 	name, err := domain.SanitizeName(p.File)
 	if err != nil {
 		return err
 	}
-	rel := "worlds/" + world + "/characters/" + name + ".md"
+	rel := "worlds/" + world + "/characters/" + name + ".yaml"
 	if n.fs.Exists(rel) {
 		return ErrNPCExists
 	}
 	if err := n.fs.EnsureDir("worlds/" + world + "/characters"); err != nil {
 		return err
 	}
-	body := BuildNPCMarkdown(p)
-	if err := n.fs.WriteRawAtomic(rel, body); err != nil {
+	profile := npcprofile.Profile{
+		DisplayName: p.DisplayName,
+		FileSlug:    name,
+		Temperament: p.Temperament,
+		RelationsGG: p.Relations,
+		Abilities:   splitList(p.Abilities),
+		Nicknames:   p.Nicknames,
+	}
+	if err := n.saveProfile(rel, profile); err != nil {
 		return err
 	}
 	if err := n.appendRegistry(world, p.DisplayName, name, p.Nicknames); err != nil {
@@ -71,13 +143,133 @@ func (n *NPC) Create(world string, p tools.NPCProfile) error {
 	return nil
 }
 
-// UpdateNPC appends fresh facts to an existing NPC's profile.
-// The `section` argument is one of the canonical section
-// names (case-insensitive); the section is created on first
-// use. The "## Последнее обновление" section is special:
-// instead of appending, its body is REPLACED with the
-// timestamp + the new fact, so a reader can always see the
-// freshest line at the bottom of the file.
+// splitList turns a free-form string ("a, b, c") into
+// a []string. Used for create_npc's flat-text fields
+// (abilities, nicknames) which arrive as a single
+// blob from the model. The migration path also
+// benefits: a legacy file with "- a\n- b" gets the
+// same flat-text treatment.
+func splitList(s string) []string {
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if t := strings.TrimSpace(p); t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// loadRegistry reads worlds/<w>/characters.yaml
+// (with legacy characters.md fallback inside
+// worldregistry.Load). Cheap: a few hundred bytes
+// of YAML at most, parsed on every call. The
+// dispatcher calls UpdateNPC and Load many times
+// per turn, so the cost matters; the registry is
+// small enough that re-parsing is fine. We
+// deliberately do NOT cache across calls because
+// Create mutates the registry and a stale cache
+// would route subsequent UpdateNPCs to a deleted
+// file.
+func (n *NPC) loadRegistry(world string) (*worldregistry.Registry, error) {
+	return worldregistry.Load(n.fs, world)
+}
+
+// findNPCFile resolves a display name to the
+// on-disk YAML file. The lookup is
+// registry-driven: display_name → slug, NOT
+// transliteration-driven. "Хината" matches
+// "Хината Хьюга" via the registry, not via
+// "khinata". The operator's hand-picked slugs
+// (hinata, anbu_dog, iruka, kurotsuba) are
+// preserved exactly as the legacy files carry
+// them.
+//
+// Lookup strategy:
+//  1. Try the registry. If the world has a
+//     characters.yaml (or characters.md bootstrap)
+//     and the display name matches one of the
+//     entries, return the registry's slug.
+//  2. If the registry has NO entry for the name
+//     (regardless of why — empty registry,
+//     missing file, no match) fall through to a
+//     directory scan of worlds/<w>/characters/.
+//     The scan reads each profile's display_name
+//     and applies the same substring heuristic the
+//     registry would have. This is the survival
+//     path for operator setups that have not been
+//     migrated to characters.yaml yet.
+//
+// Returns (rel, slug, true) on a hit. On no hit
+// returns ("", "", false) — the caller maps that
+// to ErrNPCNotFound and the GM surfaces "create_npc
+// first" to the model.
+func (n *NPC) findNPCFile(world, displayName string) (string, string, bool) {
+	if reg, err := n.loadRegistry(world); err == nil {
+		if e, ok := reg.Lookup(displayName); ok {
+			rel := "worlds/" + world + "/characters/" + e.Slug + ".yaml"
+			if n.fs.Exists(rel) {
+				return rel, e.Slug, true
+			}
+			// Registry points at a file that is
+			// not on disk. Do NOT fall through to
+			// the scan — the operator may be
+			// mid-rename, and UpdateNPC must not
+			// silently create a profile. We
+			// return a hard "not found" so the
+			// GM surfaces a clear error.
+			return "", "", false
+		}
+	}
+	return n.findNPCFileFallback(world, displayName)
+}
+
+// findNPCFileFallback is the last-resort path used
+// when characters.yaml is missing or unreadable.
+// It scans worlds/<w>/characters/*.yaml and tries
+// to find a matching display_name inside the
+// profile body. This is what kept the bot working
+// before the registry existed; it survives a
+// deleted/empty characters.yaml but loses the
+// nickname + substring matching the registry
+// offers.
+func (n *NPC) findNPCFileFallback(world, displayName string) (string, string, bool) {
+	dir := "worlds/" + world + "/characters"
+	entries, err := n.fs.ListChildren(dir)
+	if err != nil {
+		return "", "", false
+	}
+	want := strings.ToLower(strings.TrimSpace(displayName))
+	if want == "" {
+		return "", "", false
+	}
+	for _, fn := range entries {
+		if !strings.HasSuffix(fn, ".yaml") {
+			continue
+		}
+		rel := dir + "/" + fn
+		raw, _ := n.fs.ReadRaw(rel)
+		slug := strings.TrimSuffix(fn, ".yaml")
+		if p, err := npcprofile.Load(raw); err == nil && p.DisplayName != "" {
+			if strings.EqualFold(strings.TrimSpace(p.DisplayName), want) ||
+				strings.Contains(strings.ToLower(p.DisplayName), want) {
+				return rel, slug, true
+			}
+		}
+	}
+	return "", "", false
+}
+
+// UpdateNPC appends fresh facts to an existing NPC's
+// profile. The `section` argument is the canonical
+// section name (case-insensitive, English aliases
+// accepted); the text is appended with dedup. The
+// "## Последнее обновление" section is special: its
+// body is REPLACED rather than appended, so a reader
+// can always see the freshest line at the bottom.
 //
 // Use UpdateNPC for:
 //   - new abilities an NPC demonstrated this scene
@@ -86,134 +278,74 @@ func (n *NPC) Create(world string, p tools.NPCProfile) error {
 //   - a piece of critical knowledge the NPC just learned
 //   - a current status change ("локация: Коноха → миссия в Стране Волн")
 //
-// The model's contract: write SHORT, FACTUAL lines — not
-// summaries. "Стал читать мысли после Дня 5" not
-// "произошло много всего". Each call adds ONE fact, not a
-// paragraph. The re-render keeps the file readable instead
-// of turning into a stream-of-consciousness diary.
+// The model's contract: write SHORT, FACTUAL lines —
+// not summaries. "Стал читать мысли после Дня 5" not
+// "произошло много всего". Each call adds ONE fact.
 func (n *NPC) UpdateNPC(world, npc, section, appendText string) error {
-	name, err := domain.SanitizeName(npc)
-	if err != nil {
-		return fmt.Errorf("npc name: %w", err)
-	}
-	rel := "worlds/" + world + "/characters/" + name + ".md"
-	body, err := n.fs.ReadRaw(rel)
-	// ReadRaw returns "" + nil when the file is missing;
-	// treat that the same as a non-existent profile so
-	// UpdateNPC is a strict superset of Create, not a
-	// silent "create on update" path.
-	if err != nil || body == "" {
+	rel, slug, ok := n.findNPCFile(world, npc)
+	if !ok {
 		return ErrNPCNotFound
 	}
-	canonical := canonicalSectionFor(section)
-	if canonical == "" {
-		return fmt.Errorf("update_npc: unknown section %q (allowed: %v)", section, canonicalNPCSectionNames())
+	profile, err := n.loadProfile(rel, npc)
+	if err != nil {
+		return err
+	}
+	kind := npcprofile.MatchSection(section)
+	if kind == npcprofile.SectionUnknown {
+		return fmt.Errorf("update_npc: unknown section %q (allowed: %v)",
+			section, npcAllowedSections())
 	}
 	if strings.TrimSpace(appendText) == "" {
 		return nil
 	}
-	updated, err := upsertNPCSection(body, canonical, appendText)
-	if err != nil {
-		return err
+	changed := profile.UpdateSection(kind, appendText)
+	if !changed {
+		// Dedup hit — nothing to write but the
+		// call is still a no-op success. The
+		// caller (the GM) does not need a
+		// warning; the slowlog already shows
+		// how many turns produced an effective
+		// change.
+		return nil
 	}
-	if err := n.fs.WriteRawAtomic(rel, updated); err != nil {
+	if err := n.saveProfile(rel, profile); err != nil {
 		return err
 	}
 	n.log.Info().
 		Str("world", world).
-		Str("npc", name).
-		Str("section", canonical).
+		Str("npc", slug).
+		Str("section", kind.CanonicalSectionName()).
 		Int("bytes_added", len(appendText)).
 		Msg("npc_updated")
 	return nil
 }
 
-// canonicalNPCSections is the ordered list of section
-// names rendered by BuildNPCMarkdown and accepted by
-// UpdateNPC. The order is the same as the rendered file
-// so a reader can grep "## " and read top-to-bottom
-// without surprises. New sections go at the end so
-// existing reader muscle-memory is preserved.
-var canonicalNPCSections = []string{
-	"Темперамент",
-	"Отношения с ГГ",
-	"Отношения с другими NPC",
-	"Способности",
-	"Личная память/факты",
-	"Текущий статус",
-	"Критические знания",
-	"Последнее обновление",
-}
-
-// canonicalNPCSectionNames returns the human-readable list
-// for error messages.
-func canonicalNPCSectionNames() []string {
-	out := make([]string, len(canonicalNPCSections))
-	for i, s := range canonicalNPCSections {
-		out[i] = "## " + s
+// npcAllowedSections is the human-readable list for
+// error messages. The model is told these in
+// narrative.md (see the КОНТЕКСТНЫЕ ДИРЕКТИВЫ section);
+// the error string here is the fallback when a section
+// name slips through the parser.
+func npcAllowedSections() []string {
+	return []string{
+		"Темперамент", "Отношения с ГГ",
+		"Отношения с другими NPC", "Способности",
+		"Личная память/факты", "Текущий статус",
+		"Критические знания", "Никнеймы",
+		"Последнее обновление",
 	}
-	return out
-}
-
-// canonicalSectionFor normalises a user-supplied section
-// name to the canonical spelling. Accepts any case
-// ("способности", "СПОСОБНОСТИ", "Способности") and matches
-// against the canonical list. Returns "" if the name
-// doesn't match any canonical section; UpdateNPC rejects
-// unknown sections.
-func canonicalSectionFor(raw string) string {
-	cleaned := strings.TrimSpace(raw)
-	lower := strings.ToLower(cleaned)
-	for _, c := range canonicalNPCSections {
-		if strings.ToLower(c) == lower {
-			return c
-		}
-	}
-	// Allow a few common aliases the model is likely to
-	// emit ("abilities", "relations", "status", etc.).
-	aliases := map[string]string{
-		"temperament":     "Темперамент",
-		"personality":     "Темперамент",
-		"persona":         "Темперамент",
-		"relations":       "Отношения с ГГ",
-		"relationships":   "Отношения с ГГ",
-		"relation with gg": "Отношения с ГГ",
-		"abilities":       "Способности",
-		"powers":          "Способности",
-		"skills":          "Способности",
-		"memory":          "Личная память/факты",
-		"personal memory":  "Личная память/факты",
-		"facts":           "Личная память/факты",
-		"status":          "Текущий статус",
-		"current status":  "Текущий статус",
-		"knowledge":       "Критические знания",
-		"critical":        "Критические знания",
-		"update":          "Последнее обновление",
-		"last update":     "Последнее обновление",
-	}
-	if c, ok := aliases[lower]; ok {
-		return c
-	}
-	return ""
-}
-
-// indexOfCanonical returns the position of name in
-// canonicalNPCSections, or -1 if not present.
-func indexOfCanonical(name string) int {
-	for i, c := range canonicalNPCSections {
-		if c == name {
-			return i
-		}
-	}
-	return -1
 }
 
 // BuildNPCMarkdown renders a fresh NPC profile from the
-// NPCProfile struct. Sections with empty content are
-// omitted. The order is the canonicalNPCSections order; the
-// "## Последнее обновление" section is the only one that
-// always renders, even if empty (with a placeholder so the
-// reader knows where fresh facts land).
+// legacy NPCProfile struct. The canonical render path
+// for files on disk is npcprofile.Profile (YAML); this
+// function is the legacy markdown renderer kept
+// verbatim for backward compatibility with tests and
+// external callers that still hand us a tools.NPCProfile.
+// The block layout — nicknames at the top, the
+// "## Отношения с другими NPC" placeholder, and the
+// "## Последнее обновление" footer at the bottom —
+// matches the pre-YAML shape exactly so the model and
+// the operator see the same file layout.
 func BuildNPCMarkdown(p tools.NPCProfile) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# %s\n", strings.TrimSpace(p.DisplayName))
@@ -252,141 +384,85 @@ func BuildNPCMarkdown(p tools.NPCProfile) string {
 	return b.String()
 }
 
-// upsertNPCSection inserts appendText into the canonical
-// section of an NPC profile body. If the section header
-// is missing, it is appended at the position the canonical
-// list says it belongs (so the file remains in canonical
-// order after a series of out-of-order updates). The
-// "## Последнее обновление" section is special: its body
-// is REPLACED rather than appended, so a reader can always
-// see the freshest line at the bottom of the file.
-func upsertNPCSection(body, section, appendText string) (string, error) {
-	header := "## " + section
-	isLastUpdate := section == "Последнее обновление"
-	cleaned := strings.TrimRight(appendText, "\n")
-	if cleaned == "" {
-		return body, nil
-	}
-	lines := strings.Split(body, "\n")
-	headerIdx := -1
-	for i, ln := range lines {
-		if strings.TrimSpace(ln) == header {
-			headerIdx = i
-			break
-		}
-	}
-	if headerIdx < 0 {
-		// Section missing: insert it at the canonical
-		// position. Walk canonicalNPCSections: the new
-		// section lands right BEFORE the next section
-		// that already exists in the file, or at end
-		// of file if no later section is present.
-		// We look for the FIRST canonical section that
-		// comes AFTER the new one AND exists in the
-		// file; that one becomes the anchor.
-		insertAt := len(lines)
-		newIdx := indexOfCanonical(section)
-		for i := newIdx + 1; i < len(canonicalNPCSections); i++ {
-			candidateHeader := "## " + canonicalNPCSections[i]
-			for j, ln := range lines {
-				if strings.TrimSpace(ln) == candidateHeader {
-					insertAt = j
-					break
-				}
-			}
-			if insertAt != len(lines) {
-				break
-			}
-		}
-		var out []string
-		out = append(out, lines[:insertAt]...)
-		out = append(out, "", header, cleaned, "")
-		out = append(out, lines[insertAt:]...)
-		return strings.Join(out, "\n"), nil
-	}
-	// Section exists: find its end (next "## " header or EOF).
-	endIdx := len(lines)
-	for j := headerIdx + 1; j < len(lines); j++ {
-		if strings.HasPrefix(strings.TrimSpace(lines[j]), "## ") {
-			endIdx = j
-			break
-		}
-	}
-	if isLastUpdate {
-		// REPLACE the section body — only the freshest
-		// line lives here. If the model emits multi-line
-		// text we keep all of it but trim surrounding
-		// whitespace.
-		newBody := []string{header, cleaned, ""}
-		out := make([]string, 0, len(lines)+2)
-		out = append(out, lines[:headerIdx]...)
-		out = append(out, newBody...)
-		if endIdx < len(lines) {
-			out = append(out, lines[endIdx:]...)
-		}
-		return strings.Join(out, "\n"), nil
-	}
-	// Append: dedupe (in case the same fact is recorded
-	// twice) and append the new line at the end of the
-	// section.
-	seen := make(map[string]struct{}, endIdx-headerIdx)
-	for j := headerIdx + 1; j < endIdx; j++ {
-		t := strings.TrimSpace(lines[j])
-		if t != "" {
-			seen[strings.ToLower(t)] = struct{}{}
-		}
-	}
-	if _, dup := seen[strings.ToLower(cleaned)]; dup {
-		return body, nil
-	}
-	insertAt := endIdx
-	if insertAt > 0 && strings.TrimSpace(lines[insertAt-1]) == "" {
-		// Body of section ends with a blank line; insert
-		// the new line right before it to keep the
-		// existing visual gap.
-		insertAt--
-	}
-	out := make([]string, 0, len(lines)+1)
-	out = append(out, lines[:insertAt]...)
-	out = append(out, cleaned)
-	if insertAt < len(lines) {
-		out = append(out, lines[insertAt:]...)
-	}
-	return strings.Join(out, "\n"), nil
-}
-
+// appendRegistry adds a freshly-created NPC to
+// worlds/<w>/characters.yaml. The entry's slug is
+// the on-disk file name; the registry is the
+// canonical index of who exists in this world.
+// On any failure to persist the registry we still
+// return nil — the file itself was written, and
+// the next call to loadRegistry will pick up the
+// entry via the directory-scan fallback. Better
+// to have a working profile with a stale registry
+// than no profile at all.
 func (n *NPC) appendRegistry(world, display, file string, nicks []string) error {
-	rel := "worlds/" + world + "/characters.md"
-	cur, _ := n.fs.ReadRaw(rel)
-	if cur != "" && !strings.HasSuffix(cur, "\n") {
-		cur += "\n"
+	reg, err := worldregistry.Load(n.fs, world)
+	if err != nil {
+		n.log.Warn().Err(err).Str("world", world).Msg("registry load failed during append")
+		return nil
 	}
-	nickStr := strings.Join(nicks, ", ")
-	cur += "| " + display + " | characters/" + file + " | " + nickStr + " |\n"
-	return n.fs.WriteRawAtomic(rel, cur)
+	// Idempotency: if the slug is already there
+	// (operator hand-edited the file, or this
+	// is a retry of a failed Create) leave it
+	// alone and just rewrite the YAML with the
+	// latest entry set.
+	for _, e := range reg.All() {
+		if e.Slug == file {
+			break
+		}
+	}
+	if err := reg.Add(worldregistry.Entry{
+		Slug:        file,
+		DisplayName: display,
+		Nicknames:   nicks,
+	}); err != nil {
+		// Duplicate slug (already in the
+		// registry) is not a fatal error: the
+		// profile itself was just created, and
+		// a second registry write would lose
+		// nickname edits. Log and move on.
+		n.log.Info().Err(err).Str("world", world).Str("slug", file).Msg("registry add skipped")
+		return nil
+	}
+	body, err := reg.Save()
+	if err != nil {
+		n.log.Warn().Err(err).Str("world", world).Msg("registry marshal failed during append")
+		return nil
+	}
+	if err := n.fs.WriteRawAtomic("worlds/"+world+"/characters.yaml", body); err != nil {
+		n.log.Warn().Err(err).Str("world", world).Msg("registry write failed during append")
+	}
+	return nil
 }
 
-// Load returns the NPC's file contents. Returns
-// ErrNPCNotFound when the file is missing or empty so
-// callers (the GM's missedToolGuard, /me, and UpdateNPC)
-// can distinguish "no profile yet" from "profile exists
-// but is blank".
+// Load returns the NPC's profile rendered as markdown
+// (the same shape the model and the parser expect).
+// Returns ErrNPCNotFound when the file is missing or
+// empty so callers (the GM's missedToolGuard, /me,
+// and UpdateNPC) can distinguish "no profile yet" from
+// "profile exists but is blank".
+//
+// The internal storage is YAML; the markdown view is
+// regenerated on every Load via Profile.BuildMarkdown
+// so callers always see the canonical layout. The
+// model never sees the YAML keys.
 func (n *NPC) Load(world, npc string) (string, error) {
-	name, err := domain.SanitizeName(npc)
-	if err != nil {
-		return "", fmt.Errorf("npc name: %w", err)
-	}
-	body, err := n.fs.ReadRaw("worlds/" + world + "/characters/" + name + ".md")
-	if err != nil || body == "" {
+	rel, _, ok := n.findNPCFile(world, npc)
+	if !ok {
 		return "", ErrNPCNotFound
 	}
-	return body, nil
+	profile, err := n.loadProfile(rel, npc)
+	if err != nil {
+		return "", err
+	}
+	return profile.BuildMarkdown(), nil
 }
 
-// CompactNPCBody strips dated events from an NPC file, leaving
-// the persistent profile (temperament, relations, abilities,
-// nicknames) intact. The function is pure — no I/O — so
-// callers (Memory.CompactNPCs) control when to read / write.
+// CompactNPCBody is the legacy strip implementation. It
+// remains in the file because the run_maintenance tool
+// path still calls it; the new summarizer path (LLM-
+// driven) will replace it once that work lands. The
+// function is pure (no I/O) so callers control when
+// to read / write.
 func CompactNPCBody(body string) string {
 	if body == "" {
 		return body

@@ -8,13 +8,13 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"narrative/internal/adapter/storage"
-	"narrative/internal/usecase/tools"
+	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
+	"github.com/bestxp/narrative-ai-agent/internal/usecase/tools"
 )
 
 // newTestToolset is the canonical fixture for state-level tests.
 // It writes the registry (info.yaml) and the world directory
-// stub so UpdateState/parseStateMD have something to read on
+// stub so UpdateState/ParseStateMD have something to read on
 // disk.
 func newTestToolset(t *testing.T) *Toolset {
 	t.Helper()
@@ -23,7 +23,7 @@ func newTestToolset(t *testing.T) *Toolset {
 	require.NoError(t, fs.EnsureDir("worlds/naruto/characters"))
 	require.NoError(t, fs.WriteRawAtomic("info.yaml",
 		"active_character: markus\nactive_world: naruto\n"))
-	return New(fs, zerolog.Nop(), nil)
+	return New(fs, zerolog.Nop(), nil, nil, nil, nil)
 }
 
 // TestUpdateState_DedupesAppendEvents is the regression

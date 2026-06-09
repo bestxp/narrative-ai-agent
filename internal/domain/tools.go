@@ -37,7 +37,18 @@ type ToolFunctionSchema struct {
 // parsing the JSON back.
 type Schema struct {
 	Type                 string             `json:"type"`
-	Properties           map[string]Schema  `json:"properties,omitempty"`
+	// Properties is intentionally NOT marked omitempty: the
+	// strict subset of JSON Schema that OpenAI and Anthropic
+	// use for tool declarations requires the `properties`
+	// key to be present even when the value is an empty
+	// object (no arguments). Stdlib's json treats len(map)==0
+	// as "empty" for omitempty, which would silently drop
+	// the key for tools like maintain_npcs / maintain_lore
+	// that have no parameters — and then the strict schema
+	// validator on the wire would reject the request with
+	// "additionalProperties must be false" (because the
+	// implicit `{}` lacks the explicit lock-down).
+	Properties           map[string]Schema  `json:"properties"`
 	Required             []string           `json:"required,omitempty"`
 	AdditionalProperties *bool              `json:"additionalProperties,omitempty"`
 	Description          string             `json:"description,omitempty"`
@@ -159,15 +170,29 @@ func (t Tool) MarshalParameters() (json.RawMessage, error) {
 // Tools returns the canonical tool list for the GM. Keep it small —
 // every extra tool burns context window and confuses smaller models.
 func Tools() []Tool {
+	return ProdTools()
+}
+
+// ProdTools returns the **8 tools the bot wires on every GM turn**.
+// This is the canonical list; both driver implementations
+// (internal/adapter/llm/openai and internal/adapter/llm/anthropic)
+// and both probes (cmd/test-openapi, cmd/test-anthropic) read from
+// here so production and probes exercise the same schemas.
+//
+// Hardcoded: with h4-by-default config (8 tools, tool_choice=auto,
+// response_format=json_object on openai / system-prompt on anthropic,
+// strict_tools=true) the list is fixed — no configuration surface
+// remains to enable/disable individual tools.
+func ProdTools() []Tool {
 	return []Tool{
 		endDayTool(),
-		maintenanceTool(),
 		updateStateTool(),
+		createNpcTool(),
+		updateNpcTool(),
+		updateCharacterTool(),
+		maintainNpcsTool(),
+		maintainLoreTool(),
 		rotatePlanTool(),
-		npcCreateTool(),
-		npcUpdateTool(),
-		worldLeaveTool(),
-		characterUpdateTool(),
 	}
 }
 
@@ -185,16 +210,45 @@ func endDayTool() Tool {
 	}
 }
 
-func maintenanceTool() Tool {
+func maintainNpcsTool() Tool {
 	return Tool{
 		Type: "function",
 		Function: ToolFunctionSchema{
-			Name:        "run_maintenance",
-			Description: "Сжать NPC-файлы > 40 строк и закоммитить.",
-			Parameters: Object(
-				Optional("force", Boolean("Прогнать выжимку NPC даже если файлы < 40 строк")),
-			),
+			Name:        "maintain_npcs",
+			Description: "Уплотнить NPC-файлы где personal_memory > 40 фактов. LLM-сжатие: personal_memory сжимается до 20-30 ключевых фактов; relations_gg / abilities чистятся от воды. Базовые секции (temperament, last_update) НЕ трогаем.",
+			Parameters:  emptyObjectSchema(),
 		},
+	}
+}
+
+func maintainLoreTool() Tool {
+	return Tool{
+		Type: "function",
+		Function: ToolFunctionSchema{
+			Name:        "maintain_lore",
+			Description: "Сжать lore.md при > 500 строк. Хронологический порядок + отклонения от канона + смерть NPC + первые появления NPC — сохраняем; повседневные действия / промежуточные эмоции / случайные реплики — удаляем. canon.md НЕ трогаем (внешний канон).",
+			Parameters:  emptyObjectSchema(),
+		},
+	}
+}
+
+// emptyObjectSchema returns the canonical "empty object
+// parameters" shape for tools that take no arguments. The
+// shape {type: object, properties: {}, additionalProperties:
+// false} satisfies the OpenAI/Anthropic strict schema
+// requirement (closed object, no extra fields) and round-
+// trips through the tool list serialiser. We return a
+// Schema value rather than calling Object() with no
+// properties because Object() does not set
+// additionalProperties when there is nothing to lock down —
+// strictly that's still valid JSON Schema, but the strict
+// mode on OpenAI rejects it on the wire. We always emit the
+// explicit false.
+func emptyObjectSchema() Schema {
+	return Schema{
+		Type: "object",
+		Properties: map[string]Schema{},
+		AdditionalProperties: BoolPtr(false),
 	}
 }
 
@@ -227,7 +281,7 @@ func rotatePlanTool() Tool {
 	}
 }
 
-func npcCreateTool() Tool {
+func createNpcTool() Tool {
 	return Tool{
 		Type: "function",
 		Function: ToolFunctionSchema{
@@ -263,7 +317,7 @@ func worldLeaveTool() Tool {
 	}
 }
 
-func characterUpdateTool() Tool {
+func updateCharacterTool() Tool {
 	return Tool{
 		Type: "function",
 		Function: ToolFunctionSchema{
@@ -278,7 +332,7 @@ func characterUpdateTool() Tool {
 	}
 }
 
-func npcUpdateTool() Tool {
+func updateNpcTool() Tool {
 	canonical := []string{
 		"Темперамент", "Отношения с ГГ", "Отношения с другими NPC",
 		"Способности", "Личная память/факты", "Текущий статус",

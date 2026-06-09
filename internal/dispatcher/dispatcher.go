@@ -13,13 +13,13 @@ import (
 
 	"github.com/rs/zerolog"
 
-	"narrative/internal/adapter/gitops"
-	"narrative/internal/adapter/storage"
-	"narrative/internal/config"
-	"narrative/internal/domain"
-	"narrative/internal/messaging"
-	"narrative/internal/slowlog"
-	"narrative/internal/usecase"
+	"github.com/bestxp/narrative-ai-agent/internal/adapter/gitops"
+	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
+	"github.com/bestxp/narrative-ai-agent/internal/config"
+	"github.com/bestxp/narrative-ai-agent/internal/domain"
+	"github.com/bestxp/narrative-ai-agent/internal/messaging"
+	"github.com/bestxp/narrative-ai-agent/internal/slowlog"
+	"github.com/bestxp/narrative-ai-agent/internal/usecase"
 )
 
 // Dispatcher turns an IncomingMessage into a reply string. It is the
@@ -331,11 +331,25 @@ func (d *Dispatcher) cmdMaintenance() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	touched, err := d.tools.CompactNPCs(sc.World)
+	touched, err := d.tools.MaintainNPCs(sc.World)
 	if err != nil {
 		return "", err
 	}
 	d.commit(fmt.Sprintf("maintenance: %s", sc.World))
+	// Lore is compacted in the same /maintenance call
+	// so an operator can run the bot's daily cleanup
+	// with one command. Both paths are LLM-driven and
+	// best-effort — a failed summarizer call is logged
+	// and skipped, not surfaced to the operator as an
+	// error. canon.md is NEVER touched here. We use
+	// context.Background (not a request-scoped ctx)
+	// because /maintenance is operator-triggered and
+	// may legitimately take a minute or two for a
+	// large lore.md.
+	_, loreErr := d.tools.MaintainLore(context.Background(), sc.World)
+	if loreErr != nil {
+		d.log.Warn().Err(loreErr).Msg("lore maintenance failed")
+	}
 	if len(touched) > 0 {
 		return "Обслуживание выполнено. Выжимка NPC: " + strings.Join(touched, ", "), nil
 	}
@@ -355,7 +369,7 @@ func (d *Dispatcher) cmdEndDay(msg messaging.IncomingMessage) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := d.tools.ArchiveDay(sc.World, day, summary); err != nil {
+	if err := d.tools.ArchiveDay(context.Background(), sc.World, day, summary); err != nil {
 		return "", err
 	}
 	d.commit(fmt.Sprintf("День %d", day))
@@ -424,10 +438,25 @@ func (d *Dispatcher) cmdReload() (string, error) {
 			return "⚠️ reload: " + err.Error(), nil
 		}
 	}
+	// Этап 0d: /reload forces the operator's hand-
+	// edited state.md / lore.md to be picked up.
+	// We drop the cached worldStateSnapshot so the
+	// next turn rebuilds index:1 from disk, AND we
+	// walk every per-chat conversation and clear it
+	// — the player re-starts from a clean dialogue
+	// while the LLM still sees the fresh world
+	// state. This is more aggressive than
+	// compaction (which keeps the last 2-3 turns)
+	// because /reload means "I edited the world,
+	// throw away the in-memory chat history".
+	if d.gm != nil {
+		d.gm.InvalidateWorldState("reload")
+		d.gm.ResetAllConversations()
+	}
 	if d.slow != nil {
 		_ = d.slow.Write("tool.reload", "", map[string]any{"source": "files"})
 	}
-	return "✅ reload ok. backed by: files. Следующий ход подхватит свежие данные.", nil
+	return "✅ reload ok. backed by: files. Следующий ход подхватит свежие данные, чат сброшен.", nil
 }
 
 // Commands returns the canonical command set with short

@@ -3,6 +3,7 @@ package telegram
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -169,6 +170,40 @@ func TestSplitForTelegram_HardCutOnGiantParagraph(t *testing.T) {
 		assert.LessOrEqual(t, len(c), maxTelegramMessageLen, "chunk %d exceeds cap", i)
 	}
 	assert.Equal(t, big, strings.Join(out, ""))
+}
+
+// TestSplitForTelegram_RussianAtCut is the regression
+// guard for the "text must be encoded in UTF-8" Telegram
+// error. A 2-byte Cyrillic letter split between its two
+// bytes is invalid UTF-8. The splitter must align cuts
+// to rune boundaries (not byte boundaries) so the chunk
+// is always valid.
+func TestSplitForTelegram_RussianAtCut(t *testing.T) {
+	// Build a string of length just over the cap
+	// where the cut point at maxTelegramMessageLen
+	// would land inside a Cyrillic letter if measured
+	// in bytes. Russian "К" is 0xD0 0x9A (2 bytes);
+	// a string of length cap where every char is a
+	// Russian letter has cap*2 bytes — the byte
+	// cut at offset cap would land at byte 4096,
+	// which is the middle of the 4097th byte (the
+	// second byte of the 2049th Cyrillic letter).
+	var b strings.Builder
+	for b.Len() < maxTelegramMessageLen*2+100 {
+		b.WriteString("Кагуя и Хината смотрят на Саске. ")
+	}
+	in := b.String()
+	out := splitForTelegram(in)
+	require.GreaterOrEqual(t, len(out), 2)
+	for i, c := range out {
+		// Each chunk must be valid UTF-8 (the
+		// invariant Telegram cares about).
+		assert.True(t, utf8.ValidString(c), "chunk %d is not valid UTF-8", i)
+		// And the round-trip is lossless.
+		assert.LessOrEqual(t, len([]rune(c)), maxTelegramMessageLen,
+			"chunk %d exceeds rune cap", i)
+	}
+	assert.Equal(t, in, strings.Join(out, ""))
 }
 
 type stringErr string

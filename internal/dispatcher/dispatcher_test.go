@@ -11,11 +11,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"narrative/internal/adapter/storage"
-	"narrative/internal/config"
-	"narrative/internal/messaging"
-	"narrative/internal/slowlog"
-	"narrative/internal/usecase"
+	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
+	"github.com/bestxp/narrative-ai-agent/internal/config"
+	"github.com/bestxp/narrative-ai-agent/internal/messaging"
+	"github.com/bestxp/narrative-ai-agent/internal/slowlog"
+	"github.com/bestxp/narrative-ai-agent/internal/usecase"
 )
 
 func initRepo(t *testing.T) string {
@@ -61,7 +61,7 @@ func setup(t *testing.T) (*Dispatcher, *storage.FileStore) {
 	require.NoError(t, os.MkdirAll(dataDir, 0o755))
 	fs, err := storage.NewFileStore(dataDir)
 	require.NoError(t, err)
-	tools := usecase.NewFileToolset(fs, zerolog.Nop(), slowlog.Discard())
+	tools := usecase.NewFileToolset(fs, zerolog.Nop(), slowlog.Discard(), nil, nil, nil)
 	d := New(newCfg(t, workdir), fs, nil, tools, slowlog.Discard(), zerolog.Nop())
 	return d, fs
 }

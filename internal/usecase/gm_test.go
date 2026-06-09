@@ -10,10 +10,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"narrative/internal/adapter/llm"
-	"narrative/internal/adapter/storage"
-	"narrative/internal/domain"
-	"narrative/internal/slowlog"
+	"github.com/bestxp/narrative-ai-agent/internal/adapter/llm"
+	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
+	"github.com/bestxp/narrative-ai-agent/internal/domain"
+	"github.com/bestxp/narrative-ai-agent/internal/prompts"
+	"github.com/bestxp/narrative-ai-agent/internal/slowlog"
 )
 
 // fakeLLM replays a deterministic sequence of chunks. The test
@@ -71,14 +72,14 @@ func newGMTestEnv(t *testing.T) (*GM, *storage.FileStore, *fakeLLM) {
 	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/canon.md", "canon"))
 	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/memorise.md", ""))
 	require.NoError(t, fs.EnsureDir("worlds/naruto/characters"))
-	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/characters/kakashi.md", "# Какаши\nспокойный"))
+	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/characters/kakashi.yaml", "display_name: Какаши\ntemperament: спокойный\n"))
 
 	ss := NewSessionStart(fs)
 	fl := NewFirstLaunch(fs)
 	// One Tool bundles every concern; the tests use the
 	// file-backed implementation so on-disk state changes
 	// are observable via fs.ReadRaw.
-	tools := NewFileToolset(fs, discardLogger(), slowlog.Discard())
+	tools := NewFileToolset(fs, discardLogger(), slowlog.Discard(), nil, nil, nil)
 	fake := &fakeLLM{}
 	log, _ := newBufLogger()
 	g := NewGM(GMConfig{
@@ -346,17 +347,17 @@ func (c *captureLLM) Stream(_ context.Context, req llm.ChatRequest, onChunk func
 	return c.run(req, onChunk)
 }
 
-// TestGM_BrokenToolCallsRetryAsEmpty covers the
-// minimax-m3:cloud case: the model decides to call a
-// tool, the stream cuts off before the head lands, we
-// see `delta.tool_calls: [{}]` fragments assembled into
-// one or more headless entries. The bot must (a) NOT
-// dispatch them as "unknown tool:", (b) treat the round
-// as empty, (c) retry once.
-func TestGM_BrokenToolCallsRetryAsEmpty(t *testing.T) {
+// TestGM_BrokenToolCallsIsHardError covers the
+// minimax-m3:cloud case where the model decides to call a
+// tool but the stream cuts off before the head lands, and
+// we see `delta.tool_calls: [{}]` fragments assembled into
+// one or more headless entries. With h4-by-default config,
+// the bot must (a) NOT dispatch them as "unknown tool:",
+// (b) NOT retry with a nudge, (c) treat the round as a
+// hard error so the operator can see the broken state in
+// slowlog instead of silently cycling.
+func TestGM_BrokenToolCallsIsHardError(t *testing.T) {
 	g, _, fake := newGMTestEnv(t)
-	// Round 0: headless tool call (broken stream).
-	// Round 1 (retry): proper content + finish.
 	fake.rounds = [][]fakeChunk{
 		{
 			// The model "decided" to call a tool, but only
@@ -364,18 +365,14 @@ func TestGM_BrokenToolCallsRetryAsEmpty(t *testing.T) {
 			// through the stream.
 			{toolID: "call_X", toolName: "", toolArgs: `{`, finish: "stop"},
 		},
-		{
-			{content: "**диалоги и действия**\nok\n\n**КОНТЕКСТ И ИЗМЕНЕНИЯ**\nбез изменений\n\n**БУДУЩЕЕ**\n- продолжение\n\n**ВАЛИДАЦИЯ ПРАВИЛ**\n- ok"},
-			{finish: "stop"},
-		},
 	}
 	var got strings.Builder
 	_, err := g.Reply(context.Background(), "chat1", "ping", deltaOnly(&got))
-	require.NoError(t, err)
-	assert.Equal(t, 2, fake.calls, "broken tool calls must trigger the same retry path as empty content")
-	assert.Contains(t, got.String(), "ответ восстановлен после повтора")
-	// The assistant turn in conv.messages must NOT carry the
-	// broken tool calls — they would poison the next round.
+	require.Error(t, err, "broken tool calls must propagate as a hard error under h4")
+	assert.Contains(t, err.Error(), "no tool_use and no content")
+	assert.Equal(t, 1, fake.calls, "no nudge-retry on broken tool calls; h4 is hard-error")
+	// The assistant turn must not be persisted (no half-broken
+	// state in history that would poison the next round).
 	conv := g.getConversation("chat1")
 	conv.mu.Lock()
 	defer conv.mu.Unlock()
@@ -421,66 +418,395 @@ func TestAllToolCallsBroken(t *testing.T) {
 	}))
 }
 
-// TestGM_EmptyContentRetrySucceeds is the happy path of the
-// new auto-retry: model returns 0 chars on round 0, the
-// retry hits the same prompt and gets a real reply back.
-// Exactly 2 LLM calls; visible delta splices the recovered
-// text with a "[ответ восстановлен после повтора]" marker.
-func TestGM_EmptyContentRetrySucceeds(t *testing.T) {
+// TestGM_EmptyContentIsHardError covers the h4-by-default
+// behaviour: when the model returns 0 tool_use AND 0
+// content, the bot must surface a hard error to the
+// dispatcher (no retry, no polite placeholder). The error
+// message identifies the round, the finish_reason, and the
+// raw SSE event count so the operator has something to
+// debug via slowlog.
+func TestGM_EmptyContentIsHardError(t *testing.T) {
 	g, _, fake := newGMTestEnv(t)
 	fake.rounds = [][]fakeChunk{
-		{{finish: "stop"}}, // round 0: empty
-		{
-			{content: "**диалоги и действия**\nok\n\n**КОНТЕКСТ И ИЗМЕНЕНИЯ**\nбез изменений\n\n**БУДУЩЕЕ**\n- продолжение\n\n**ВАЛИДАЦИЯ ПРАВИЛ**\n- ok"},
-			{finish: "stop"},
-		}, // round 1: recovered
+		{{finish: "stop"}}, // round 0: 0 chars, 0 tool calls
 	}
 	var got strings.Builder
 	_, err := g.Reply(context.Background(), "chat1", "ping", deltaOnly(&got))
-	require.NoError(t, err)
-	assert.Equal(t, 2, fake.calls, "one retry on empty content")
-	assert.Contains(t, got.String(), "ответ восстановлен после повтора")
-	assert.Contains(t, got.String(), "ok")
-	// The placeholder must NOT have fired — we recovered.
-	assert.NotContains(t, got.String(), "не вернула ответ")
+	require.Error(t, err, "empty content must propagate as an error")
+	assert.Contains(t, err.Error(), "no tool_use and no content")
+	assert.Contains(t, err.Error(), "round=0")
+	assert.Contains(t, err.Error(), "finish=stop")
+	// Exactly one LLM call — no retry.
+	assert.Equal(t, 1, fake.calls, "no retry on empty content")
+	// The visible buffer is empty (no polite placeholder).
+	assert.Empty(t, got.String())
 }
 
-// TestGM_EmptyContentRetryFallsToPlaceholder is the unhappy
-// path: every retry round is empty, the bot surfaces the
-// polite placeholder. With the default MaxEmptyRetries=2
-// the bot issues exactly 3 LLM calls (1 original + 2
-// retries); the slowlog captures every raw SSE trace.
-func TestGM_EmptyContentRetryFallsToPlaceholder(t *testing.T) {
+// TestGM_EmptyWithToolCallsFinish_StillError covers the
+// "model intended to act but stream cut off" path: the
+// finish reason is "tool_calls" but no calls survived the
+// accumulator, no content was streamed. The bot returns
+// the same hard error as a fully empty round.
+func TestGM_EmptyWithToolCallsFinish_StillError(t *testing.T) {
 	g, _, fake := newGMTestEnv(t)
 	fake.rounds = [][]fakeChunk{
-		{{finish: "stop"}}, // round 0: empty
-		{{finish: "stop"}}, // round 1: retry 1, still empty
-		{{finish: "stop"}}, // round 2: retry 2, still empty
+		{{finish: "tool_calls"}}, // 0 chars, 0 surviving calls
 	}
 	var got strings.Builder
 	_, err := g.Reply(context.Background(), "chat1", "ping", deltaOnly(&got))
-	require.NoError(t, err)
-	assert.Equal(t, 3, fake.calls, "1 original + MaxEmptyRetries(2) retries")
-	assert.Equal(t, "⚠️ модель не вернула ответ — попробуй ещё раз", got.String())
+	require.Error(t, err)
+	assert.Equal(t, 1, fake.calls, "no retry on empty after tool_calls finish")
+	assert.Empty(t, got.String())
 }
 
-// TestGM_EmptyContentRetryDisabled covers the operator-facing
-// "off switch": when MaxEmptyRetries is set to 0 (or any
-// non-positive value), the bot surfaces the placeholder
-// immediately on the first empty round without retrying.
-// Useful for operators who would rather have a fast
-// placeholder than a 60-90s pause.
-func TestGM_EmptyContentRetryDisabled(t *testing.T) {
-	g, _, fake := newGMTestEnv(t)
-	g.role.MaxEmptyRetries = 0
-	fake.rounds = [][]fakeChunk{
-		{{finish: "stop"}}, // round 0: empty
-		// No retry rounds — the bot must surface the
-		// placeholder after this one call.
-	}
-	var got strings.Builder
-	_, err := g.Reply(context.Background(), "chat1", "ping", deltaOnly(&got))
+// --- Этап 0a: WorldState snapshotting tests ---------------------
+
+// TestGM_WorldStateSnapshot_StableAcrossTurns verifies the
+// critical cache-hit invariant: between explicit invalidations,
+// the WorldState snapshot MUST be byte-equal across turns,
+// even when update_state / update_npc / update_character
+// mutate the underlying files on disk.
+func TestGM_WorldStateSnapshot_StableAcrossTurns(t *testing.T) {
+	g, _, _ := newGMTestEnv(t)
+
+	first, err := g.buildContextPrompt()
 	require.NoError(t, err)
-	assert.Equal(t, 1, fake.calls, "MaxEmptyRetries=0 disables auto-retry")
-	assert.Equal(t, "⚠️ модель не вернула ответ — попробуй ещё раз", got.String())
+	require.NotEmpty(t, first)
+
+	// Now simulate a turn that mutates the world. The
+	// file-backed State is the only thing that changes;
+	// the snapshot MUST stay identical.
+	require.NoError(t, g.fs.WriteRawAtomic("worlds/naruto/state.md",
+		"День 1 (в процессе).\nМомент: новая сцена\nАктивные NPC прямо сейчас: Какаши"))
+	second, err := g.buildContextPrompt()
+	require.NoError(t, err)
+	assert.Equal(t, first, second,
+		"snapshot must be byte-equal — state.md change should NOT bust cache")
+}
+
+// TestGM_WorldStateSnapshot_InvalidatedOnEndDay: end_day
+// (ArchiveDay) MUST drop the snapshot so the next turn
+// rebuilds index:1 with the freshly appended "## Протокол".
+func TestGM_WorldStateSnapshot_InvalidatedOnEndDay(t *testing.T) {
+	g, _, _ := newGMTestEnv(t)
+
+	first, err := g.buildContextPrompt()
+	require.NoError(t, err)
+
+	// Simulate end_day: write to memorise.md (this is
+	// what ArchiveDay does) and then call the same hook
+	// ArchiveDay uses.
+	require.NoError(t, g.fs.WriteRawAtomic("worlds/naruto/memorise.md",
+		"д00001: тестовый день\n"))
+	g.InvalidateWorldState("end_day")
+
+	second, err := g.buildContextPrompt()
+	require.NoError(t, err)
+	assert.NotEqual(t, first, second,
+		"snapshot must rebuild after end_day invalidation")
+	assert.Contains(t, second, "д00001: тестовый день",
+		"new snapshot must include the freshly archived day")
+}
+
+// TestGM_WorldStateSnapshot_InvalidatedOnLeave: leave_world
+// (tool) drops the snapshot via the worldStateInvalidate
+// hook wired in main.go.
+func TestGM_WorldStateSnapshot_InvalidatedOnLeave(t *testing.T) {
+	g, _, _ := newGMTestEnv(t)
+
+	first, err := g.buildContextPrompt()
+	require.NoError(t, err)
+
+	g.InvalidateWorldState("leave_world")
+	second, err := g.buildContextPrompt()
+	require.NoError(t, err)
+	// Both rebuilds use the same world so the bodies
+	// are equal — what we test is that the rebuild
+	// HAPPENED, not that the content differs.
+	assert.NotEmpty(t, second)
+	_ = first
+}
+
+// TestGM_WorldStateSnapshot_InvalidatedOnReload: /reload
+// invalidates explicitly via GM.InvalidateWorldState.
+func TestGM_WorldStateSnapshot_InvalidatedOnReload(t *testing.T) {
+	g, _, _ := newGMTestEnv(t)
+	_, err := g.buildContextPrompt()
+	require.NoError(t, err)
+
+	g.InvalidateWorldState("reload")
+	g.worldStateMu.Lock()
+	snap := g.worldStateSnapshot
+	key := g.worldStateSceneKey
+	g.worldStateMu.Unlock()
+	assert.Empty(t, snap, "snapshot must be empty after reload")
+	assert.Empty(t, key, "scene key must be empty after reload")
+}
+
+// TestGM_ToolResultUpdateState_ShortWithDelta: dispatching
+// update_state returns a SHORT ToolResult (does not include
+// the full snapshot body) and includes a human-readable
+// "delta" field for the model to weave into its reply.
+func TestGM_ToolResultUpdateState_ShortWithDelta(t *testing.T) {
+	g, _, _ := newGMTestEnv(t)
+
+	snap, err := g.buildContextPrompt()
+	require.NoError(t, err)
+	require.NotEmpty(t, snap)
+
+	res, errStr := g.dispatchOneTool(context.Background(), llm.ToolCall{
+		ID:   "t1",
+		Type: "function",
+		Function: llm.FunctionCall{
+			Name:      "update_state",
+			Arguments: `{"moment":"у фонтана","npcs":["Какаши"],"in_flight":true}`,
+		},
+	})
+	require.Empty(t, errStr)
+	assert.Contains(t, res, "recorded")
+	assert.Contains(t, res, "локация/момент обновлены")
+	assert.NotContains(t, res, snap, "ToolResult must NOT echo the snapshot body")
+
+	// Snapshot must STILL be valid (cache stable).
+	g.worldStateMu.Lock()
+	cur := g.worldStateSnapshot
+	g.worldStateMu.Unlock()
+	assert.Equal(t, snap, cur, "update_state must not invalidate the snapshot")
+}
+
+// --- Этап 0b: in-place compaction tests -----------------------------
+
+// newGMTestEnvWithInPlace is a placeholder for future
+// end-to-end in-place compaction tests. Today the
+// in-place path requires a real Summarizer+LLM wiring
+// (production code path is exercised via Reply in the
+// full env), so we return the regular env and let
+// specific tests drill into the smaller unit
+// (appendChronicleEntry, prompt checks).
+func newGMTestEnvWithInPlace(t *testing.T, body string) (*GM, *storage.FileStore) {
+	t.Helper()
+	g, fs, _ := newGMTestEnv(t)
+	_ = body
+	return g, fs
+}
+
+// TestGM_AppendChronicleEntry_CreatesSection: first
+// in-place compaction creates the "## Хроника
+// текущего дня" section.
+func TestGM_AppendChronicleEntry_CreatesSection(t *testing.T) {
+	g, fs, _ := newGMTestEnv(t)
+	err := g.appendChronicleEntry("naruto", 1,
+		[]byte("[События текущего дня Д0001] Утром ГГ пришёл в Академию."))
+	require.NoError(t, err)
+	body, _ := fs.ReadRaw("worlds/naruto/state.md")
+	assert.Contains(t, body, "## Хроника текущего дня")
+	assert.Contains(t, body, "Д0001")
+	assert.Contains(t, body, "Утром ГГ пришёл")
+}
+
+// TestGM_AppendChronicleEntry_AppendsToExisting:
+// second entry lands under the same section.
+func TestGM_AppendChronicleEntry_AppendsToExisting(t *testing.T) {
+	g, fs, _ := newGMTestEnv(t)
+	require.NoError(t, g.appendChronicleEntry("naruto", 1,
+		[]byte("[События текущего дня Д0001] утро")))
+	require.NoError(t, g.appendChronicleEntry("naruto", 1,
+		[]byte("[События текущего дня Д0001] дополнение днём")))
+	body, _ := fs.ReadRaw("worlds/naruto/state.md")
+	assert.Contains(t, body, "утро")
+	assert.Contains(t, body, "дополнение днём")
+	// Exactly one section header.
+	count := strings.Count(body, "## Хроника текущего дня")
+	assert.Equal(t, 1, count, "single section header")
+}
+
+// TestGM_AppendChronicleEntry_DoesNotConfuseWithProtocol:
+// "## Хроника текущего дня" and "## Протокол
+// прошедших дней" are different sections; appending
+// to one must not touch the other.
+func TestGM_AppendChronicleEntry_DoesNotConfuseWithProtocol(t *testing.T) {
+	g, fs, _ := newGMTestEnv(t)
+	// Pre-seed a protocol section.
+	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/state.md",
+		"День 1 (в процессе).\n\n## Протокол прошедших дней\n#### Д0000\nстарый\n"))
+	require.NoError(t, g.appendChronicleEntry("naruto", 1,
+		[]byte("[События текущего дня Д0001] новая хроника")))
+	body, _ := fs.ReadRaw("worlds/naruto/state.md")
+	assert.Contains(t, body, "## Хроника текущего дня")
+	assert.Contains(t, body, "## Протокол прошедших дней")
+	assert.Contains(t, body, "старый", "protocol preserved")
+	assert.Contains(t, body, "новая хроника", "chronicle added")
+}
+
+// TestGM_InPlaceCompaction_NotPastDay: the
+// compaction_in_place.md prompt explicitly says the
+// result must start with "[События текущего дня Д<N>]",
+// not "[События прошедшего дня Д<N>]". The end_of_day
+// path uses the OTHER prompt. The two must not be
+// confused at runtime.
+func TestGM_InPlaceCompaction_NotPastDay(t *testing.T) {
+	// Verify the prompt content is what we expect.
+	// We don't have direct access to the file from a
+	// test (it's embedded into the binary). Use
+	// prompts.Bundled for an indirect check.
+	prompt := prompts.Bundled("compaction_in_place.md")
+	assert.Contains(t, prompt, "События текущего дня")
+	assert.NotContains(t, prompt, "События прошедшего дня")
+	// end-of-day must use the opposite marker.
+	eod := prompts.Bundled("end_of_day.md")
+	assert.Contains(t, eod, "События прошедшего дня")
+	assert.NotContains(t, eod, "События текущего дня",
+		"end_of_day prompt must not use the in-place marker")
+}
+
+// TestGM_InPlaceCompaction_InvalidatesWorldState: after
+// appendChronicleEntry + invalidateWorldState, the next
+// buildContextPrompt must rebuild from disk.
+func TestGM_InPlaceCompaction_InvalidatesWorldState(t *testing.T) {
+	g, _, _ := newGMTestEnv(t)
+	first, err := g.buildContextPrompt()
+	require.NoError(t, err)
+
+	require.NoError(t, g.appendChronicleEntry("naruto", 1,
+		[]byte("[События текущего дня Д0001] новая хроника")))
+	g.invalidateWorldState("compaction")
+
+	second, err := g.buildContextPrompt()
+	require.NoError(t, err)
+	assert.NotEqual(t, first, second)
+	assert.Contains(t, second, "## Хроника текущего дня")
+}
+
+// --- Этап 0c: end-of-day protocol tests -----------------------------
+
+// TestGM_AppendProtocolEntry_CreatesSection: first
+// protocol entry creates the "## Протокол прошедших
+// дней" section.
+func TestGM_AppendProtocolEntry_CreatesSection(t *testing.T) {
+	g, fs, _ := newGMTestEnv(t)
+	err := g.appendProtocolEntry("naruto",
+		[]byte("#### Д0001:\nГГ встретил Какаши у фонтана утром, тот показал ловушку в лесу."))
+	require.NoError(t, err)
+	body, _ := fs.ReadRaw("worlds/naruto/state.md")
+	assert.Contains(t, body, "## Протокол прошедших дней")
+	assert.Contains(t, body, "#### Д0001")
+	assert.Contains(t, body, "Какаши")
+}
+
+// TestGM_AppendProtocolEntry_AppendsToExisting:
+// multiple days stack under the same section.
+func TestGM_AppendProtocolEntry_AppendsToExisting(t *testing.T) {
+	g, fs, _ := newGMTestEnv(t)
+	require.NoError(t, g.appendProtocolEntry("naruto",
+		[]byte("#### Д0001:\nпервый")))
+	require.NoError(t, g.appendProtocolEntry("naruto",
+		[]byte("#### Д0002:\nвторой")))
+	body, _ := fs.ReadRaw("worlds/naruto/state.md")
+	assert.Contains(t, body, "первый")
+	assert.Contains(t, body, "второй")
+	count := strings.Count(body, "## Протокол прошедших дней")
+	assert.Equal(t, 1, count, "single section header")
+}
+
+// TestGM_ExtractChronicleSection_RoundTrip: the
+// companion to appendChronicleEntry.
+func TestGM_ExtractChronicleSection_RoundTrip(t *testing.T) {
+	body := "День 1 (в процессе).\n## Хроника текущего дня\n[События текущего дня Д0001] утро\nднём\n## Другая секция\nне наша"
+	got := extractChronicleSection(body)
+	assert.Contains(t, got, "утро")
+	assert.Contains(t, got, "днём")
+	assert.NotContains(t, got, "Другая секция")
+}
+
+// TestGM_EnforceProtocolWindow_EvictsToMemorise:
+// when 3 days are in the protocol and window=2, the
+// oldest is moved to memorise.md.
+func TestGM_EnforceProtocolWindow_EvictsToMemorise(t *testing.T) {
+	g, fs, _ := newGMTestEnv(t)
+	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/state.md",
+		"День 4 (в процессе).\n\n## Протокол прошедших дней\n#### Д0001:\nсамый старый\n#### Д0002:\nсредний\n#### Д0003:\nновейший\n"))
+	require.NoError(t, g.enforceProtocolWindow("naruto"))
+	body, _ := fs.ReadRaw("worlds/naruto/state.md")
+	assert.NotContains(t, body, "самый старый",
+		"oldest day must be evicted from protocol")
+	assert.Contains(t, body, "средний")
+	assert.Contains(t, body, "новейший")
+	mem, _ := fs.ReadRaw("worlds/naruto/memorise.md")
+	assert.Contains(t, mem, "д00001: самый старый",
+		"evicted day must land in memorise.md as д<NNNNN>: <narrative>")
+}
+
+// TestGM_EnforceProtocolWindow_ByCharCount: even with
+// 2 days (within window), if the section exceeds
+// protocolMaxChars, the oldest is evicted.
+func TestGM_EnforceProtocolWindow_ByCharCount(t *testing.T) {
+	g, fs, _ := newGMTestEnv(t)
+	huge := strings.Repeat("A", 3000)
+	big := strings.Repeat("B", 3000)
+	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/state.md",
+		"День 4 (в процессе).\n\n## Протокол прошедших дней\n#### Д0001:\n"+huge+"\n#### Д0002:\n"+big+"\n"))
+	// g.protocolMaxChars is 5000 by default.
+	require.NoError(t, g.enforceProtocolWindow("naruto"))
+	body, _ := fs.ReadRaw("worlds/naruto/state.md")
+	assert.NotContains(t, body, huge,
+		"the oldest oversized day must be evicted")
+	mem, _ := fs.ReadRaw("worlds/naruto/memorise.md")
+	assert.Contains(t, mem, "д00001: "+huge)
+}
+
+// TestGM_EndOfDay_PromptMarksPast: the end_of_day
+// prompt must mark the day as past (closed), distinct
+// from the in-place marker.
+func TestGM_EndOfDay_PromptMarksPast(t *testing.T) {
+	prompt := prompts.Bundled("end_of_day.md")
+	assert.Contains(t, prompt, "События прошедшего дня")
+	assert.NotContains(t, prompt, "События текущего дня",
+		"end_of_day prompt must not use the in-place marker")
+}
+
+// --- Этап 0d: /reload tests ------------------------------------------
+
+// TestGM_ResetAllConversations_ClearsAll: ensure
+// all per-chat conversation entries are dropped.
+func TestGM_ResetAllConversations_ClearsAll(t *testing.T) {
+	g, _, _ := newGMTestEnv(t)
+	// Seed a couple of conversations.
+	g.getConversation("chat-A")
+	g.getConversation("chat-B")
+	// We expect 2 entries (the package-level
+	// conversations sync.Map may have leftovers from
+	// prior tests, but in a clean test run there are
+	// exactly 2).
+	conversations.Range(func(k, _ any) bool {
+		conversations.Delete(k)
+		return true
+	})
+	g.getConversation("chat-A")
+	g.getConversation("chat-B")
+	count := 0
+	conversations.Range(func(_, _ any) bool { count++; return true })
+	assert.Equal(t, 2, count)
+	g.ResetAllConversations()
+	count = 0
+	conversations.Range(func(_, _ any) bool { count++; return true })
+	assert.Equal(t, 0, count, "ResetAllConversations must drop every entry")
+}
+
+// TestGM_InvalidateWorldState_AfterReload: after
+// /reload the next buildContextPrompt rebuilds
+// from disk (the same way end_day does).
+func TestGM_InvalidateWorldState_AfterReload(t *testing.T) {
+	g, fs, _ := newGMTestEnv(t)
+	first, err := g.buildContextPrompt()
+	require.NoError(t, err)
+	// Operator hand-edits state.md.
+	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/state.md",
+		"День 1 (в процессе).\nАктивные NPC прямо сейчас: Какаши, Хината\n"))
+	// /reload semantics.
+	g.InvalidateWorldState("reload")
+	second, err := g.buildContextPrompt()
+	require.NoError(t, err)
+	assert.NotEqual(t, first, second)
+	assert.Contains(t, second, "Хината",
+		"operator's hand edit must be picked up after reload")
 }

@@ -6,13 +6,14 @@
 package files
 
 import (
+	"context"
 	"time"
 
 	"github.com/rs/zerolog"
 
-	"narrative/internal/adapter/storage"
-	"narrative/internal/slowlog"
-	"narrative/internal/usecase/tools"
+	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
+	"github.com/bestxp/narrative-ai-agent/internal/slowlog"
+	"github.com/bestxp/narrative-ai-agent/internal/usecase/tools"
 )
 
 // Toolset is the file-backed Tool implementation. It
@@ -39,14 +40,36 @@ type Toolset struct {
 // concern when needed (so a maintenance event and an NPC
 // event get different "component" fields in zerolog). slow
 // is the optional audit log; pass slowlog.Discard() in tests.
-func New(fs *storage.FileStore, log zerolog.Logger, slow *slowlog.Logger) *Toolset {
+//
+// summarizer is the LLM-driven NPC condensation hook used
+// by MaintainNPCs. loreSummarizer is the LLM-driven lore.md
+// compaction hook used by MaintainLore. memoriseSummarizer
+// is the LLM-driven 30-day window compression hook used by
+// ArchiveDay. Pass nil to any of them to disable the LLM
+// path — the file backend will then log a warning and skip.
+func New(fs *storage.FileStore, log zerolog.Logger, slow *slowlog.Logger, summarizer tools.NPCSummarizer, loreSummarizer tools.LoreSummarizer, memoriseSummarizer tools.MemoriseSummarizer) *Toolset {
+	mem := newMemory(fs, log, summarizer, loreSummarizer, memoriseSummarizer)
+	st := newState(fs, log)
+	// Wire the post-ArchiveDay hook so the state writer
+	// does not need a direct reference to the memory
+	// struct. The hook is nil-safe — it logs and skips
+	// when no summarizer is wired.
+	st.SetMemoriseCompress(mem.memoriseCompressAfterArchive)
 	return &Toolset{
-		State:     newState(fs, log),
-		Memory:    newMemory(fs, log),
+		State:     st,
+		Memory:    mem,
 		World:     newWorld(fs, log),
 		Character: newCharacter(fs, log, slow),
 		NPC:       newNPC(fs, log),
 	}
+}
+
+// SetWorldStateInvalidate lets main.go (or any wiring
+// point that has access to the GM) install the cache
+// invalidation callback. Called once at boot.
+func (t *Toolset) SetWorldStateInvalidate(fn func(reason string)) {
+	t.State.SetWorldStateInvalidate(fn)
+	t.World.SetWorldStateInvalidate(fn)
 }
 
 // AsToolset returns a *tools.Tool view of this backend. The
@@ -68,6 +91,18 @@ func (t *Toolset) Source() string { return "files" }
 // a method is renamed or its signature drifts the build
 // fails here, not in main.go far away from the cause.
 var _ tools.Tool = (*Toolset)(nil)
+
+// MaintainLore is a thin forwarder to the embedded
+// *Memory. The interface declares MaintainLore(ctx, world)
+// (with a context for the summarizer LLM call) so the
+// per-request deadline applies; the GM and the
+// /maintenance dispatcher path supply their own
+// context. main.go is the only caller that does NOT
+// supply a context — it does not call this method
+// directly.
+func (t *Toolset) MaintainLore(ctx context.Context, world string) (bool, error) {
+	return t.Memory.MaintainLore(ctx, world)
+}
 
 // Reload flushes any in-memory caches. The file backend is
 // stateless today (every read goes to disk) so the method
