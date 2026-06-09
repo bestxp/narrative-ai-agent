@@ -438,10 +438,25 @@ func (d *Dispatcher) cmdReload() (string, error) {
 			return "⚠️ reload: " + err.Error(), nil
 		}
 	}
+	// Этап 0d: /reload forces the operator's hand-
+	// edited state.md / lore.md to be picked up.
+	// We drop the cached worldStateSnapshot so the
+	// next turn rebuilds index:1 from disk, AND we
+	// walk every per-chat conversation and clear it
+	// — the player re-starts from a clean dialogue
+	// while the LLM still sees the fresh world
+	// state. This is more aggressive than
+	// compaction (which keeps the last 2-3 turns)
+	// because /reload means "I edited the world,
+	// throw away the in-memory chat history".
+	if d.gm != nil {
+		d.gm.InvalidateWorldState("reload")
+		d.gm.ResetAllConversations()
+	}
 	if d.slow != nil {
 		_ = d.slow.Write("tool.reload", "", map[string]any{"source": "files"})
 	}
-	return "✅ reload ok. backed by: files. Следующий ход подхватит свежие данные.", nil
+	return "✅ reload ok. backed by: files. Следующий ход подхватит свежие данные, чат сброшен.", nil
 }
 
 // Commands returns the canonical command set with short

@@ -27,6 +27,13 @@ type State struct {
 	// The hook is expected to be nil-safe and to no-op
 	// when no summarizer is wired.
 	memoriseCompress func(ctx context.Context, world string, dayJustArchived int) error
+	// worldStateInvalidate is invoked after the day is
+	// closed (ArchiveDay, end_day). Wired by NewFileToolset
+	// to call GM.InvalidateWorldState so the next turn
+	// rebuilds index:1 from disk (the "Протокол прошедших
+	// дней" section changed). It is also invoked by
+	// /reload (dispatcher) and leave_world (world.go).
+	worldStateInvalidate func(reason string)
 }
 
 func newState(fs *storage.FileStore, log zerolog.Logger) *State {
@@ -37,6 +44,14 @@ func newState(fs *storage.FileStore, log zerolog.Logger) *State {
 // Called once at construction time from NewFileToolset.
 func (s *State) SetMemoriseCompress(fn func(ctx context.Context, world string, dayJustArchived int) error) {
 	s.memoriseCompress = fn
+}
+
+// SetWorldStateInvalidate wires the post-day-close hook.
+// Called once at construction time from NewFileToolset.
+// Nil is fine — the dispatcher /reload path will call it
+// directly via GM.InvalidateWorldState.
+func (s *State) SetWorldStateInvalidate(fn func(reason string)) {
+	s.worldStateInvalidate = fn
 }
 
 // NPCCompactLineThreshold is exported so the dispatcher's
@@ -64,7 +79,7 @@ func (s *State) UpdateState(snap tools.StateSnapshot) error {
 	}
 	rel := "worlds/" + snap.World + "/state.md"
 	cur, _ := s.fs.ReadRaw(rel)
-	existing := parseStateMD(cur)
+	existing := ParseStateMD(cur)
 	existing.World = snap.World
 	existing.Day = snap.Day
 	existing.InFlight = snap.InFlight
@@ -110,12 +125,12 @@ func (s *State) UpdateState(snap tools.StateSnapshot) error {
 	return s.fs.WriteRawAtomic(rel, body)
 }
 
-// parseStateMD is the inverse of BuildStateMarkdown — it
+// ParseStateMD is the inverse of BuildStateMarkdown — it
 // recovers the StateSnapshot from a state.md body so UpdateState
 // can append to the chronology without clobbering earlier events.
 // We tolerate a missing "## Хронология дня" section (returns
 // empty Events).
-func parseStateMD(body string) domain.StateSnapshot {
+func ParseStateMD(body string) domain.StateSnapshot {
 	out := domain.StateSnapshot{}
 	if body == "" {
 		return out
@@ -257,7 +272,7 @@ func (s *State) ArchiveDay(ctx context.Context, world string, day int, summary s
 	}
 	if world != "" {
 		st, _ := s.fs.ReadRaw("worlds/" + world + "/state.md")
-		parsed := parseStateMD(st)
+		parsed := ParseStateMD(st)
 		parsed.Day = day + 1
 		parsed.InFlight = true
 		parsed.Events = nil
@@ -265,6 +280,16 @@ func (s *State) ArchiveDay(ctx context.Context, world string, day int, summary s
 		if err := s.fs.WriteRawAtomic("worlds/"+world+"/state.md", body); err != nil {
 			return err
 		}
+	}
+	// Этап 0a/0c: end-of-day closes the scene. Drop the
+	// world-state snapshot so the next turn rebuilds
+	// index:1 with the freshly appended "## Протокол
+	// прошедших дней" section. (ArchiveDay is the only
+	// place in the production flow that does this — the
+	// dispatcher /reload path calls GM.InvalidateWorldState
+	// directly.)
+	if s.worldStateInvalidate != nil {
+		s.worldStateInvalidate("end_day")
 	}
 	return nil
 }
@@ -280,7 +305,7 @@ func (s *State) AppendEvent(text string) error {
 	}
 	rel := "worlds/" + world + "/state.md"
 	cur, _ := s.fs.ReadRaw(rel)
-	parsed := parseStateMD(cur)
+	parsed := ParseStateMD(cur)
 	parsed.World = world
 	parsed.Events = append(parsed.Events, text)
 	body := domain.BuildStateMarkdown(parsed)

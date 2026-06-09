@@ -19,10 +19,19 @@ import (
 type World struct {
 	fs  *storage.FileStore
 	log zerolog.Logger
+	// worldStateInvalidate is called when the active world
+	// changes (Leave hook). Wired by SetWorldStateInvalidate
+	// from main.go.
+	worldStateInvalidate func(reason string)
 }
 
 func newWorld(fs *storage.FileStore, log zerolog.Logger) *World {
 	return &World{fs: fs, log: log.With().Str("component", "world").Logger()}
+}
+
+// SetWorldStateInvalidate wires the post-Leave hook.
+func (w *World) SetWorldStateInvalidate(fn func(reason string)) {
+	w.worldStateInvalidate = fn
 }
 
 // Leave switches the active world. If the new world does not exist on
@@ -78,6 +87,16 @@ func (w *World) Leave(fromWorld, toWorld, skipNote, character string) (*tools.Le
 			"Переход в мир "+to+". "+skipNote+".")
 	}
 	w.log.Info().Str("from", from).Str("to", to).Bool("new_world", created).Int("from_day", fromDay).Msg("world_leave")
+	// Этап 0a: world change = new scene. Drop the cached
+	// WorldState (different world, different character,
+	// different day — the cache key in GM.sceneKeyOf would
+	// already miss on next build, but we invalidate
+	// proactively to free memory and to trigger the
+	// /worldstate.snapshot.invalidate slowlog event so an
+	// operator can see the transition in audit).
+	if w.worldStateInvalidate != nil {
+		w.worldStateInvalidate("leave_world")
+	}
 	return &tools.LeaveResult{FromWorld: from, FromDay: fromDay, NewWorld: to, NewWorldInit: created}, nil
 }
 

@@ -36,8 +36,18 @@ type Summarizer struct {
 	llm    LLMClient
 	role   llm.RoleConfig
 	prompt string
-	slow   *slowlog.Logger
-	log    zerolog.Logger
+	// compactionInPlacePrompt is used by SummarizeInPlace
+	// (Этап 0b). When empty, SummarizeInPlace no-ops
+	// and returns an empty body. Wired in main.go via
+	// SetCompactionInPlacePrompt or NewSummarizerWith
+	// (we keep the basic NewSummarizer constructor for
+	// backward compat with the migrate tests).
+	compactionInPlacePrompt string
+	// endOfDayPrompt is used by SummarizeEndOfDay
+	// (Этап 0c). Same nil-safety as compactionInPlace.
+	endOfDayPrompt string
+	slow           *slowlog.Logger
+	log            zerolog.Logger
 	// fallbackMode is true when this summarizer shares the
 	// narrative model. We use the same role config but with
 	// a small MaxTokens override to keep the response tight.
@@ -564,3 +574,198 @@ func (s *Summarizer) SummarizeMemorise(ctx context.Context, world string, startD
 	return res, nil
 }
 
+
+// InPlaceSummaryResult is what SummarizeInPlace returns.
+// Body is the compressed text the caller should append to
+// index:1 as "## Хроника текущего дня (Д<N>)". It is
+// expected to START with "[События текущего дня Д<N>]"
+// (the prompt enforces this). Compressed is true when
+// a real shrink happened.
+type InPlaceSummaryResult struct {
+	Body       []byte
+	Compressed bool
+	OutputChars int
+	Day        int
+}
+
+// SetCompactionInPlacePrompt wires the prompt loaded
+// from prompts/compaction_in_place.md. Called once
+// at construction time from main.go.
+func (s *Summarizer) SetCompactionInPlacePrompt(p string) {
+	s.compactionInPlacePrompt = p
+}
+
+// SetEndOfDayPrompt wires the prompt loaded from
+// prompts/end_of_day.md. Called once at construction
+// time from main.go.
+func (s *Summarizer) SetEndOfDayPrompt(p string) {
+	s.endOfDayPrompt = p
+}
+
+// SummarizeInPlace compresses the current in-memory
+// conversation of day N into a 150-300 word narrative
+// that will be appended to index:1 as "## Хроника
+// текущего дня". This is the Этап 0b compaction path,
+// triggered when messages[2:] grows past
+// g.compaction.Threshold * context_window.
+//
+// The summarizer does NOT mark the day as closed
+// (the compaction_in_place.md prompt is explicit about
+// this). On end_day (Этап 0c) the same conversation is
+// re-compressed differently — see SummarizeEndOfDay.
+func (s *Summarizer) SummarizeInPlace(ctx context.Context, world string, day int, messages []llm.Message) (InPlaceSummaryResult, error) {
+	res := InPlaceSummaryResult{Day: day}
+	if !s.IsConfigured() {
+		return res, nil
+	}
+	if s.compactionInPlacePrompt == "" {
+		return res, fmt.Errorf("summarizer: in-place compaction prompt not wired")
+	}
+	if len(messages) == 0 {
+		return res, nil
+	}
+
+	userText := renderTurnsForSummary(messages)
+	var userBuf strings.Builder
+	userBuf.WriteString("# World: ")
+	userBuf.WriteString(world)
+	userBuf.WriteString("\n\n# Текущий день: д")
+	userBuf.WriteString(fmt.Sprintf("%05d", day))
+	userBuf.WriteString("\n\n# Диалог текущего дня (")
+	userBuf.WriteString(strconv.Itoa(len(messages)))
+	userBuf.WriteString(" сообщений)\n```\n")
+	userBuf.WriteString(userText)
+	userBuf.WriteString("\n```\n")
+	userBuf.WriteString("\nВерни ОДНУ запись [События текущего дня Д<N>] ... 150-300 слов.")
+
+	role := s.role
+	if role.MaxTokens < 2000 {
+		role.MaxTokens = 2000
+	}
+	if role.Temperature == 0 || role.Temperature > 0.4 {
+		role.Temperature = 0.2
+	}
+
+	req := llm.ChatRequest{
+		Model: role.Model,
+		Messages: []llm.Message{
+			{Role: "system", Content: s.compactionInPlacePrompt},
+			{Role: "user", Content: userBuf.String()},
+		},
+		Temperature: role.Temperature,
+		MaxTokens:   role.MaxTokens,
+	}
+
+	var buf strings.Builder
+	streamErr := s.llm.Stream(ctx, req, func(ch llm.Chunk) error {
+		if ch.Done || ch.Content == "" {
+			return nil
+		}
+		buf.WriteString(ch.Content)
+		return nil
+	})
+	if streamErr != nil {
+		return res, fmt.Errorf("summarizer: in-place stream: %w", streamErr)
+	}
+	out := strings.TrimSpace(buf.String())
+	if out == "" {
+		return res, nil
+	}
+	cleaned := stripMarkdownFence(out)
+	res.Body = []byte(cleaned)
+	res.OutputChars = len(cleaned)
+	res.Compressed = true
+	return res, nil
+}
+
+// EndOfDaySummaryResult is what SummarizeEndOfDay returns.
+// Body is a 200-400 word narrative intended for
+// "## Протокол прошедших дней" in index:1. It should
+// start with "[События прошедшего дня Д<N>]".
+type EndOfDaySummaryResult struct {
+	Body       []byte
+	Compressed bool
+	OutputChars int
+	Day        int
+}
+
+// SummarizeEndOfDay produces the full narrative protocol
+// for a closing day. Called from GM.EndOfDay (Этап 0c).
+// The body is appended to "## Протокол прошедших дней"
+// in WorldState and (when the window overflows) eventually
+// moved to memorise.md.
+//
+// The end_of_day.md prompt is explicit: this is a
+// CLOSING day. Tomorrow is a new day. Verbs are in
+// past tense. Quotations are short (1 sentence max).
+// Format is a free-form narrative (NOT a numbered list
+// — that was the v1 mistake).
+func (s *Summarizer) SummarizeEndOfDay(ctx context.Context, world string, day int, messages []llm.Message, stateMD string) (EndOfDaySummaryResult, error) {
+	res := EndOfDaySummaryResult{Day: day}
+	if !s.IsConfigured() {
+		return res, nil
+	}
+	if s.endOfDayPrompt == "" {
+		return res, fmt.Errorf("summarizer: end-of-day prompt not wired")
+	}
+	if len(messages) == 0 {
+		return res, nil
+	}
+
+	userText := renderTurnsForSummary(messages)
+	var userBuf strings.Builder
+	userBuf.WriteString("# World: ")
+	userBuf.WriteString(world)
+	userBuf.WriteString("\n\n# Закрываемый день: д")
+	userBuf.WriteString(fmt.Sprintf("%05d", day))
+	userBuf.WriteString("\n\n# Диалог дня (")
+	userBuf.WriteString(strconv.Itoa(len(messages)))
+	userBuf.WriteString(" сообщений)\n```\n")
+	userBuf.WriteString(userText)
+	userBuf.WriteString("\n```\n")
+	if stateMD != "" {
+		userBuf.WriteString("\n# state.md на момент закрытия дня\n```\n")
+		userBuf.WriteString(stateMD)
+		userBuf.WriteString("\n```\n")
+	}
+	userBuf.WriteString("\nВерни ОДНУ запись [События прошедшего дня Д<N>] ... 200-400 слов.")
+
+	role := s.role
+	if role.MaxTokens < 3000 {
+		role.MaxTokens = 3000
+	}
+	if role.Temperature == 0 || role.Temperature > 0.4 {
+		role.Temperature = 0.2
+	}
+
+	req := llm.ChatRequest{
+		Model: role.Model,
+		Messages: []llm.Message{
+			{Role: "system", Content: s.endOfDayPrompt},
+			{Role: "user", Content: userBuf.String()},
+		},
+		Temperature: role.Temperature,
+		MaxTokens:   role.MaxTokens,
+	}
+
+	var buf strings.Builder
+	streamErr := s.llm.Stream(ctx, req, func(ch llm.Chunk) error {
+		if ch.Done || ch.Content == "" {
+			return nil
+		}
+		buf.WriteString(ch.Content)
+		return nil
+	})
+	if streamErr != nil {
+		return res, fmt.Errorf("summarizer: end-of-day stream: %w", streamErr)
+	}
+	out := strings.TrimSpace(buf.String())
+	if out == "" {
+		return res, nil
+	}
+	cleaned := stripMarkdownFence(out)
+	res.Body = []byte(cleaned)
+	res.OutputChars = len(cleaned)
+	res.Compressed = true
+	return res, nil
+}

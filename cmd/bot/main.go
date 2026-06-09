@@ -213,6 +213,22 @@ func main() {
 			} else {
 				summarizer = usecase.NewFallbackSummarizer(sumLLM, sumRole, sumPrompt, slow, log)
 			}
+			// Этап 0b/0c: wire the in-place and end-of-day
+			// compaction prompts onto the same Summarizer.
+			// Both use the same model/role as the regular
+			// compaction path; the prompt differences
+			// (150-300 words, current-day vs 200-400
+			// words, past-day) live in the .md files.
+			if inPlacePrompt, err := promptpkg.LoadSystemPrompt("", "compaction_in_place.md"); err == nil && inPlacePrompt != "" {
+				summarizer.SetCompactionInPlacePrompt(inPlacePrompt)
+			} else {
+				log.Warn().Err(err).Msg("compaction_in_place.md unreadable; in-place compaction will no-op")
+			}
+			if eodPrompt, err := promptpkg.LoadSystemPrompt("", "end_of_day.md"); err == nil && eodPrompt != "" {
+				summarizer.SetEndOfDayPrompt(eodPrompt)
+			} else {
+				log.Warn().Err(err).Msg("end_of_day.md unreadable; end-of-day protocol will no-op")
+			}
 		}
 	}
 
@@ -263,6 +279,14 @@ func main() {
 			KeepRecent:    role.CompactionKeepRecent,
 		},
 	}, fs, llmCli, ss, fl, fileTools, summarizer, sysSt, slow, cfg.LLM.TokenTracking, cfg.LLM.IncludeInReply, log)
+	// Этап 0a: wire the worldStateInvalidate hook on
+	// the file-backed toolset so ArchiveDay (end_day)
+	// and Leave (leave_world) drop the cached WorldState
+	// in GM, forcing the next turn to rebuild index:1
+	// from disk. /reload (dispatcher) calls
+	// gm.InvalidateWorldState directly — it does not go
+	// through the toolset.
+	fileTools.SetWorldStateInvalidate(gm.InvalidateWorldState)
 	if !*disableLLM {
 		disp.AttachGM(gm)
 		log.Info().Str("model", role.Model).Str("url", role.APIURL).Msg("gm attached")

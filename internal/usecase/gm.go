@@ -19,6 +19,24 @@ import (
 	"github.com/bestxp/narrative-ai-agent/internal/usecase/tools/files"
 )
 
+// DefaultProtocolWindowDays is the number of past days for
+// which a full day-protocol (200-400 word narrative) is kept
+// in the WorldState (index:1). Days older than this window
+// are still on disk in memorise.md as shorter summaries —
+// the model can recall the **facts** via the per-NPC
+// personal_memory field, but no longer the verbatim
+// conversation. 2 is the "remember yesterday and the day
+// before" default. See plan.md, Этап 0c.
+const DefaultProtocolWindowDays = 2
+
+// DefaultProtocolMaxChars is the hard cap on the size of
+// the "## Протокол прошедших дней" section in WorldState.
+// When the section grows past this, the oldest day is
+// evicted to memorise.md. 5000 chars ≈ 1500 tokens; a
+// 200-400 word narrative per day leaves room for 2-3 days
+// even with multi-NPC scenes.
+const DefaultProtocolMaxChars = 5000
+
 // LLMClient is the minimal surface GM needs from the LLM. It
 // is an interface so tests can swap in a stub without a real
 // HTTP server, and so production can wire in either the
@@ -114,6 +132,19 @@ type GM struct {
 
 	// toolSpecs cached on construction; immutable.
 	toolSpecs []llm.ToolSchema
+
+	// worldStateMu guards both the snapshot and the protocol
+	// state. Multiple chats can hit GM concurrently; the
+	// snapshot is rebuilt lazily on first use, then reused
+	// for every turn of the same scene/day, and dropped
+	// only on explicit invalidateWorldState() (end_day,
+	// end_scene, leave_world, /reload, compaction).
+	worldStateMu       sync.Mutex
+	worldStateSnapshot string
+	worldStateSceneKey string // "world|character|day|in_flight" — the inputs the snapshot was built from
+	worldStateBuiltAt  time.Time
+	protocolWindowDays int // default 2
+	protocolMaxChars   int // default 5000
 }
 
 // GMConfig carries everything GM needs to bootstrap. Kept separate
@@ -182,6 +213,12 @@ func NewGM(cfg GMConfig, fs *storage.FileStore, llmCli LLMClient, ss *SessionSta
 		includeReply: includeReply,
 		log:          log,
 		toolSpecs:    toolSpecs,
+		// Этап 0c: protocol window defaults. Operators can
+		// override via config (we will thread the cfg
+		// through GMConfig in a follow-up if requested;
+		// for now the constants live in gm.go).
+		protocolWindowDays: DefaultProtocolWindowDays,
+		protocolMaxChars:   DefaultProtocolMaxChars,
 	}
 }
 
@@ -207,6 +244,19 @@ func (g *GM) getConversation(chatID string) *conversation {
 // player switches worlds or starts a new session.
 func (g *GM) ResetConversation(chatID string) {
 	conversations.Delete(chatID)
+}
+
+// ResetAllConversations drops every per-chat in-memory
+// history. Used by /reload (Этап 0d) when the operator
+// edited game-data by hand and wants the next turn to
+// start with a clean dialogue but the freshly-edited
+// WorldState. The next Reply will lazily create a new
+// conversation entry for that chat ID.
+func (g *GM) ResetAllConversations() {
+	conversations.Range(func(k, _ any) bool {
+		conversations.Delete(k)
+		return true
+	})
 }
 
 // Reply is the streaming entry point. It builds the prompt context,
@@ -304,6 +354,56 @@ func (g *GM) Reply(ctx context.Context, chatID, userText string, cb Callbacks) (
 			}
 		}
 	}
+	// Этап 0b: in-place compaction path. Differs from the
+	// legacy token-drop compaction above in that the
+	// dropped turns are compressed into a 150-300 word
+	// narrative that goes into "## Хроника текущего дня"
+	// in state.md (not the legacy "## История (сжато)"
+	// tail). This keeps index:1 current with the day's
+	// events without forcing end_day. The legacy path
+	// stays for callers that do not wire the in-place
+	// prompt (test suite, single-role deployments).
+	if g.compaction.ContextWindow > 0 && g.shouldUseInPlaceCompaction() {
+		ctxChars := len(g.staticPrompt)
+		if NeedsCompaction(history, ctxChars, g.compaction.ContextWindow, g.compaction.Threshold) {
+			keptMsgs, _ := CompactConversations(history, g.compaction.KeepRecent)
+			dropped := len(history) - g.compaction.KeepRecent
+			if dropped < 0 {
+				dropped = 0
+			}
+			var droppedTurns []llm.Message
+			if dropped > 0 && dropped <= len(history) {
+				droppedTurns = history[:dropped]
+			}
+			day := readCurrentDay(g.fs, currentWorldName(g.fs))
+			world := currentWorldName(g.fs)
+			// Summarizer call. Best-effort: errors log and
+			// fall through to the drop path. Empty body
+			// (model said "too thin") is a no-op — we still
+			// drop, just without a Хроника append.
+			if g.summarizer != nil && g.summarizer.IsConfigured() && len(droppedTurns) > 0 {
+				res, sumErr := g.summarizer.SummarizeInPlace(ctx, world, day, droppedTurns)
+				if sumErr != nil {
+					g.log.Warn().Err(sumErr).Msg("in-place compaction failed; dropping turns without Хроника")
+				} else if len(res.Body) > 0 {
+					if err := g.appendChronicleEntry(world, day, res.Body); err != nil {
+						g.log.Warn().Err(err).Msg("append Хроника to state.md failed")
+					} else {
+						g.log.Info().Int("chars", res.OutputChars).Int("day", day).Msg("in-place: Хроника appended")
+					}
+				}
+			}
+			conv.mu.Lock()
+			conv.messages = keptMsgs
+			conv.mu.Unlock()
+			history = keptMsgs
+			// Force the next turn to rebuild index:1 —
+			// we just appended to state.md, the snapshot
+			// is stale.
+			g.invalidateWorldState("compaction")
+			g.log.Info().Int("dropped", dropped).Int("kept", len(keptMsgs)).Msg("in-place compaction fired")
+		}
+	}
 
 	for round := 0; round < maxToolRounds; round++ {
 		if cb.OnStatus != nil {
@@ -321,9 +421,9 @@ func (g *GM) Reply(ctx context.Context, chatID, userText string, cb Callbacks) (
 
 		if cb.OnStatus != nil {
 			cb.OnStatus("llm_request", map[string]any{
-				"model":         g.role.Model,
-				"messages":      len(messages),
-				"prompt_chars":  promptCharSize(messages),
+				"model":        g.role.Model,
+				"messages":     len(messages),
+				"prompt_chars": promptCharSize(messages),
 			})
 		}
 
@@ -437,53 +537,53 @@ func (g *GM) Reply(ctx context.Context, chatID, userText string, cb Callbacks) (
 				"source":            roundUsage.Source,
 				"model":             g.role.Model,
 			})
-		// Diagnostic: capture finish reason + content preview so a
-		// 0-byte assistant turn is visible in slow.log (not just
-		// "4516 prompt, 0 completion"). Without this we can't tell
-		// whether the model returned empty content, the stream
-		// got cut off, or the provider sent a done frame only.
-		fullContent := assistantBuf.String()
-		preview := fullContent
-		if len(preview) > 500 {
-			preview = preview[:500] + "…"
-		}
-		fields := map[string]any{
-			"round":         round,
-			"finish":        finishReason,
-			"tool_calls":    len(toolCalls),
-			"content_chars": len(fullContent),
-			"content_prev":  preview,
-		}
-		// When the assistant produced no text AND no tool calls,
-		// the raw SSE trace is the only way to diagnose. We do
-		// not log it on healthy rounds (would spam slow.log with
-		// 3-5 entries per turn).
-		if len(fullContent) == 0 && len(toolCalls) == 0 {
-			fields["raw_trace"] = rawTrace
-		}
-		// When the format gate will fail (no ВАЛИДАЦИЯ ПРАВИЛ
-		// header), the operator needs the FULL assistant turn
-		// to confirm whether the model emitted the block at
-		// all, emitted it with a typo, or got cut off mid-list.
-		// The 500-char preview truncates the ВАЛИДАЦИЯ block
-		// almost every time (it sits at the end). We log the
-		// full body only on the failing path to keep healthy
-		// rounds readable.
-		if len(fullContent) > 0 && !g.isFormatCompliant(fullContent) {
-			fields["content_full"] = fullContent
-			fields["missing_headers"] = g.missingFormatHeaders(fullContent)
-			// On a format miss we also log the request we sent
-			// (system prompt + history + tool specs) so an
-			// operator can see whether the model was actually
-			// told the 4-block contract on this round. The
-			// payload is large (10-30 KB), so we keep it gated
-			// on the failing path. We render each message
-			// as {role, content, tool_calls?} so the slowlog
-			// entry is readable in jq.
-			fields["request_messages"] = formatMessagesForLog(messages)
-			fields["request_tools"] = formatToolsForLog(g.toolSpecs)
-		}
-		_ = g.slow.Write("llm.round", chatID, fields)
+			// Diagnostic: capture finish reason + content preview so a
+			// 0-byte assistant turn is visible in slow.log (not just
+			// "4516 prompt, 0 completion"). Without this we can't tell
+			// whether the model returned empty content, the stream
+			// got cut off, or the provider sent a done frame only.
+			fullContent := assistantBuf.String()
+			preview := fullContent
+			if len(preview) > 500 {
+				preview = preview[:500] + "…"
+			}
+			fields := map[string]any{
+				"round":         round,
+				"finish":        finishReason,
+				"tool_calls":    len(toolCalls),
+				"content_chars": len(fullContent),
+				"content_prev":  preview,
+			}
+			// When the assistant produced no text AND no tool calls,
+			// the raw SSE trace is the only way to diagnose. We do
+			// not log it on healthy rounds (would spam slow.log with
+			// 3-5 entries per turn).
+			if len(fullContent) == 0 && len(toolCalls) == 0 {
+				fields["raw_trace"] = rawTrace
+			}
+			// When the format gate will fail (no ВАЛИДАЦИЯ ПРАВИЛ
+			// header), the operator needs the FULL assistant turn
+			// to confirm whether the model emitted the block at
+			// all, emitted it with a typo, or got cut off mid-list.
+			// The 500-char preview truncates the ВАЛИДАЦИЯ block
+			// almost every time (it sits at the end). We log the
+			// full body only on the failing path to keep healthy
+			// rounds readable.
+			if len(fullContent) > 0 && !g.isFormatCompliant(fullContent) {
+				fields["content_full"] = fullContent
+				fields["missing_headers"] = g.missingFormatHeaders(fullContent)
+				// On a format miss we also log the request we sent
+				// (system prompt + history + tool specs) so an
+				// operator can see whether the model was actually
+				// told the 4-block contract on this round. The
+				// payload is large (10-30 KB), so we keep it gated
+				// on the failing path. We render each message
+				// as {role, content, tool_calls?} so the slowlog
+				// entry is readable in jq.
+				fields["request_messages"] = formatMessagesForLog(messages)
+				fields["request_tools"] = formatToolsForLog(g.toolSpecs)
+			}
+			_ = g.slow.Write("llm.round", chatID, fields)
 		}
 
 		// If the model only wanted to talk, we're done — but first
@@ -642,8 +742,8 @@ func (g *GM) missedToolGuard(_ context.Context, chatID string, calls []llm.ToolC
 					Msg("narrative mentions player facts but update_character was not called")
 				if g.slow != nil {
 					_ = g.slow.Write("gm.missed_tool", chatID, map[string]any{
-						"tool":   "update_character",
-						"reason": "player facts mentioned in narrative",
+						"tool":    "update_character",
+						"reason":  "player facts mentioned in narrative",
 						"trigger": t,
 					})
 				}
@@ -1430,20 +1530,62 @@ func promptCharSize(msgs []llm.Message) int {
 // chat_template_kwargs.think=false is the other half. Providers
 // that ignore the wire flag (Ollama Cloud minimax-m3:cloud today)
 // still respond to the prompt directive.
+//
+// SNAPSHOTTING (Этап 0a): the result is cached in
+// g.worldStateSnapshot and reused for every turn of the same
+// scene/day. The cache key is (world, character, day, in_flight) —
+// if any of these change (different world, different character,
+// day advanced, or in_flight flipped), the snapshot is rebuilt.
+// invalidateWorldState() drops the snapshot and forces a rebuild
+// on the next call (used by end_day, end_scene, leave_world,
+// /reload, and compaction).
 func (g *GM) buildContextPrompt() (string, error) {
 	if !g.fs.Exists(storage.InfoFile) {
-		return domain.BuildSystemPrompt(g.staticPrompt, domain.PromptContext{}, g.role.DisableThinking), nil
+		// No game state yet — the snapshot is meaningless,
+		// just render an empty context. We still cache
+		// it so repeat calls don't redo the lookup.
+		g.worldStateMu.Lock()
+		defer g.worldStateMu.Unlock()
+		if g.worldStateSnapshot == "" {
+			g.worldStateSnapshot = domain.BuildSystemPrompt(g.staticPrompt, domain.PromptContext{}, g.role.DisableThinking)
+			g.worldStateSceneKey = ""
+		}
+		return g.worldStateSnapshot, nil
 	}
 	sc, err := g.ss.Start()
 	if err != nil {
 		return "", err
 	}
+	sceneKey := sc.World + "|" + sc.Character + "|"
+	// Day and InFlight live in state.md, not in
+	// SessionContext. We parse the current state file
+	// lazily and include both in the cache key so a
+	// day boundary (in_flight flips) invalidates the
+	// snapshot automatically.
+	if stateBody, _ := g.fs.ReadRaw("worlds/" + sc.World + "/state.md"); stateBody != "" {
+		snap := files.ParseStateMD(stateBody)
+		sceneKey += strconv.Itoa(snap.Day) + "|" + strconv.FormatBool(snap.InFlight)
+	} else {
+		sceneKey += "0|false"
+	}
+
+	g.worldStateMu.Lock()
+	if g.worldStateSnapshot != "" && g.worldStateSceneKey == sceneKey {
+		snap := g.worldStateSnapshot
+		g.worldStateMu.Unlock()
+		_ = g.slow.Write("worldstate.snapshot.hit", "", map[string]any{
+			"scene_key": sceneKey,
+		})
+		return snap, nil
+	}
+	g.worldStateMu.Unlock()
+
 	ctx := domain.PromptContext{
-		Character:         sc.Character,
-		World:             sc.World,
-		CharacterSOUL:     safeRead(g.fs, "characters/"+sc.Character+"/SOUL.md"),
-		CharacterSKILL:    safeRead(g.fs, "characters/"+sc.Character+"/SKILL.md"),
-		CharacterMemory:   safeRead(g.fs, "characters/"+sc.Character+"/memory.md"),
+		Character:       sc.Character,
+		World:           sc.World,
+		CharacterSOUL:   safeRead(g.fs, "characters/"+sc.Character+"/SOUL.md"),
+		CharacterSKILL:  safeRead(g.fs, "characters/"+sc.Character+"/SKILL.md"),
+		CharacterMemory: safeRead(g.fs, "characters/"+sc.Character+"/memory.md"),
 		// Inject the operator's actual section
 		// vocabulary into the prompt so the model
 		// picks an existing `## <name>` rather
@@ -1457,14 +1599,403 @@ func (g *GM) buildContextPrompt() (string, error) {
 			safeRead(g.fs, "characters/"+sc.Character+"/SKILL.md"),
 			safeRead(g.fs, "characters/"+sc.Character+"/memory.md"),
 		),
-		WorldCanon:        safeRead(g.fs, "worlds/"+sc.World+"/canon.md"),
-		WorldState:        safeRead(g.fs, "worlds/"+sc.World+"/state.md"),
-		WorldLore:         safeRead(g.fs, "worlds/"+sc.World+"/lore.md"),
-		WorldPlan:         safeRead(g.fs, "worlds/"+sc.World+"/plan.md"),
-		WorldMemorise:     safeRead(g.fs, "worlds/"+sc.World+"/memorise.md"),
-		NPCs:              g.loadActiveNPCs(sc.World, sc.State),
+		WorldCanon:    safeRead(g.fs, "worlds/"+sc.World+"/canon.md"),
+		WorldState:    safeRead(g.fs, "worlds/"+sc.World+"/state.md"),
+		WorldLore:     safeRead(g.fs, "worlds/"+sc.World+"/lore.md"),
+		WorldPlan:     safeRead(g.fs, "worlds/"+sc.World+"/plan.md"),
+		WorldMemorise: safeRead(g.fs, "worlds/"+sc.World+"/memorise.md"),
+		NPCs:          g.loadActiveNPCs(sc.World, sc.State),
 	}
-	return domain.BuildSystemPrompt(g.staticPrompt, ctx, g.role.DisableThinking), nil
+	built := domain.BuildSystemPrompt(g.staticPrompt, ctx, g.role.DisableThinking)
+
+	g.worldStateMu.Lock()
+	g.worldStateSnapshot = built
+	g.worldStateSceneKey = sceneKey
+	g.worldStateBuiltAt = time.Now()
+	g.worldStateMu.Unlock()
+	_ = g.slow.Write("worldstate.snapshot.miss", "", map[string]any{
+		"scene_key": sceneKey,
+		"bytes":     len(built),
+	})
+	return built, nil
+}
+
+// invalidateWorldState drops the cached system prompt and
+// protocol state, forcing the next buildContextPrompt to
+// re-read from disk. Called on:
+//   - end_day (ArchiveDay hook) after appending the protocol
+//   - end_scene
+//   - leave_world (world switch)
+//   - /reload (operator override)
+//   - compaction (after appending "## Хроника текущего дня")
+//
+// Thread-safe.
+func (g *GM) invalidateWorldState(reason string) {
+	g.worldStateMu.Lock()
+	g.worldStateSnapshot = ""
+	g.worldStateSceneKey = ""
+	g.worldStateMu.Unlock()
+	_ = g.slow.Write("worldstate.snapshot.invalidate", "", map[string]any{"reason": reason})
+}
+
+// InvalidateWorldState is the public version of
+// invalidateWorldState for callers outside this package
+// (dispatcher /reload, world.Leave hook, etc.).
+func (g *GM) InvalidateWorldState(reason string) {
+	g.invalidateWorldState(reason)
+}
+
+// sceneKeyOf returns the cache key the current session would
+// produce, without actually rebuilding. Exposed for tests.
+func (g *GM) sceneKeyOf() (string, error) {
+	if !g.fs.Exists(storage.InfoFile) {
+		return "", nil
+	}
+	sc, err := g.ss.Start()
+	if err != nil {
+		return "", err
+	}
+	key := sc.World + "|" + sc.Character + "|"
+	if stateBody, _ := g.fs.ReadRaw("worlds/" + sc.World + "/state.md"); stateBody != "" {
+		snap := files.ParseStateMD(stateBody)
+		key += strconv.Itoa(snap.Day) + "|" + strconv.FormatBool(snap.InFlight)
+	} else {
+		key += "0|false"
+	}
+	return key, nil
+}
+
+// shouldUseInPlaceCompaction reports whether this GM
+// should prefer the Этап 0b in-place compaction path
+// over the legacy drop-only compaction. We use the new
+// path when the summarizer is wired AND the in-place
+// prompt is loaded (otherwise the call would no-op and
+// we silently lose the dropped turns' events).
+func (g *GM) shouldUseInPlaceCompaction() bool {
+	if g.summarizer == nil || !g.summarizer.IsConfigured() {
+		return false
+	}
+	if g.summarizer.compactionInPlacePrompt == "" {
+		return false
+	}
+	return true
+}
+
+// extractChronicleSection returns the body of the
+// "## Хроника текущего дня" section in state.md, or
+// "" if absent. The body is everything between the
+// section header and the next "## " sibling header
+// (or EOF).
+func extractChronicleSection(stateMD string) string {
+	if stateMD == "" {
+		return ""
+	}
+	start := strings.Index(stateMD, "## Хроника текущего дня")
+	if start < 0 {
+		return ""
+	}
+	after := stateMD[start+len("## Хроника текущего дня"):]
+	for i := 0; i < len(after); {
+		if i+3 <= len(after) && after[i:i+3] == "## " {
+			return strings.TrimRight(after[:i], "\n")
+		}
+		next := strings.IndexByte(after[i:], '\n')
+		if next < 0 {
+			return strings.TrimRight(after, "\n")
+		}
+		i += next + 1
+	}
+	return strings.TrimRight(after, "\n")
+}
+
+// appendChronicleEntry writes a "[События текущего дня
+// Д<N>] ..." line to the "## Хроника текущего дня"
+// section in state.md. If the section does not exist
+// it is created. The line is APPENDED (chronological).
+// "## Протокол прошедших дней" (Этап 0c) is a separate
+// section — they do not mix.
+func (g *GM) appendChronicleEntry(world string, day int, body []byte) error {
+	if world == "" || len(body) == 0 {
+		return nil
+	}
+	rel := "worlds/" + world + "/state.md"
+	cur, _ := g.fs.ReadRaw(rel)
+	sectionMarker := "## Хроника текущего дня"
+	idx := strings.Index(cur, sectionMarker)
+	entry := strings.TrimSpace(string(body)) + "\n"
+	if idx < 0 {
+		// Create the section at the end of the file.
+		if cur != "" && !strings.HasSuffix(cur, "\n") {
+			cur += "\n"
+		}
+		cur += "\n" + sectionMarker + "\n" + entry
+	} else {
+		// Find the end of the section. The section runs
+		// until the next "## " header (or end of file).
+		// We insert the new entry right after the
+		// section header line, so the most recent
+		// chronicle is at the top of the section
+		// (closer to the model when it reads the file).
+		afterHeader := cur[idx+len(sectionMarker):]
+		nl := strings.Index(afterHeader, "\n")
+		if nl < 0 {
+			// Section header is the last line.
+			cur += "\n" + entry
+		} else {
+			insertAt := idx + len(sectionMarker) + nl + 1
+			cur = cur[:insertAt] + entry + cur[insertAt:]
+		}
+	}
+	return g.fs.WriteRawAtomic(rel, cur)
+}
+
+// EndOfDay compresses the closing day into a
+// 200-400 word narrative protocol and appends it to
+// "## Протокол прошедших дней" in state.md (Этап 0c).
+// The protocol is consulted by the model through
+// g.protocolWindowDays (default 2) — the oldest day
+// is then evicted to memorise.md to keep the
+// section bounded.
+//
+// Sources of context for the protocol:
+//   - "## Хроника текущего дня" (if in-place compaction
+//     ran during the day)
+//   - state.md body (current "moment", active NPCs)
+//   - the day's summary that ArchiveDay just wrote to
+//     memorise.md (always present — ArchiveDay's
+//     contract requires summary != "")
+//
+// Note: this is a "summary of summaries" — if the day
+// had no compaction, the protocol is built mostly from
+// the player's short summary in memorise.md. Days with
+// heavy activity and no compaction will produce
+// short protocols; that is a known cost of running
+// without compaction. The narrative still captures
+// the arc because the player wrote a summary.
+func (g *GM) EndOfDay(ctx context.Context, world string, day int) error {
+	if world == "" {
+		return nil
+	}
+	if g.summarizer == nil || !g.summarizer.IsConfigured() {
+		g.log.Warn().Str("world", world).Int("day", day).Msg("end-of-day: no summarizer wired; skipping protocol append")
+		return nil
+	}
+	if g.summarizer.endOfDayPrompt == "" {
+		g.log.Warn().Str("world", world).Int("day", day).Msg("end-of-day: end_of_day prompt not wired; skipping")
+		return nil
+	}
+	stateMD, _ := g.fs.ReadRaw("worlds/" + world + "/state.md")
+	memoriseMD, _ := g.fs.ReadRaw("worlds/" + world + "/memorise.md")
+	// Build a context-only message set: extract the
+	// current "## Хроника текущего дня" lines (if any)
+	// and the player's summary from memorise.md. We
+	// pass these as the user message so the model
+	// reads them as one block, not as a conversation
+	// turn. Using a synthetic single user message
+	// keeps the call cheap and consistent.
+	var ctxBuf strings.Builder
+	if chronicle := extractChronicleSection(stateMD); chronicle != "" {
+		ctxBuf.WriteString("# Хроника текущего дня (со сжатиями)\n")
+		ctxBuf.WriteString(chronicle)
+		ctxBuf.WriteString("\n\n")
+	}
+	if memoriseMD != "" {
+		// Find the last "д<day>: " line in memorise.md.
+		dayStr := fmt.Sprintf("%05d", day)
+		marker := "д" + dayStr + ":"
+		idx := strings.Index(memoriseMD, marker)
+		if idx >= 0 {
+			nl := strings.Index(memoriseMD[idx:], "\n")
+			if nl >= 0 {
+				ctxBuf.WriteString("# Краткий summary игрока в memorise.md (этот день)\n")
+				ctxBuf.WriteString(memoriseMD[idx : idx+nl])
+				ctxBuf.WriteString("\n")
+			}
+		}
+	}
+	dayMessages := []llm.Message{{Role: "user", Content: ctxBuf.String()}}
+	res, err := g.summarizer.SummarizeEndOfDay(ctx, world, day, dayMessages, stateMD)
+	if err != nil {
+		return err
+	}
+	if len(res.Body) == 0 {
+		g.log.Info().Str("world", world).Int("day", day).Msg("end-of-day: summarizer returned empty; skipping")
+		return nil
+	}
+	if err := g.appendProtocolEntry(world, res.Body); err != nil {
+		return err
+	}
+	// Window enforcement: if the section grew past the
+	// limits, evict the oldest day to memorise.md.
+	if err := g.enforceProtocolWindow(world); err != nil {
+		g.log.Warn().Err(err).Str("world", world).Msg("end-of-day: enforce window failed (non-fatal)")
+	}
+	g.log.Info().Str("world", world).Int("day", day).Int("chars", res.OutputChars).Msg("end-of-day: protocol appended")
+	return nil
+}
+
+// appendProtocolEntry appends a single #### Д<N> line
+// (with the 200-400 word narrative) under
+// "## Протокол прошедших дней" in state.md. The
+// section is created if absent. The day number is
+// parsed out of the body's leading marker so we do
+// not double-write headers.
+func (g *GM) appendProtocolEntry(world string, body []byte) error {
+	rel := "worlds/" + world + "/state.md"
+	cur, _ := g.fs.ReadRaw(rel)
+	sectionMarker := "## Протокол прошедших дней"
+	idx := strings.Index(cur, sectionMarker)
+	entry := strings.TrimSpace(string(body)) + "\n"
+	if idx < 0 {
+		if cur != "" && !strings.HasSuffix(cur, "\n") {
+			cur += "\n"
+		}
+		cur += "\n" + sectionMarker + "\n" + entry
+	} else {
+		// Insert right after the section header.
+		after := cur[idx+len(sectionMarker):]
+		nl := strings.Index(after, "\n")
+		if nl < 0 {
+			cur += "\n" + entry
+		} else {
+			insertAt := idx + len(sectionMarker) + nl + 1
+			cur = cur[:insertAt] + entry + cur[insertAt:]
+		}
+	}
+	return g.fs.WriteRawAtomic(rel, cur)
+}
+
+// protocolSectionBounds returns the start (offset of
+// "## Протокол прошедших дней") and the end (the next
+// "## " header or EOF) of the protocol section in
+// state.md. If absent returns (-1, -1).
+func protocolSectionBounds(body string) (start, end int) {
+	start = strings.Index(body, "## Протокол прошедших дней")
+	if start < 0 {
+		return -1, -1
+	}
+	after := body[start+len("## Протокол прошедших дней"):]
+	// Find next "## " at column 0 (a sibling header,
+	// not part of the section body which uses "#### Д<NN>").
+	for i := 0; i < len(after); {
+		if i+3 <= len(after) && after[i:i+3] == "## " {
+			return start, start + len("## Протокол прошедших дней") + i
+		}
+		next := strings.IndexByte(after[i:], '\n')
+		if next < 0 {
+			return start, len(body)
+		}
+		i += next + 1
+	}
+	return start, len(body)
+}
+
+// enforceProtocolWindow applies g.protocolWindowDays
+// (count of day entries) and g.protocolMaxChars (size
+// of the entire section) limits. The oldest day is
+// moved into memorise.md (appended as a "д<NNNNN>: "
+// line). The new section is the truncated remaining
+// entries.
+func (g *GM) enforceProtocolWindow(world string) error {
+	rel := "worlds/" + world + "/state.md"
+	cur, _ := g.fs.ReadRaw(rel)
+	start, end := protocolSectionBounds(cur)
+	if start < 0 {
+		return nil
+	}
+	section := cur[start:end]
+	lines := strings.Split(strings.TrimRight(section, "\n"), "\n")
+	// First line is the header; the rest are the
+	// day entries ("#### Д<N>\n<body>").
+	if len(lines) <= 1 {
+		return nil
+	}
+	header := lines[0]
+	bodyLines := lines[1:]
+
+	// Parse entries: each starts with "#### Д<NNNNN>".
+	type entry struct {
+		day    int
+		header string
+		body   string
+	}
+	var entries []entry
+	var current *entry
+	for _, l := range bodyLines {
+		t := strings.TrimSpace(l)
+		if strings.HasPrefix(t, "#### Д") {
+			rest := strings.TrimPrefix(t, "#### Д")
+			colon := strings.Index(rest, ":")
+			if colon < 0 {
+				continue
+			}
+			n, err := strconv.Atoi(strings.TrimSpace(rest[:colon]))
+			if err != nil {
+				continue
+			}
+			current = &entry{day: n, header: t}
+			entries = append(entries, *current)
+		} else if current != nil {
+			entries[len(entries)-1].body += l + "\n"
+		}
+	}
+
+	// Decide what to evict: by count, then by chars.
+	// The window is strict — we always trim to it,
+	// even if a single entry is huge, because
+	// tolerating one big entry defeats the point of
+	// the limit. We then re-add it on the next day
+	// if the user wants.
+	for len(entries) > g.protocolWindowDays || (end-start) > g.protocolMaxChars {
+		if len(entries) == 0 {
+			break
+		}
+		oldest := entries[0]
+		entries = entries[1:]
+		// Move to memorise.md.
+		if err := g.evictProtocolToMemorise(world, oldest); err != nil {
+			return err
+		}
+		g.log.Info().Str("world", world).Int("day", oldest.day).Msg("end-of-day: protocol entry evicted to memorise")
+	}
+
+	// Reassemble the section.
+	var b strings.Builder
+	b.WriteString(header)
+	b.WriteString("\n")
+	for _, e := range entries {
+		b.WriteString(e.header)
+		b.WriteString("\n")
+		if e.body != "" {
+			b.WriteString(e.body)
+			if !strings.HasSuffix(e.body, "\n") {
+				b.WriteString("\n")
+			}
+		}
+	}
+	newSection := b.String()
+	newBody := cur[:start] + newSection + cur[end:]
+	return g.fs.WriteRawAtomic(rel, newBody)
+}
+
+// evictProtocolToMemorise appends the evicted day to
+// memorise.md as "д<NNNNN>: <narrative>" so the
+// 30-day LLM-compression path (Memory.MemoriseCompressWindow)
+// can later condense it.
+func (g *GM) evictProtocolToMemorise(world string, oldest struct {
+	day    int
+	header string
+	body   string
+}) error {
+	rel := "worlds/" + world + "/memorise.md"
+	cur, _ := g.fs.ReadRaw(rel)
+	if cur != "" && !strings.HasSuffix(cur, "\n") {
+		cur += "\n"
+	}
+	dayStr := fmt.Sprintf("%05d", oldest.day)
+	narrative := strings.TrimSpace(oldest.body)
+	cur += "д" + dayStr + ": " + narrative + "\n"
+	return g.fs.WriteRawAtomic(rel, cur)
 }
 
 func safeRead(fs *storage.FileStore, rel string) string {
@@ -1569,7 +2100,16 @@ func (g *GM) dispatchOneTool(ctx context.Context, tc llm.ToolCall) (string, stri
 		if day == 0 || summary == "" {
 			return "", "end_day requires day and summary"
 		}
-		if err := g.tools.ArchiveDay(ctx, currentWorldName(g.fs), day, summary); err != nil {
+		world := currentWorldName(g.fs)
+		// Этап 0c: BEFORE ArchiveDay updates state.md to
+		// day+1, produce the "## Протокол прошедших дней"
+		// entry from whatever context survived (Хроника
+		// if compaction ran, state.md body, and the
+		// memorise.md summary).
+		if err := g.EndOfDay(ctx, world, day); err != nil {
+			g.log.Warn().Err(err).Str("world", world).Int("day", day).Msg("end_day: protocol append failed; continuing with archive")
+		}
+		if err := g.tools.ArchiveDay(ctx, world, day, summary); err != nil {
 			return "", err.Error()
 		}
 		return okJSON("archived"), ""
@@ -1612,7 +2152,19 @@ func (g *GM) dispatchOneTool(ctx context.Context, tc llm.ToolCall) (string, stri
 		}); err != nil {
 			return "", err.Error()
 		}
-		return okJSON("state updated"), ""
+		// Этап 0a: ToolResult is intentionally SHORT.
+		// We do NOT rebuild the WorldState snapshot here
+		// (it would bust the prompt cache every turn).
+		// The model reads the delta in this ToolResult
+		// and writes its narrative; the snapshot only
+		// rebuilds on end_day/end_scene/leave_world/-
+		// reload/compaction.
+		return okJSON(map[string]any{
+			"status":   "recorded",
+			"delta":    "локация/момент обновлены: " + moment,
+			"npcs_now": npcs,
+			"cache":    "stable",
+		}), ""
 	case "rotate_plan":
 		events := toStringSlice(args["events"])
 		if err := g.tools.RotatePlan(currentWorldName(g.fs), events); err != nil {
@@ -1631,7 +2183,23 @@ func (g *GM) dispatchOneTool(ctx context.Context, tc llm.ToolCall) (string, stri
 		if err := g.tools.Create(currentWorldName(g.fs), spec); err != nil {
 			return "", err.Error()
 		}
-		return okJSON("npc created"), ""
+		// Этап 0a: short ToolResult. The newly created
+		// NPC's profile is on disk but is NOT yet loaded
+		// into the next turn's WorldState (the snapshot
+		// stays the same — adding it requires
+		// `update_state` with the new npc in the list,
+		// which itself does not invalidate the cache
+		// either). The model must follow up with
+		// update_state if the NPC is in the current
+		// scene.
+		return okJSON(map[string]any{
+			"status":       "created",
+			"display_name": spec.DisplayName,
+			"file":         spec.File,
+			"cache":        "stable",
+			"in_scene_now": false,
+			"hint":         "NPC profile is on disk; add to scene with update_state if needed",
+		}), ""
 	case "leave_world":
 		to := toString(args["to_world"])
 		skip := toString(args["skip_note"])
@@ -1646,8 +2214,8 @@ func (g *GM) dispatchOneTool(ctx context.Context, tc llm.ToolCall) (string, stri
 		return okJSON("world switched"), ""
 	case "update_character":
 		if g.tools == nil {
-		return "", "update_character: tool not wired"
-	}
+			return "", "update_character: tool not wired"
+		}
 		file := toString(args["file"])
 		section := toString(args["section"])
 		appendText := toString(args["append"])
@@ -1658,9 +2226,13 @@ func (g *GM) dispatchOneTool(ctx context.Context, tc llm.ToolCall) (string, stri
 		if err := g.tools.Append(sc.Character, file, section, appendText); err != nil {
 			return "", err.Error()
 		}
+		// Этап 0a: short ToolResult. The character's
+		// section is on disk; snapshot stays the same.
 		return okJSON(map[string]any{
+			"status":  "appended",
 			"file":    file,
 			"section": section,
+			"cache":   "stable",
 		}), ""
 	case "update_npc":
 		if g.tools == nil {
@@ -1681,9 +2253,13 @@ func (g *GM) dispatchOneTool(ctx context.Context, tc llm.ToolCall) (string, stri
 		if err := g.tools.UpdateNPC(currentWorldName(g.fs), npcName, section, appendText); err != nil {
 			return "", err.Error()
 		}
+		// Этап 0a: short ToolResult. NPC profile
+		// updated on disk; snapshot stays the same.
 		return okJSON(map[string]any{
+			"status":  "appended",
 			"npc":     npcName,
 			"section": section,
+			"cache":   "stable",
 		}), ""
 	}
 	return "", "unknown tool: " + tc.Function.Name
@@ -2153,8 +2729,8 @@ func formatMessagesForLog(messages []llm.Message) []map[string]any {
 			calls := make([]map[string]any, 0, len(m.ToolCalls))
 			for _, c := range m.ToolCalls {
 				calls = append(calls, map[string]any{
-					"name":      c.Function.Name,
-					"args":      c.Function.Arguments,
+					"name": c.Function.Name,
+					"args": c.Function.Arguments,
 				})
 			}
 			entry["tool_calls"] = calls

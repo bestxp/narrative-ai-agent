@@ -64,6 +64,14 @@ func New(fs *storage.FileStore, log zerolog.Logger, slow *slowlog.Logger, summar
 	}
 }
 
+// SetWorldStateInvalidate lets main.go (or any wiring
+// point that has access to the GM) install the cache
+// invalidation callback. Called once at boot.
+func (t *Toolset) SetWorldStateInvalidate(fn func(reason string)) {
+	t.State.SetWorldStateInvalidate(fn)
+	t.World.SetWorldStateInvalidate(fn)
+}
+
 // AsToolset returns a *tools.Tool view of this backend. The
 // returned type is just the interface; Toolset itself
 // already satisfies it, so callers that hold a *Toolset

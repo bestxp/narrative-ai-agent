@@ -14,7 +14,7 @@ import (
 
 // newTestToolset is the canonical fixture for state-level tests.
 // It writes the registry (info.yaml) and the world directory
-// stub so UpdateState/parseStateMD have something to read on
+// stub so UpdateState/ParseStateMD have something to read on
 // disk.
 func newTestToolset(t *testing.T) *Toolset {
 	t.Helper()
