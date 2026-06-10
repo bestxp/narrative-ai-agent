@@ -130,21 +130,39 @@ func (c *Client) Run(ctx context.Context) error {
 
 	go c.typingLoop(ctx)
 
-	errCh := make(chan error, 1)
-	go func() {
-		if err := c.lp.Run(); err != nil {
-			errCh <- err
-		}
-		close(errCh)
-	}()
+	backoff := time.Second
+	const maxBackoff = 30 * time.Second
 
-	select {
-	case <-ctx.Done():
-		c.lp.Shutdown()
-		c.log.Info().Msg("vk: shutdown")
-		return nil
-	case err := <-errCh:
-		return fmt.Errorf("vk: longpoll: %w", err)
+	for {
+		errCh := make(chan error, 1)
+		go func() {
+			if err := c.lp.Run(); err != nil {
+				errCh <- err
+			}
+			close(errCh)
+		}()
+
+		select {
+		case <-ctx.Done():
+			c.lp.Shutdown()
+			c.log.Info().Msg("vk: shutdown")
+			return nil
+		case err := <-errCh:
+			c.log.Error().
+				Err(err).
+				Dur("backoff", backoff).
+				Msg("vk: longpoll error, reconnecting")
+			select {
+			case <-ctx.Done():
+				c.lp.Shutdown()
+				c.log.Info().Msg("vk: shutdown")
+				return nil
+			case <-time.After(backoff):
+			}
+			if backoff < maxBackoff {
+				backoff *= 2
+			}
+		}
 	}
 }
 
