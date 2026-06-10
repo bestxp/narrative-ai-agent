@@ -1,204 +1,96 @@
-# ============================================================================
 # Lazy Universe Bot — runtime configuration
-# ----------------------------------------------------------------------------
-# Каждая секция снабжена комментарием, описывающим её назначение. Парсер
-# игнорирует YAML-комментарии; подсказки нужны только человеку, который
-# правит этот файл.
-# ============================================================================
 
-# ----------------------------------------------------------------------------
-# messaging: транспорты, через которые бот общается с игроком.
-# Сейчас активен только Telegram, но архитектура допускает подключение
-# Discord / web / CLI без правок в коде — достаточно добавить sibling-поле
-# в MessagingConfig (см. internal/config/config.go).
-# ----------------------------------------------------------------------------
 messaging:
   telegram:
-    # BotFather-issued token. Секрет, не коммитить в публичный репозиторий.
+    # BotFather-issued token. Не коммитить в публичный репозиторий.
     token: "REPLACE_WITH_BOTFATHER_TOKEN"
-    # Long-poll длительность для GetUpdates, секунды. 30-90 — комфортный диапазон.
+    # Long-poll timeout, секунды.
     polling_timeout: 60
-    # Режим парсинга сообщений: "" (plain), "MarkdownV2", "HTML".
-    # По умолчанию — HTML: нативный для Telegram, прощает опечатки
-    # вроде лишних `_*[]().` в русской прозе, которые ломают MarkdownV2.
-    # Бот автоматически конвертирует LLM-emitted Markdown
-    # (**bold**, *italic*, `code`, [text](url)) в <b>/<i>/<code>/<a>.
+    # Режим парсинга: "" (plain), "MarkdownV2", "HTML".
+    # HTML — авто-конвертация Markdown → <b>/<i>/<code>/<a>.
     parse_mode: "HTML"
-    # Whitelist Telegram user_id. Сообщения от всех, кто не в списке, дропаются. @userinfobot
+    # Whitelist Telegram user_id. @userinfobot
     allowed_user_ids:
       - 123456789
-    # reply_to_user: каждое сообщение бота (нарратив, /команды)
-    # шлётся как reply на сообщение игрока — чат выглядит как
-    # thread. Уведомления (auto-save ✅, compaction 🔄, ошибки ⚠️)
-    # идут отдельными bubble'ами (без reply) чтобы не путать
-    # с нарративом.
+    # Ответы бота как reply на сообщение игрока (thread).
+    # Уведомления (auto-save, compaction, ошибки) идут отдельными bubble.
     reply_to_user: true
 
-# ----------------------------------------------------------------------------
-# paths: где бот хранит данные и в каком каталоге выполняет git-команды.
-# Относительные пути резолвятся относительно директории этого YAML-файла.
-# ----------------------------------------------------------------------------
-paths:
-  data_root: "game-data"   # Корень: info.yaml, characters/, worlds/
-  git_workdir: "."         # Где запускать git add/commit/push
+  # VK транспорт. Пропускается, если access_token/group_id пустые.
+  vk:
+    # Community access token. Требуемые разрешения:
+    #   messages, messages.setActivity, groups
+    # Создание: Manage → Settings → API usage → Create token
+    access_token: ""
+    # Group ID (community identifier). Обязателен для Long Poll.
+    group_id: 0
+    # Whitelist VK user_id.
+    allowed_user_ids:
+      - 0
+    # Long-poll wait, секунды. VK рекомендует 25.
+    polling_wait: 25
 
-# ----------------------------------------------------------------------------
-# git: параметры локального коммита и синхронизации с remote. Скилл требует
-# "git add -A && commit && pull --rebase && push" после каждого обслуживания.
-# ----------------------------------------------------------------------------
+paths:
+  data_root: "game-data"   # info.yaml, characters/, worlds/
+  git_workdir: "."         # git add/commit/push
+
 git:
-  remote: "origin"                  # Имя remote
-  branch: "master"                  # Рабочая ветка
+  # true = полностью отключить git. /save, /commit, /push возвращают
+  # "git отключён". Auto-save пропускается. Состояние живёт только на диске.
+  disabled: false
+  remote: "origin"
+  branch: "master"
   commit_author: "Lazy Universe Bot"
   commit_email: "bot@lazy-universe.local"
-  # remote_disabled: true — локальный режим: коммиты пишутся, push/pull пропускаются.
-  # Удобно для разработки на одной машине и для бэкапа без облака.
-  # По умолчанию false (push включён — канонический flow lazy-universe).
+  # true = коммиты пишутся, push/pull пропускаются (локальный режим).
   remote_disabled: false
-  # auto-save: бот сам коммитит каждые N ответов и шлёт уведомление.
-  # after_messages: 0 — выключено (только /save и неявные после /endday, /leave).
-  # По умолчанию 5: один полный цикл сцена = одно сохранение.
   auto_save:
+    # Каждые N freeform-ответов бот коммитит и пушит. 0 = выключено.
     after_messages: 5
-  # verbose_save: расширенный формат "✅ сохранено (3 файла, +412 байт)".
-  # По умолчанию false — короткая строка "✅ сохранено: commit abc1234".
   verbose_save: false
 
-# ----------------------------------------------------------------------------
-# narrative: поведенческая обёртка GM — лимит слов и язык ответов.
-# ----------------------------------------------------------------------------
 narrative:
-  # Мягкий лимит на размер поля `narration` в JSON-режиме
-  # (или блока "диалоги и действия" в markdown). 250 слов —
-  # комфортный потолок для 2-3 абзацев нарратива. В
-  # narrative.md жёсткий лимит 150, GM-валидатор использует
-  # это число при проверке.
+  # Мягкий лимит слов на ответ GM. narrative.md жёсткий лимит 150.
   word_limit: 250
-  language: "ru"    # Язык, на котором GM пишет
-  # rules_check_block: показывать ли игроку LLM-генерируемый блок
-  # "**ВАЛИДАЦИЯ ПРАВИЛ**" (лимит слов, NPC isolation, обновлённые файлы).
-  # LLM по-прежнему пишет его — промпт не меняется, флаг только
-  # стрипает блок на выходе. Default false: production-режим.
-  # Подробное обоснование — в README.md, секция "rules_check_block".
+  language: "ru"
+  # false = стрипать блок ВАЛИДАЦИЯ ПРАВИЛ из ответа. См. README.
   rules_check_block: false
-  # compaction_notify: слать ли игроку уведомление когда бот
-  # дропнул старые turn'ы чтобы уложиться в context_window.
-  # Сообщение идёт ОТДЕЛЬНЫМ bubble'ом (не reply) чтобы не
-  # путать с нарративом. Default true.
+  # Уведомление при компакции (дроп старых turn'ов). Отдельный bubble.
   compaction_notify: true
-  # compaction_notify_verbose: вместо одной строки "🔄 22k → 5k"
-  # давать многострочную разбивку с before/after/dropped/kept.
   compaction_notify_verbose: false
-  # include_system_state_in_prompt: отдавать ли LLM сводку
-  # system_state.md (компакции, last autosave hash). Default false —
-  # это операторский диагностический файл, в промпт не нужен.
+  # Отдавать ли system_state.md в промпт. Default false — операторский файл.
   include_system_state_in_prompt: false
 
-# ----------------------------------------------------------------------------
-# llm: реестр LLM-ролей. Каждая роль — отдельная задача со своей моделью
-# и system prompt. Сейчас активна только "narrative" (GM); позже появятся
-# "summary" (дешёвая модель для сжатия NPC-файлов), "classification"
-# (выбор tool'а) и т.д. — для каждой свой набор параметров.
-# ----------------------------------------------------------------------------
 llm:
-  # Default timeout для всех ролей, которые не указали свой.
   default_timeout_seconds: 120
-  # token_tracking: подсчёт токенов в каждом запросе/ответе.
-  #   "off"      — не считать
-  #   "estimate" — грубо: len(text) / 4 (работает на любом API)
-  #   "usage"    — брать usage из ответа провайдера; если его нет —
-  #                fallback в estimate + warn в slowlog
-  #
-  # С openai-драйвером и stream_options.include_usage=true
-  # (wire default) Ollama Cloud шлёт usage на последнем chunk
-  # → "usage" даёт точные цифры. Legacy driver без
-  # include_usage → usage пустой, fallback в estimate.
-  # Текущее значение "estimate" — универсальный safe default,
-  # можно переключить на "usage" после проверки slow.log.
+  # token_tracking: off | estimate | usage
   token_tracking: "estimate"
-  # include_in_reply: дописать "🔢 ~123 tok" в конец ответа GM.
-  # Независимо от этого slowlog всё равно пишет фактические числа.
+  # Дописывать "🔢 ~N tok" в конец ответа.
   include_in_reply: true
-  # driver: какой LLM SDK использовать. h4-by-default wire surface
-  # (json_object + 8 tools + tool_choice=auto + strict_tools=true
-  # на openai; system-prompt + 8 tools + tool_choice=auto + strict
-  # на anthropic) зашит в коде драйвера. Никаких других настроек
-  # structured_output / tool_choice / strict_tools — они hardcoded.
-  #
-  #   "openai" (default) — github.com/openai/openai-go/v3
-  #                        через /v1/chat/completions
-  #                        (Ollama Cloud, OpenAI, OpenRouter, routerai.ru).
-  #   "anthropic"        — github.com/anthropics/anthropic-sdk-go
-  #                        через /v1/messages
-  #                        (Ollama Cloud /v1/messages, OpenRouter).
-  #                        Auth-header авто-детект по api_url: ollama.com
-  #                        берёт Authorization: Bearer, остальные
-  #                        берут стандартный x-api-key.
+  # driver: "openai" (/v1/chat/completions) | "anthropic" (/v1/messages)
   driver: "openai"
 
   roles:
-    # --------------------------------------------------------------------
-    # narrative: основная роль — мастер игры. Тяжёлая модель, высокая
-    # температура, развёрнутый system prompt.
-    # --------------------------------------------------------------------
     narrative:
-      # OpenAI-compatible endpoint. По умолчанию — локальная Ollama.
       api_url: "http://localhost:11434/v1"
-      # Ollama игнорирует; OpenRouter/OpenAI требует настоящий ключ.
       api_key: "ollama"
-      # Тег модели. Для Ollama — `ollama pull <model>` заранее.
       model: "qwen2.5:7b-instruct"
-      # Файл с system prompt. По умолчанию читается
-      # встроенная копия internal/prompts/narrative.md.
-      # Укажите путь, чтобы переопределить без пересборки
-      # бинаря (полезно для A/B-тестов новых промптов).
+      # Путь к system prompt. "" = встроенный narrative.md.
       system_prompt_path: ""
-      # Потолок длины ответа. В JSON-режиме это 4 поля
-      # (~150 слов нарратив + 3 коротких служебных блока) =
-      # ~500-700 токенов. 1500 оставлено с запасом на случай
-      # длинных сцен (объединение нескольких ходов в один
-      # ответ) и reasoning-padding у провайдера.
       max_tokens: 1500
-      # 0.7-0.9 — нарративная проза. Для сжатия лучше 0.2-0.3.
       temperature: 0.8
-      # Per-role override. 0 = взять default_timeout_seconds.
       request_timeout_seconds: 120
-      # context_window: жёсткий лимит input-токенов для одной
-      # chat-completion request. Когда разговор растёт за
-      # compaction_threshold × context_window, бот дропает
-      # самые старые turn'ы (до compaction_keep_recent) и шлёт
-      # уведомление. 0 = выключить компактинг.
-      # Default: 32000 для мощных моделей вроде minimax-m3.
+      # context_window: лимит input-токенов. 0 = без компактинга.
       context_window: 32000
       compaction_threshold: 0.7
       compaction_keep_recent: 5
-      # disable_thinking: отключить chain-of-thought reasoning
-      # на провайдерах, которые уважают OpenAI-compat поле
-      # `reasoning_effort` (Ollama /v1/chat/completions, OpenAI
-      # reasoning models, xAI Grok, OpenRouter). Бот шлёт
-      # `reasoning_effort: "none"`.
-      # Без этого модель тратит 30-60 секунд на размышления и
-      # шлёт пустые delta.content — оператор видит зависший "…".
-      # Default false (провайдер сам решает).
-      # Для GPT-OSS установи `reasoning_effort: "low"` —
-      # GPT-OSS отвергает "none".
+      # disable_thinking: шлёт reasoning_effort="none".
+      # Без этого модель тратит 30-60с на размышления с пустым delta.content.
       disable_thinking: true
-      # reasoning_effort: явный уровень (none|low|medium|high).
-      # Если задан — имеет приоритет над disable_thinking.
-      # Используй для моделей, которые не понимают "none"
-      # (GPT-OSS) — для них передай "low".
-      # По умолчанию "none" — бот уже отключает thinking
-      # через disable_thinking, но явное поле делает поведение
-      # прозрачным в slow.log и не зависит от default-mapping
-      # в коде.
       reasoning_effort: "none"
 
-    # --------------------------------------------------------------------
-    # summary: дешёвая модель для сжатия диалогов при компактинге.
-    # Когда narrative сессия длинная, summary role сжимает
-    # дропнутые turn'ы в 200-400 токеновый лог фактов и
-    # дописывает в state.md секцию "История (сжато)".
-    # 0 = выключено (только drop, без summary).
+    # summary: дешёвая модель для сжатия NPC/lore/memorise.
+    # 0 = выключено (только drop, без сжатия).
     summary:
       api_url: "http://localhost:11434/v1"
       api_key: "ollama"
@@ -210,19 +102,8 @@ llm:
       context_window: 16000
       compaction_threshold: 0.5
       compaction_keep_recent: 3
-      # Та же логика, что у narrative: бот шлёт
-      # `reasoning_effort: "none"` в /v1/chat/completions.
-      # Для summary это критично — нам нужен короткий видимый
-      # результат 200-400 токенов, а не 60-секундная пауза.
-      # Default true.
       disable_thinking: true
 
-# ----------------------------------------------------------------------------
-# slowlog: покадровый аудит сессии. По умолчанию выключен — при включении
-# пишет JSON-streams в файл: LLM-запросы/ответы, tool calls, мутации файлов,
-# входящие/исходящие сообщения. Удобно для отлова "что бот делал, пока я
-# спал". Файл можно безопасно удалять в любой момент.
-# ----------------------------------------------------------------------------
 slowlog:
   enabled: true
   file: "slow.log"

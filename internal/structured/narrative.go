@@ -45,29 +45,126 @@ var ErrNotJSON = errors.New("structured: input is not a JSON object")
 // the stripJSONFence helper in cmd/test-openapi). It
 // then unmarshals the result.
 //
+// If the text is not a pure JSON object, Parse tries
+// harder: it scans for the first '{' and attempts to
+// extract the first complete JSON object from that
+// point. This handles two common model pathologies:
+//
+//  1. Prefix text before JSON ("Here is the response:")
+//  2. Duplicated JSON objects (model emits the same
+//     object twice, sometimes with a fence between).
+//
 // The error is ErrNotJSON when the body is not a JSON
-// object at all (no leading '{' or '{' preceded by
-// a fence). Any other decode error is wrapped with
-// the original input for slowlog / debugging.
+// object at all (no '{' found). Any other decode error
+// is wrapped with the original input for slowlog /
+// debugging.
 func Parse(text string) (*Narrative, error) {
 	body := stripFence(strings.TrimSpace(text))
-	if !looksLikeJSON(body) {
+	if looksLikeJSON(body) {
+		var n Narrative
+		if err := json.Unmarshal(body, &n); err == nil {
+			return &n, nil
+		}
+		first := extractFirstJSONObject(body)
+		if first != nil {
+			var n2 Narrative
+			if err := json.Unmarshal(first, &n2); err == nil {
+				return &n2, nil
+			}
+		}
+		return nil, fmt.Errorf("structured: json.Unmarshal: input is not a valid Narrative object")
+	}
+	// The text does not start with '{', but may contain a
+	// JSON object after some prefix text (model hallucination:
+	// "Here is the response: {...}" or a duplicated fenced
+	// block). Try to find the first '{' and extract.
+	idx := findOpeningBrace(body)
+	if idx < 0 {
 		return nil, ErrNotJSON
 	}
+	sub := body[idx:]
 	var n Narrative
-	if err := json.Unmarshal(body, &n); err != nil {
-		return nil, fmt.Errorf("structured: json.Unmarshal: %w", err)
+	if err := json.Unmarshal(sub, &n); err == nil {
+		return &n, nil
 	}
-	return &n, nil
+	first := extractFirstJSONObject(sub)
+	if first != nil {
+		var n2 Narrative
+		if err := json.Unmarshal(first, &n2); err == nil {
+			return &n2, nil
+		}
+	}
+	return nil, ErrNotJSON
+}
+
+func findOpeningBrace(data []byte) int {
+	inStr := false
+	escape := false
+	for i := 0; i < len(data); i++ {
+		c := data[i]
+		if escape {
+			escape = false
+			continue
+		}
+		if c == '\\' && inStr {
+			escape = true
+			continue
+		}
+		if c == '"' {
+			inStr = !inStr
+			continue
+		}
+		if !inStr && c == '{' {
+			return i
+		}
+	}
+	return -1
+}
+
+func extractFirstJSONObject(data []byte) []byte {
+	start := -1
+	depth := 0
+	inStr := false
+	escape := false
+	for i := 0; i < len(data); i++ {
+		c := data[i]
+		if escape {
+			escape = false
+			continue
+		}
+		if c == '\\' && inStr {
+			escape = true
+			continue
+		}
+		if c == '"' {
+			inStr = !inStr
+			continue
+		}
+		if inStr {
+			continue
+		}
+		if c == '{' {
+			if start < 0 {
+				start = i
+			}
+			depth++
+		} else if c == '}' {
+			depth--
+			if depth == 0 && start >= 0 {
+				return data[start : i+1]
+			}
+		}
+	}
+	return nil
 }
 
 // LooksLikeJSON is a fast pre-check used by the GM to
 // decide whether to invoke Parse at all. We accept any
-// text whose first non-whitespace character is '{'.
-// The full parse happens lazily — this function only
-// short-circuits the "obviously markdown" case.
+// text that contains a '{' outside a string literal —
+// this catches prefix text before JSON ("Here is the
+// response: {") as well as pure JSON ("{...}").
 func LooksLikeJSON(text string) bool {
-	return looksLikeJSON(stripFence(strings.TrimSpace(text)))
+	return findOpeningBrace(stripFence(strings.TrimSpace(text))) >= 0
 }
 
 // looksLikeJSON after fence strip. Empty bodies and

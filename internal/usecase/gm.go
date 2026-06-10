@@ -265,8 +265,9 @@ func (g *GM) ResetAllConversations() {
 // abort mid-stream (typically the transport's context cancellation).
 //
 // maxToolRounds caps the number of tool-call rounds so a runaway
-// model cannot loop forever. 5 is enough for any realistic session.
-const maxToolRounds = 5
+// model cannot loop forever. 10 gives the model room to update
+// multiple NPC files and still produce a narrative response.
+const maxToolRounds = 10
 
 func (g *GM) Reply(ctx context.Context, chatID, userText string, cb Callbacks) (TokenUsage, error) {
 	var totals TokenUsage
@@ -404,6 +405,8 @@ func (g *GM) Reply(ctx context.Context, chatID, userText string, cb Callbacks) (
 			g.log.Info().Int("dropped", dropped).Int("kept", len(keptMsgs)).Msg("in-place compaction fired")
 		}
 	}
+
+	consecutiveToolOnlyRounds := 0
 
 	for round := 0; round < maxToolRounds; round++ {
 		if cb.OnStatus != nil {
@@ -797,6 +800,44 @@ func (g *GM) Reply(ctx context.Context, chatID, userText string, cb Callbacks) (
 		// onto the next user turn via the conv history so the
 		// model gets a chance to self-correct.
 		g.missedToolGuard(ctx, chatID, toolCalls, assistantBuf.String(), currentWorldName(g.fs))
+
+		// Stuck guard: when the model issues tool calls N rounds
+		// in a row without ever producing narrative content, it
+		// is likely iterating through NPC files one at a time.
+		// After maxStuckToolRounds consecutive tool-only rounds we
+		// inject a nudge so the model knows to produce narrative.
+		if assistantBuf.Len() == 0 {
+			consecutiveToolOnlyRounds++
+		} else {
+			consecutiveToolOnlyRounds = 0
+		}
+		const maxStuckToolRounds = 3
+		if consecutiveToolOnlyRounds >= maxStuckToolRounds {
+			g.log.Warn().
+				Int("round", round).
+				Int("consecutive", consecutiveToolOnlyRounds).
+				Msg("model issued tool calls without narrative for N rounds — injecting nudge")
+			if g.slow != nil {
+				_ = g.slow.Write("gm.stuck_nudge", chatID, map[string]any{
+					"round":       round,
+					"consecutive": consecutiveToolOnlyRounds,
+				})
+			}
+			nudge := llm.Message{
+				Role:    "user",
+				Content: "[система] Все инструменты выполнены. Теперь обязательно напиши нарративный ответ игроку в формате JSON (narration, context, future, validation). Не вызывай больше инструменты.",
+			}
+			conv.mu.Lock()
+			conv.messages = append(conv.messages, results...)
+			conv.messages = append(conv.messages, nudge)
+			conv.mu.Unlock()
+			history = append(history, results...)
+			history = append(history, nudge)
+			consecutiveToolOnlyRounds = 0
+			toolCalls = nil
+			continue
+		}
+
 		conv.mu.Lock()
 		conv.messages = append(conv.messages, results...)
 		conv.mu.Unlock()

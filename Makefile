@@ -10,7 +10,9 @@ PLATFORMS  := linux-amd64 linux-arm64 darwin-amd64 darwin-arm64 windows-amd64 wi
 help: ## Show this help
 	@awk 'BEGIN {FS = ":.*##"; printf "Usage:\n  make \033[36m<target>\033[0m\n\nTargets:\n"} /^[a-zA-Z_-]+:.*?##/ { printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
 
-build: build-linux-amd64 ## Build for the host (default: linux/amd64)
+HOST_PLATFORM := $(shell uname -s | tr '[:upper:]' '[:lower:]')-$(shell uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
+
+build: build-$(HOST_PLATFORM) ## Build for the current host
 
 build-all: $(addprefix build-,$(PLATFORMS)) ## Build the full platform matrix
 

@@ -26,6 +26,7 @@ import (
 	"github.com/bestxp/narrative-ai-agent/internal/logging"
 	"github.com/bestxp/narrative-ai-agent/internal/messaging"
 	"github.com/bestxp/narrative-ai-agent/internal/messaging/telegram"
+	vktransport "github.com/bestxp/narrative-ai-agent/internal/messaging/vk"
 	promptpkg "github.com/bestxp/narrative-ai-agent/internal/prompts"
 	"github.com/bestxp/narrative-ai-agent/internal/slowlog"
 	"github.com/bestxp/narrative-ai-agent/internal/structured"
@@ -67,7 +68,12 @@ func main() {
 	if !gitops.IsRepo(cfg.Paths.GitWorkdir) {
 		log.Warn().Str("workdir", cfg.Paths.GitWorkdir).Msg("not a git repo — commits will fail")
 	}
-	gitOp := gitops.NewWithLogger(cfg.Paths.GitWorkdir, cfg.Git.Remote, cfg.Git.Branch, cfg.Git.CommitAuthor, cfg.Git.CommitEmail, cfg.Git.RemoteDisabled, log)
+	var gitOp *gitops.Operator
+	if cfg.Git.Disabled {
+		log.Info().Msg("git disabled (config: git.disabled=true)")
+	} else {
+		gitOp = gitops.NewWithLogger(cfg.Paths.GitWorkdir, cfg.Git.Remote, cfg.Git.Branch, cfg.Git.CommitAuthor, cfg.Git.CommitEmail, cfg.Git.RemoteDisabled, log)
+	}
 
 	slow, slowWriter, err := buildSlowlog(cfg, log)
 	if err != nil {
@@ -299,29 +305,46 @@ func main() {
 		log.Warn().Msg("gm disabled via --no-llm; freeform will echo + validate only")
 	}
 
-	// Build the messaging client pool. Today only Telegram is wired;
-	// adding Discord means constructing another client and appending
-	// it to clients — no other code in this file needs to change.
-	tgClient, err := telegram.New(telegram.Config{
-		Token:          cfg.Messaging.Telegram.Token,
-		PollingTimeout: cfg.Messaging.Telegram.PollingTimeout,
-		ParseMode:      cfg.Messaging.Telegram.ParseMode,
-		AllowedUserIDs: cfg.Messaging.Telegram.AllowedUserIDs,
-	}, log)
-	if err != nil {
-		log.Fatal().Err(err).Msg("telegram init")
-	}
-	pool := messaging.NewMultiClient(tgClient)
+	// Build the messaging client pool. Every configured transport
+	// gets its own client; they are fanned out by MultiClient.
+	var clients []messaging.Client
 
-	// Register Telegram command hints so the user sees a native
-	// menu when they type "/" in the chat. The set is owned by
-	// the dispatcher; we just translate it into the transport
-	// shape here. Best-effort: if Telegram rejects (offline,
-	// token revoked) we log and keep running.
-	commands := disp.Commands()
-	if err := tgClient.SetCommands(context.Background(), commands); err != nil {
-		log.Warn().Err(err).Msg("telegram: setMyCommands failed; native menu may be stale")
+	// --- Telegram ---
+	if cfg.Messaging.Telegram.IsConfigured() {
+		tgClient, err := telegram.New(telegram.Config{
+			Token:          cfg.Messaging.Telegram.Token,
+			PollingTimeout: cfg.Messaging.Telegram.PollingTimeout,
+			ParseMode:      cfg.Messaging.Telegram.ParseMode,
+			AllowedUserIDs: cfg.Messaging.Telegram.AllowedUserIDs,
+		}, log)
+		if err != nil {
+			log.Fatal().Err(err).Msg("telegram init")
+		}
+		clients = append(clients, tgClient)
+		commands := disp.Commands()
+		if err := tgClient.SetCommands(context.Background(), commands); err != nil {
+			log.Warn().Err(err).Msg("telegram: setMyCommands failed; native menu may be stale")
+		}
 	}
+
+	// --- VKontakte ---
+	if cfg.Messaging.VK.IsConfigured() {
+		vkClient, err := vktransport.New(vktransport.Config{
+			AccessToken:    cfg.Messaging.VK.AccessToken,
+			GroupID:        cfg.Messaging.VK.GroupID,
+			AllowedUserIDs: cfg.Messaging.VK.AllowedUserIDs,
+			PollingWait:    cfg.Messaging.VK.PollingWait,
+		}, log)
+		if err != nil {
+			log.Fatal().Err(err).Msg("vk init")
+		}
+		clients = append(clients, vkClient)
+	}
+
+	if len(clients) == 0 {
+		log.Fatal().Msg("no messaging transport configured")
+	}
+	pool := messaging.NewMultiClient(clients...)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	sigCh := make(chan os.Signal, 1)
@@ -365,11 +388,22 @@ func main() {
 					if !ok {
 						return
 					}
+					// Per-transport settings: determine parse
+					// mode and reply-to behaviour from the
+					// client name. VK doesn't have a parse mode
+					// equivalent (VK messages are plain text by
+					// default) and always threads replies.
+					pm := cfg.Messaging.Telegram.ParseMode
+					rt := cfg.Messaging.Telegram.ReplyToUser
+					if c.Name() == "vk" {
+						pm = ""
+						rt = true
+					}
 					handleIncoming(ctx, log, c, disp,
-						cfg.Messaging.Telegram.ParseMode,
+						pm,
 						cfg.LLM.IncludeInReply,
 						cfg.Narrative.RulesCheckBlock,
-						cfg.Messaging.Telegram.ReplyToUser,
+						rt,
 						cfg.Narrative.CompactionNotify,
 						cfg.Narrative.CompactionNotifyVerbose,
 						msg)
@@ -385,7 +419,11 @@ func main() {
 								// (ReplyToMessageID=0) so it appears
 								// as a meta-event, not as a reply
 								// to the player's last turn.
-								if err := c.Send(ctx, messaging.OutgoingMessage{ChatID: msg.ChatID, Text: notify, ParseMode: cfg.Messaging.Telegram.ParseMode}); err != nil {
+								notifyPM := cfg.Messaging.Telegram.ParseMode
+								if c.Name() == "vk" {
+									notifyPM = ""
+								}
+								if err := c.Send(ctx, messaging.OutgoingMessage{ChatID: msg.ChatID, Text: notify, ParseMode: notifyPM}); err != nil {
 									log.Error().Err(err).Str("chat", msg.ChatID).Msg("auto-save notify failed")
 								}
 							}

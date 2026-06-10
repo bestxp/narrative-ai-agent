@@ -51,6 +51,9 @@ type MessagingConfig struct {
 	// can carry their own allow lists and connection options
 	// alongside it.
 	Telegram TelegramConfig `yaml:"telegram"`
+	// VK is the VKontakte messenger transport. Disabled when
+	// AccessToken or GroupID is empty.
+	VK VKConfig `yaml:"vk"`
 }
 
 // TelegramConfig is the per-transport configuration. Each transport
@@ -95,9 +98,16 @@ type PathsConfig struct {
 	GitWorkdir string `yaml:"git_workdir"`
 }
 
-// GitConfig mirrors the operations described in the lazy-universe
-// skill: commit, rebase on push, never trust the commit output.
+// GitConfig controls how state is persisted to the version-control
+// system. When Disabled is true, all git operations (commit, push,
+// pull) are skipped — the bot runs without any git integration.
 type GitConfig struct {
+	// Disabled turns off git entirely. When true the bot does
+	// not commit, push, or pull — state lives only on disk.
+	// /save, /commit, /push return "git отключён".
+	// Auto-save is skipped. Useful when no git repo is available
+	// or when git persistence is not needed. Default false.
+	Disabled bool `yaml:"disabled"`
 	// Remote is the git remote name (e.g. "origin") used by pull and
 	// push. The skill assumes a single remote.
 	Remote string `yaml:"remote"`
@@ -231,9 +241,9 @@ type LLMConfig struct {
 // LLMConfig.TokenTracking. Using named constants keeps the call
 // sites free of stringly-typed comparisons.
 const (
-	TokenTrackingOff     = "off"
+	TokenTrackingOff      = "off"
 	TokenTrackingEstimate = "estimate"
-	TokenTrackingUsage   = "usage"
+	TokenTrackingUsage    = "usage"
 )
 
 // LLMRoleConfig describes one named LLM role.
@@ -393,14 +403,26 @@ func Load(path string) (*Config, error) {
 // section come first so the operator can fix config.yaml quickly.
 func (c *Config) Validate() error {
 	// At least one transport must be configured.
-	if !c.Messaging.Telegram.isConfigured() {
-		return errors.New("messaging.telegram.token must be set to a real bot token")
+	tgOK := c.Messaging.Telegram.IsConfigured()
+	vkOK := c.Messaging.VK.IsConfigured()
+	if !tgOK && !vkOK {
+		return errors.New("at least one messaging transport must be configured (telegram or vk)")
 	}
-	if c.Messaging.Telegram.Token == "REPLACE_WITH_BOTFATHER_TOKEN" {
-		return errors.New("messaging.telegram.token must be set to a real bot token")
+	if tgOK {
+		if c.Messaging.Telegram.Token == "REPLACE_WITH_BOTFATHER_TOKEN" {
+			return errors.New("messaging.telegram.token must be set to a real bot token")
+		}
+		if len(c.Messaging.Telegram.AllowedUserIDs) == 0 {
+			return errors.New("messaging.telegram.allowed_user_ids must contain at least one user id")
+		}
 	}
-	if len(c.Messaging.Telegram.AllowedUserIDs) == 0 {
-		return errors.New("messaging.telegram.allowed_user_ids must contain at least one user id")
+	if vkOK {
+		if len(c.Messaging.VK.AllowedUserIDs) == 0 {
+			return errors.New("messaging.vk.allowed_user_ids must contain at least one user id")
+		}
+		if c.Messaging.VK.PollingWait == 0 {
+			c.Messaging.VK.PollingWait = 25
+		}
 	}
 	if c.Paths.DataRoot == "" {
 		c.Paths.DataRoot = "game-data"
@@ -530,8 +552,44 @@ func (c *Config) TelegramIsAllowed(userID int) bool {
 	return false
 }
 
-// isConfigured distinguishes "user did not configure this transport"
+// VKConfig is the per-transport configuration for VKontakte.
+// The bot uses VK's Bots Long Poll API to receive messages
+// and the messages.send / messages.edit API calls for outgoing.
+//
+// Required token permissions (Manage → Settings → API usage →
+// Create token → select these scopes):
+//
+//   - messages         — send, edit, read messages
+//   - messages.setActivity — typing indicator
+//   - groups            — long poll (groups.getLongPollServer,
+//     groups.setLongPollSettings)
+type VKConfig struct {
+	// AccessToken is the VK community token (obtained from
+	// vk.com/settings?act=token or the community admin panel).
+	// The token must have the following permissions enabled:
+	//   messages       — send, edit, read messages
+	//   messages.setActivity — typing indicator
+	//   groups         — long poll server & settings
+	AccessToken string `yaml:"access_token"`
+	// GroupID is the VK community (group) identifier. Required
+	// for Bots Long Poll and for group_id in messages.send.
+	GroupID int `yaml:"group_id"`
+	// AllowedUserIDs is the access control list. Messages from
+	// VK users not on this list are silently dropped.
+	AllowedUserIDs []int `yaml:"allowed_user_ids"`
+	// PollingWait is the long-poll wait timeout in seconds.
+	// Defaults to 25 (same as VK recommendation).
+	PollingWait int `yaml:"polling_wait"`
+}
+
+// IsConfigured distinguishes "user did not configure this transport"
 // from "user configured it but left Token empty".
-func (t TelegramConfig) isConfigured() bool {
+func (t TelegramConfig) IsConfigured() bool {
 	return t.Token != ""
+}
+
+// IsConfigured returns true when the VK transport has enough
+// configuration to start (access token + group id).
+func (v VKConfig) IsConfigured() bool {
+	return v.AccessToken != "" && v.GroupID > 0
 }

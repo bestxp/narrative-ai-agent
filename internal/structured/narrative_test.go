@@ -75,6 +75,8 @@ func TestLooksLikeJSON(t *testing.T) {
 		{"", false},
 		{"hello", false},
 		{"  hello", false},
+		{"Prefix text before JSON:\n{\"narration\":\"x\"}", true},
+		{"Нужно записать это.\n```json\n{\"narration\":\"x\"}\n```", true},
 	}
 	for _, tc := range cases {
 		assert.Equal(t, tc.want, LooksLikeJSON(tc.in), "input=%q", tc.in)
@@ -160,4 +162,33 @@ func TestRender_TrimsTrailingWhitespace(t *testing.T) {
 	// No trailing whitespace on the last line.
 	assert.False(t, strings.HasSuffix(out, " \n"), "got: %q", out)
 	assert.False(t, strings.HasSuffix(out, "  "), "got: %q", out)
+}
+
+func TestParse_DuplicateJSON(t *testing.T) {
+	duped := fullJSON + "\n``````json\n" + fullJSON
+	n, err := Parse(duped)
+	require.NoError(t, err)
+	assert.Equal(t, "Хината вздрогнула, отступила. Уши — алые.", n.Narration)
+	assert.Equal(t, "state.md обновлён; update_npc: Хината — статус: смущена", n.Context)
+}
+
+func TestParse_DuplicateRawJSON(t *testing.T) {
+	duped := fullJSON + "\n" + fullJSON
+	n, err := Parse(duped)
+	require.NoError(t, err)
+	assert.Equal(t, "Хината вздрогнула, отступила. Уши — алые.", n.Narration)
+}
+
+func TestParse_PrefixTextBeforeJSON(t *testing.T) {
+	prefixed := "Нужно записать это как действие.\n" + fullJSON
+	n, err := Parse(prefixed)
+	require.NoError(t, err)
+	assert.Equal(t, "Хината вздрогнула, отступила. Уши — алые.", n.Narration)
+}
+
+func TestParse_PrefixAndFencedDuplicate(t *testing.T) {
+	prefixed := "Нужно записать это.\n```json\n" + fullJSON + "\n```\n``````json\n" + fullJSON + "\n```"
+	n, err := Parse(prefixed)
+	require.NoError(t, err)
+	assert.Equal(t, "Хината вздрогнула, отступила. Уши — алые.", n.Narration)
 }

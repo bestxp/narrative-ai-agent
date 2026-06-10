@@ -169,7 +169,7 @@ func TestGM_ToolRound_RotatePlan_RejectsBadRange(t *testing.T) {
 
 func TestGM_StopsAtMaxRounds(t *testing.T) {
 	g, _, fake := newGMTestEnv(t)
-	many := make([][]fakeChunk, 6)
+	many := make([][]fakeChunk, maxToolRounds+1)
 	for i := range many {
 		many[i] = []fakeChunk{{
 			toolID: fmt.Sprintf("c%d", i), toolName: "run_maintenance",
@@ -180,6 +180,26 @@ func TestGM_StopsAtMaxRounds(t *testing.T) {
 	_, err := g.Reply(context.Background(), "chat1", "x", Callbacks{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "exceeded")
+}
+
+func TestGM_StuckGuard_InjectsNudge(t *testing.T) {
+	g, _, fake := newGMTestEnv(t)
+	fake.rounds = [][]fakeChunk{
+		{{toolID: "c0", toolName: "update_npc", toolArgs: `{"npc":"Ино","section":"Личная память/факты","append":"test"}`, finish: "tool_calls"}},
+		{{toolID: "c1", toolName: "update_npc", toolArgs: `{"npc":"Шикамару","section":"Личная память/факты","append":"test"}`, finish: "tool_calls"}},
+		{{toolID: "c2", toolName: "update_npc", toolArgs: `{"npc":"Чоджи","section":"Личная память/факты","append":"test"}`, finish: "tool_calls"}},
+		{{content: "**диалоги и действия**\nок\n\n**КОНТЕКСТ И ИЗМЕНЕНИЯ**\nбез изменений\n\n**БУДУЩЕЕ**\n- продолжение\n\n**ВАЛИДАЦИЯ ПРАВИЛ**\n- ok", finish: "stop"}},
+	}
+	_, err := g.Reply(context.Background(), "chat1", "рассказал легенду", Callbacks{})
+	require.NoError(t, err)
+	conv := g.getConversation("chat1")
+	var foundNudge bool
+	for _, m := range conv.messages {
+		if m.Role == "user" && strings.Contains(m.Content, "Не вызывай больше инструменты") {
+			foundNudge = true
+		}
+	}
+	assert.True(t, foundNudge, "stuck guard should inject nudge after 3 consecutive tool-only rounds")
 }
 
 func TestGM_ResetConversation(t *testing.T) {
