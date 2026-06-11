@@ -14,10 +14,13 @@
 package structured
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/kaptinlin/jsonrepair"
 )
 
 // Narrative is the canonical 4-field shape the model
@@ -60,16 +63,28 @@ var ErrNotJSON = errors.New("structured: input is not a JSON object")
 // debugging.
 func Parse(text string) (*Narrative, error) {
 	body := stripFence(strings.TrimSpace(text))
+	// RouterAPI/Anthropic thinking leak: strip XML-like tags
+	// that appear after the JSON object.
+	body = stripThinkingTags(body)
 	if looksLikeJSON(body) {
 		var n Narrative
-		if err := json.Unmarshal(body, &n); err == nil {
+		cleaned := sanitizeJSONQuotes(body)
+		if err := json.Unmarshal(cleaned, &n); err == nil {
 			return &n, nil
 		}
-		first := extractFirstJSONObject(body)
+		first := extractFirstJSONObject(cleaned)
 		if first != nil {
 			var n2 Narrative
 			if err := json.Unmarshal(first, &n2); err == nil {
 				return &n2, nil
+			}
+		}
+		// Last resort: structural repair (missing commas, brackets, quotes)
+		repaired, err := jsonrepair.Repair(string(cleaned))
+		if err == nil {
+			var n3 Narrative
+			if err := json.Unmarshal([]byte(repaired), &n3); err == nil {
+				return &n3, nil
 			}
 		}
 		return nil, fmt.Errorf("structured: json.Unmarshal: input is not a valid Narrative object")
@@ -84,17 +99,48 @@ func Parse(text string) (*Narrative, error) {
 	}
 	sub := body[idx:]
 	var n Narrative
-	if err := json.Unmarshal(sub, &n); err == nil {
+	cleaned := sanitizeJSONQuotes(sub)
+	if err := json.Unmarshal(cleaned, &n); err == nil {
 		return &n, nil
 	}
-	first := extractFirstJSONObject(sub)
+	first := extractFirstJSONObject(cleaned)
 	if first != nil {
 		var n2 Narrative
 		if err := json.Unmarshal(first, &n2); err == nil {
 			return &n2, nil
 		}
 	}
+	// Last resort: structural repair
+	repaired, err := jsonrepair.Repair(string(cleaned))
+	if err == nil {
+		var n3 Narrative
+		if err := json.Unmarshal([]byte(repaired), &n3); err == nil {
+			return &n3, nil
+		}
+	}
 	return nil, ErrNotJSON
+}
+
+// StripThinkingTags removes RouterAPI/Anthropic thinking leak
+// artifacts: XML-like tags that appear after the JSON payload.
+// Examples: <arg_key>...</arg_key>, </arg_value></tool_call>
+func StripThinkingTags(data string) string {
+	b := []byte(data)
+	// Find the first occurrence of </arg_value> or <arg_key>
+	// and truncate everything from that point.
+	idx := bytes.Index(b, []byte("</arg_value>"))
+	if idx >= 0 {
+		return strings.TrimSpace(string(b[:idx]))
+	}
+	idx = bytes.Index(b, []byte("<arg_key>"))
+	if idx >= 0 {
+		return strings.TrimSpace(string(b[:idx]))
+	}
+	return data
+}
+
+func stripThinkingTags(data []byte) []byte {
+	return []byte(StripThinkingTags(string(data)))
 }
 
 func findOpeningBrace(data []byte) int {
@@ -156,6 +202,62 @@ func extractFirstJSONObject(data []byte) []byte {
 		}
 	}
 	return nil
+}
+
+// sanitizeJSONQuotes escapes unescaped double quotes that appear
+// inside JSON string literals. Models occasionally use '"' as
+// typographic quotation marks inside narration or dialogue (e.g.
+// «"Другой способ"...»); these break the JSON parser because
+// the parser treats the first '"' as the string terminator.
+//
+// The heuristic: a '"' that is surrounded by non-structural
+// characters (not preceded/followed by JSON structural chars)
+// is an inner quote and gets escaped as '\"'. We preserve
+// opening and closing quotes that sit next to structural chars.
+// When we escape an inner quote we do NOT toggle the in-string
+// state — the string stays open.
+func sanitizeJSONQuotes(data []byte) []byte {
+	var out bytes.Buffer
+	inStr := false
+	escape := false
+	for i := 0; i < len(data); i++ {
+		c := data[i]
+		if escape {
+			out.WriteByte(c)
+			escape = false
+			continue
+		}
+		if c == '\\' && inStr {
+			out.WriteByte(c)
+			escape = true
+			continue
+		}
+		if c == '"' {
+			if inStr && !isJSONStructural(data, i-1) && !isJSONStructural(data, i+1) {
+				// Inner quote surrounded by text — escape it,
+				// but STAY inside the string.
+				out.WriteByte('\\')
+				out.WriteByte(c)
+				continue
+			}
+			out.WriteByte(c)
+			inStr = !inStr
+			continue
+		}
+		out.WriteByte(c)
+	}
+	return out.Bytes()
+}
+
+func isJSONStructural(data []byte, idx int) bool {
+	if idx < 0 || idx >= len(data) {
+		return true // boundary counts as structural
+	}
+	switch data[idx] {
+	case '{', '}', '[', ']', ':', ',', '\n', '\r', '\t', ' ':
+		return true
+	}
+	return false
 }
 
 // LooksLikeJSON is a fast pre-check used by the GM to

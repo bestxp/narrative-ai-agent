@@ -36,7 +36,7 @@ type ToolFunctionSchema struct {
 // fields are exported so tests can introspect them without
 // parsing the JSON back.
 type Schema struct {
-	Type                 string             `json:"type"`
+	Type string `json:"type"`
 	// Properties is intentionally NOT marked omitempty: the
 	// strict subset of JSON Schema that OpenAI and Anthropic
 	// use for tool declarations requires the `properties`
@@ -48,14 +48,14 @@ type Schema struct {
 	// validator on the wire would reject the request with
 	// "additionalProperties must be false" (because the
 	// implicit `{}` lacks the explicit lock-down).
-	Properties           map[string]Schema  `json:"properties"`
-	Required             []string           `json:"required,omitempty"`
-	AdditionalProperties *bool              `json:"additionalProperties,omitempty"`
-	Description          string             `json:"description,omitempty"`
-	Enum                 []any              `json:"enum,omitempty"`
-	Items                *Schema            `json:"items,omitempty"`
-	MinItems             *int               `json:"minItems,omitempty"`
-	MaxItems             *int               `json:"maxItems,omitempty"`
+	Properties           map[string]Schema `json:"properties"`
+	Required             []string          `json:"required,omitempty"`
+	AdditionalProperties *bool             `json:"additionalProperties,omitempty"`
+	Description          string            `json:"description,omitempty"`
+	Enum                 []any             `json:"enum,omitempty"`
+	Items                *Schema           `json:"items,omitempty"`
+	MinItems             *int              `json:"minItems,omitempty"`
+	MaxItems             *int              `json:"maxItems,omitempty"`
 }
 
 // Object starts a new object schema. Pass props as a list of
@@ -246,8 +246,8 @@ func maintainLoreTool() Tool {
 // explicit false.
 func emptyObjectSchema() Schema {
 	return Schema{
-		Type: "object",
-		Properties: map[string]Schema{},
+		Type:                 "object",
+		Properties:           map[string]Schema{},
 		AdditionalProperties: BoolPtr(false),
 	}
 }
@@ -256,7 +256,7 @@ func updateStateTool() Tool {
 	return Tool{
 		Type: "function",
 		Function: ToolFunctionSchema{
-			Name: "update_state",
+			Name:        "update_state",
 			Description: "Обновить state.md: текущий момент + активные NPC + хронология дня. Вызывай при КАЖДОЙ смене сцены: момент — что происходит прямо сейчас; npcs — **ВСЕ персонажи, которых ты упомянул в нарративе этого ответа, кто физически присутствует в сцене** (не только тот, с кем Маркус говорит; если Ирука и Хокаге оба на полигоне — оба в списке); events — 1-3 строки ключевых событий текущего хода (решения игрока, новые открытия, важные реплики NPC), которые должны остаться в дневной хронологии.",
 			Parameters: Object(
 				Required("moment", String("1-2 предложения: что происходит прямо сейчас")),
@@ -292,7 +292,7 @@ func createNpcTool() Tool {
 				Required("file_slug", String("латиницей; будет транслитерирован при необходимости")),
 				Required("temperament", String("1-2 предложения: характер, манера поведения")),
 				Required("relations", String("Отношения с ГГ: статус, связь, отношение. Можно многострочно.")),
-				Required("abilities", String("Способности / навыки / техники. Можно многострочно.")),
+				Required("abilities", ArrayOfStrings("Каждая способность отдельной строкой. Не объединяй несколько в одну — система соберёт массив сама.")),
 				Optional("nicknames", ArrayOfStrings("")),
 				Optional("personal_memory", String("Личная память: что NPC помнит / знает о ГГ или о мире. Можно многострочно.")),
 				Optional("current_status", String("Текущий статус: локация, состояние, активность. Можно многострочно.")),

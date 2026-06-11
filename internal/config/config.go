@@ -267,6 +267,12 @@ type LLMRoleConfig struct {
 	// MaxTokens caps the response length. The GM narrative role
 	// typically wants 1200-2000; compaction roles can stay at 400-600.
 	MaxTokens int `yaml:"max_tokens"`
+	// UsePrefillBracket forces the assistant turn to start with
+	// "{". When true, the driver injects a fake assistant message
+	// content="{" right before the real request. This prefill
+	// trick nudges local models (Ollama) to emit JSON immediately
+	// instead of writing an intro paragraph. Default false.
+	UsePrefillBracket bool `yaml:"use_prefill_bracket"`
 	// Temperature controls randomness. Higher = more creative. 0.7
 	// to 0.9 is a sweet spot for narrative prose; compaction roles
 	// should drop to 0.2-0.3 for deterministic output.
@@ -580,6 +586,12 @@ type VKConfig struct {
 	// PollingWait is the long-poll wait timeout in seconds.
 	// Defaults to 25 (same as VK recommendation).
 	PollingWait int `yaml:"polling_wait"`
+	// DisableStreaming turns off word-by-word streaming for VK.
+	// When true the bot sends a single complete message at the
+	// end instead of editing a placeholder repeatedly. This
+	// avoids VK's flood-control (1000 messages/hour limit) at
+	// the cost of no live typing illusion. Default false.
+	DisableStreaming bool `yaml:"disable_streaming"`
 }
 
 // IsConfigured distinguishes "user did not configure this transport"

@@ -211,6 +211,24 @@ func (d *Driver) buildParams(req llm.ChatRequest) (openaisdk.ChatCompletionNewPa
 		}
 	}
 
+	// Prefill bracket: inject a synthetic assistant turn with
+	// content "{" to force the model to emit JSON immediately.
+	// This is the "assistant pre-fill" trick described in the
+	// article — it suppresses intro paragraphs and markdown
+	// wrappers from local models (Ollama).
+	if d.role.UsePrefillBracket {
+		d.log.Info().Bool("prefill_bracket", true).Int("msg_index", len(messages)).Msg("openai: injecting prefill assistant turn")
+		messages = append(messages, openaisdk.ChatCompletionMessageParamUnion{
+			OfAssistant: &openaisdk.ChatCompletionAssistantMessageParam{
+				Content: openaisdk.ChatCompletionAssistantMessageParamContentUnion{
+					OfString: openaisdk.Opt("{"),
+				},
+			},
+		})
+	} else {
+		d.log.Info().Bool("prefill_bracket", false).Msg("openai: prefill bracket disabled")
+	}
+
 	params := openaisdk.ChatCompletionNewParams{
 		Model:    shared.ChatModel(req.Model),
 		Messages: messages,

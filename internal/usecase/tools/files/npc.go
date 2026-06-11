@@ -130,7 +130,7 @@ func (n *NPC) Create(world string, p tools.NPCProfile) error {
 		FileSlug:    name,
 		Temperament: p.Temperament,
 		RelationsGG: p.Relations,
-		Abilities:   splitList(p.Abilities),
+		Abilities:   p.Abilities,
 		Nicknames:   p.Nicknames,
 	}
 	if err := n.saveProfile(rel, profile); err != nil {
@@ -143,17 +143,46 @@ func (n *NPC) Create(world string, p tools.NPCProfile) error {
 	return nil
 }
 
-// splitList turns a free-form string ("a, b, c") into
-// a []string. Used for create_npc's flat-text fields
-// (abilities, nicknames) which arrive as a single
-// blob from the model. The migration path also
-// benefits: a legacy file with "- a\n- b" gets the
-// same flat-text treatment.
+// splitList turns a free-form string into a []string.
+// Used for create_npc's flat-text fields (abilities, nicknames)
+// which arrive as a single blob from the model.
+//
+// Heuristic:
+//   - Multi-line text (contains "\n") → treat as bullet list,
+//     split by lines and strip "- " / "* " / "• " prefixes.
+//   - Single line with commas → only split if each part is short
+//     (≤ 60 chars). If any part is long, treat the whole string
+//     as a single prose entry (e.g. "Мастер обращения с оружием
+//     — кунаями, сюрикенами, цепями..." should stay intact).
 func splitList(s string) []string {
 	if s == "" {
 		return nil
 	}
+	// 1. Multi-line: bullet list
+	lines := strings.Split(s, "\n")
+	if len(lines) > 1 {
+		out := make([]string, 0, len(lines))
+		for _, l := range lines {
+			l = strings.TrimSpace(l)
+			l = strings.TrimPrefix(l, "- ")
+			l = strings.TrimPrefix(l, "* ")
+			l = strings.TrimPrefix(l, "• ")
+			if l != "" {
+				out = append(out, l)
+			}
+		}
+		return out
+	}
+	// 2. Single line with commas
 	parts := strings.Split(s, ",")
+	if len(parts) > 1 {
+		// Heuristic: if any part is > 60 chars, it's prose, not a list
+		for _, p := range parts {
+			if len(strings.TrimSpace(p)) > 60 {
+				return []string{strings.TrimSpace(s)}
+			}
+		}
+	}
 	out := make([]string, 0, len(parts))
 	for _, p := range parts {
 		if t := strings.TrimSpace(p); t != "" {
@@ -359,7 +388,7 @@ func BuildNPCMarkdown(p tools.NPCProfile) string {
 		{"Темперамент", p.Temperament},
 		{"Отношения с ГГ", p.Relations},
 		{"Отношения с другими NPC", ""}, // placeholder, model fills via update_npc
-		{"Способности", p.Abilities},
+		{"Способности", strings.Join(p.Abilities, "\n")},
 		{"Личная память/факты", p.PersonalMemory},
 		{"Текущий статус", p.CurrentStatus},
 		{"Критические знания", p.CriticalKnowledge},

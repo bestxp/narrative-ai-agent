@@ -72,15 +72,15 @@ type LeaveResult struct {
 // more the GM can lean on this profile when the player
 // returns to the same NPC twenty sessions from now.
 type NPCProfile struct {
-	DisplayName string
-	File        string
-	Nicknames   []string
-	Temperament string
-	Relations   string   // free text, multi-line — "## Отношения с ГГ\n..."
-	Abilities   string   // free text, multi-line — "## Способности\n..."
-	PersonalMemory string // free text — "## Личная память/факты\n..."
-	CurrentStatus  string // free text — "## Текущий статус\n..."
-	CriticalKnowledge string // free text — "## Критические знания\n..."
+	DisplayName       string
+	File              string
+	Nicknames         []string
+	Temperament       string
+	Relations         string   // free text, multi-line — "## Отношения с ГГ\n..."
+	Abilities         []string // flat list — "- ability", "- ability"
+	PersonalMemory    string   // free text — "## Личная память/факты\n..."
+	CurrentStatus     string   // free text — "## Текущий статус\n..."
+	CriticalKnowledge string   // free text — "## Критические знания\n..."
 	// LastUpdate is a free-form tag (the model usually writes
 	// "День N — короткое событие"). The renderer pins it
 	// to the bottom of the profile as "## Последнее

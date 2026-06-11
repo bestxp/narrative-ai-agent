@@ -351,6 +351,21 @@ func (d *Driver) buildRequest(req llm.ChatRequest) (anthropic.MessageNewParams, 
 		}
 	}
 
+	// Prefill bracket: inject a synthetic assistant turn with
+	// content "{" to force the model to emit JSON immediately.
+	// This suppresses intro paragraphs and markdown wrappers.
+	if d.role.UsePrefillBracket {
+		d.log.Info().Bool("prefill_bracket", true).Int("msg_index", len(messages)).Msg("anthropic: injecting prefill assistant turn")
+		messages = append(messages, anthropic.MessageParam{
+			Role: anthropic.MessageParamRoleAssistant,
+			Content: []anthropic.ContentBlockParamUnion{{
+				OfText: &anthropic.TextBlockParam{Text: "{"},
+			}},
+		})
+	} else {
+		d.log.Info().Bool("prefill_bracket", false).Msg("anthropic: prefill bracket disabled")
+	}
+
 	// Prompt caching: mark the last system block as a cache
 	// breakpoint. The system prompt is ~24k chars and rarely
 	// changes between turns — caching it saves ~6k input tokens

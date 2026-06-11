@@ -32,6 +32,8 @@ github.com/anthropics/anthropic-sdk-go/shared/constant
 # github.com/bahlo/generic-list-go v0.2.0
 ## explicit; go 1.18
 github.com/bahlo/generic-list-go
+# github.com/blang/semver v3.5.1+incompatible
+## explicit
 # github.com/buger/jsonparser v1.1.2
 ## explicit; go 1.13
 github.com/buger/jsonparser
@@ -41,12 +43,23 @@ github.com/davecgh/go-spew/spew
 # github.com/eekstunt/telegramify-markdown-go v0.2.0
 ## explicit; go 1.22
 github.com/eekstunt/telegramify-markdown-go
+# github.com/go-json-experiment/json v0.0.0-20260601182631-00ed12fed2a6
+## explicit; go 1.26
+github.com/go-json-experiment/json
+github.com/go-json-experiment/json/internal
+github.com/go-json-experiment/json/internal/jsonflags
+github.com/go-json-experiment/json/internal/jsonopts
+github.com/go-json-experiment/json/internal/jsonwire
+github.com/go-json-experiment/json/jsontext
 # github.com/go-telegram-bot-api/telegram-bot-api v4.6.4+incompatible
 ## explicit
 github.com/go-telegram-bot-api/telegram-bot-api
 # github.com/invopop/jsonschema v0.14.0
 ## explicit; go 1.24
 github.com/invopop/jsonschema
+# github.com/kaptinlin/jsonrepair v0.4.6
+## explicit; go 1.26.3
+github.com/kaptinlin/jsonrepair
 # github.com/klauspost/compress v1.18.4
 ## explicit; go 1.23
 github.com/klauspost/compress

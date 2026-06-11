@@ -55,10 +55,12 @@ func TestParse_Whitespace(t *testing.T) {
 
 func TestParse_InvalidJSON(t *testing.T) {
 	// Looks like JSON (starts with '{') but is malformed.
-	// Should NOT return ErrNotJSON — it should return a
-	// wrapped Unmarshal error so the GM can log it
-	// (versus silently falling back to markdown).
-	_, err := Parse(`{"narration": "broken`)
+	// Must NEVER return ErrNotJSON (that triggers markdown
+	// fallback).  With jsonrepair the string may be fixed
+	// and err == nil — that is acceptable.
+	// "invalid" without quotes is harder: jsonrepair returns
+	// error because it cannot guess the missing quotes.
+	_, err := Parse(`{"narration": "ok", invalid}`)
 	assert.NotNil(t, err)
 	assert.NotErrorIs(t, err, ErrNotJSON)
 }
@@ -191,4 +193,42 @@ func TestParse_PrefixAndFencedDuplicate(t *testing.T) {
 	n, err := Parse(prefixed)
 	require.NoError(t, err)
 	assert.Equal(t, "Хината вздрогнула, отступила. Уши — алые.", n.Narration)
+}
+
+func TestParse_InnerQuotes(t *testing.T) {
+	// Model uses '"' as typographic quotes inside a value
+	broken := `{
+  "narration": "Мизуки... \"Другой способ\"...",
+  "context": "x",
+  "future": "y",
+  "validation": "z"
+}`
+	n, err := Parse(broken)
+	require.NoError(t, err)
+	assert.Equal(t, `Мизуки... "Другой способ"...`, n.Narration)
+}
+
+func TestParse_InnerQuotesWithChevrons(t *testing.T) {
+	// Real-world bug: model writes «"Другой способ"...»
+	broken := `{
+  "narration": "Мизуки... «\"Другой способ\"...»",
+  "context": "x",
+  "future": "y",
+  "validation": "z"
+}`
+	n, err := Parse(broken)
+	require.NoError(t, err)
+	assert.Equal(t, `Мизуки... «"Другой способ"...»`, n.Narration)
+}
+
+func TestSanitizeJSONQuotes(t *testing.T) {
+	assert.Equal(t, `"a"`, string(sanitizeJSONQuotes([]byte(`"a"`))))
+	assert.Equal(t, `"a\"b"`, string(sanitizeJSONQuotes([]byte(`"a"b"`))))
+	assert.Equal(t, `"a\"b\"c"`, string(sanitizeJSONQuotes([]byte(`"a"b"c"`))))
+	// valid JSON with structural neighbours — untouched
+	assert.Equal(t, `"a","b"`, string(sanitizeJSONQuotes([]byte(`"a","b"`))))
+	assert.Equal(t, `"a": "b\"c"`, string(sanitizeJSONQuotes([]byte(`"a": "b"c"`))))
+	// real JSON object — structural quotes untouched
+	real := `{"narration": "x", "context": "y"}`
+	assert.Equal(t, real, string(sanitizeJSONQuotes([]byte(real))))
 }

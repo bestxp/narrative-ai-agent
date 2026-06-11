@@ -125,6 +125,7 @@ func main() {
 			APIKey:                   role.APIKey,
 			Model:                    role.Model,
 			MaxTokens:                role.MaxTokens,
+			UsePrefillBracket:        role.UsePrefillBracket,
 			Temperature:              role.Temperature,
 			RequestTimeoutSeconds:    role.RequestTimeoutSeconds,
 			DisableThinking:          role.DisableThinking,
@@ -139,6 +140,7 @@ func main() {
 			APIKey:                   role.APIKey,
 			Model:                    role.Model,
 			MaxTokens:                role.MaxTokens,
+			UsePrefillBracket:        role.UsePrefillBracket,
 			Temperature:              role.Temperature,
 			RequestTimeoutSeconds:    role.RequestTimeoutSeconds,
 			DisableThinking:          role.DisableThinking,
@@ -279,6 +281,7 @@ func main() {
 		Role: llm.RoleConfig{
 			Model:                    role.Model,
 			MaxTokens:                role.MaxTokens,
+			UsePrefillBracket:        role.UsePrefillBracket,
 			Temperature:              role.Temperature,
 			MaxEmptyRetries:          role.MaxEmptyRetries,
 			EmptyRetryTimeoutSeconds: role.EmptyRetryTimeoutSeconds,
@@ -330,10 +333,11 @@ func main() {
 	// --- VKontakte ---
 	if cfg.Messaging.VK.IsConfigured() {
 		vkClient, err := vktransport.New(vktransport.Config{
-			AccessToken:    cfg.Messaging.VK.AccessToken,
-			GroupID:        cfg.Messaging.VK.GroupID,
-			AllowedUserIDs: cfg.Messaging.VK.AllowedUserIDs,
-			PollingWait:    cfg.Messaging.VK.PollingWait,
+			AccessToken:      cfg.Messaging.VK.AccessToken,
+			GroupID:          cfg.Messaging.VK.GroupID,
+			AllowedUserIDs:   cfg.Messaging.VK.AllowedUserIDs,
+			PollingWait:      cfg.Messaging.VK.PollingWait,
+			DisableStreaming: cfg.Messaging.VK.DisableStreaming,
 		}, log)
 		if err != nil {
 			log.Fatal().Err(err).Msg("vk init")
@@ -548,7 +552,7 @@ func handleIncoming(ctx context.Context, log zerolog.Logger, c messaging.Client,
 	// never strips rules — that is stripRules' job, the
 	// same way it has been for months.
 	postStreamRender := func() string {
-		raw := replyBuf.String()
+		raw := structured.StripThinkingTags(replyBuf.String())
 		if jsonMode {
 			n, err := structured.Parse(raw)
 			if err != nil {

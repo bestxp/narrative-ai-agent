@@ -13,15 +13,16 @@ import "encoding/json"
 // the per-call retry path inside usecase/gm.go (we no longer
 // auto-retry on empty, but the field is harmless).
 type RoleConfig struct {
-	APIURL                  string
-	APIKey                  string
-	Model                   string
-	MaxTokens               int
-	Temperature             float64
-	RequestTimeoutSeconds   int
-	DisableThinking         bool
-	ReasoningEffort         string
-	MaxEmptyRetries         int
+	APIURL                   string
+	APIKey                   string
+	Model                    string
+	MaxTokens                int
+	UsePrefillBracket        bool
+	Temperature              float64
+	RequestTimeoutSeconds    int
+	DisableThinking          bool
+	ReasoningEffort          string
+	MaxEmptyRetries          int
 	EmptyRetryTimeoutSeconds int
 }
 

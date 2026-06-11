@@ -18,10 +18,11 @@ import (
 )
 
 type Config struct {
-	AccessToken    string
-	GroupID        int
-	AllowedUserIDs []int
-	PollingWait    int
+	AccessToken      string
+	GroupID          int
+	AllowedUserIDs   []int
+	PollingWait      int
+	DisableStreaming bool
 }
 
 type Client struct {
@@ -193,6 +194,9 @@ func (c *Client) Send(ctx context.Context, msg messaging.OutgoingMessage) error 
 }
 
 func (c *Client) StartStream(ctx context.Context, chatID string, replyToMessageID int) (messaging.StreamSession, error) {
+	if c.cfg.DisableStreaming {
+		return nil, nil
+	}
 	peerID, err := strconv.Atoi(chatID)
 	if err != nil {
 		return nil, fmt.Errorf("vk: invalid peer_id %q: %w", chatID, err)
@@ -216,7 +220,7 @@ func (c *Client) StartStream(ctx context.Context, chatID string, replyToMessageI
 
 	c.log.Debug().Str("chat", chatID).Int("msg_id", msgID).Msg("vk: stream started")
 
-	return &stream{
+	return NewThrottledStream(&stream{
 		client:   c,
 		chatID:   chatID,
 		peerID:   peerID,
@@ -224,7 +228,7 @@ func (c *Client) StartStream(ctx context.Context, chatID string, replyToMessageI
 		groupID:  c.cfg.GroupID,
 		ctx:      ctx,
 		lastSent: "\u2026",
-	}, nil
+	}), nil
 }
 
 func (c *Client) sendTyping(chatID string) {

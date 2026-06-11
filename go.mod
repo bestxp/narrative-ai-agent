@@ -6,6 +6,7 @@ require (
 	github.com/anthropics/anthropic-sdk-go v1.48.0
 	github.com/eekstunt/telegramify-markdown-go v0.2.0
 	github.com/go-telegram-bot-api/telegram-bot-api v4.6.4+incompatible
+	github.com/kaptinlin/jsonrepair v0.4.6
 	github.com/openai/openai-go/v3 v3.39.0
 	github.com/rs/zerolog v1.35.1
 	github.com/stretchr/testify v1.11.1
@@ -13,6 +14,7 @@ require (
 )
 
 require (
+	github.com/go-json-experiment/json v0.0.0-20260601182631-00ed12fed2a6 // indirect
 	github.com/klauspost/compress v1.18.4 // indirect
 	github.com/vmihailenco/msgpack/v5 v5.4.1 // indirect
 	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect

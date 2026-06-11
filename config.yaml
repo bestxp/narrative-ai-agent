@@ -78,6 +78,9 @@ llm:
       # Путь к system prompt. "" = встроенный narrative.md.
       system_prompt_path: ""
       max_tokens: 1500
+      # true = вставить prefill assistant turn "{" — заставляет модель
+      # начинать ответ с JSON вместо вводного текста (для Ollama).
+      use_prefill_bracket: false
       temperature: 0.8
       request_timeout_seconds: 120
       # context_window: лимит input-токенов. 0 = без компактинга.

@@ -670,20 +670,10 @@ func (g *GM) Reply(ctx context.Context, chatID, userText string, cb Callbacks) (
 			// almost every time (it sits at the end). We log the
 			// full body only on the failing path to keep healthy
 			// rounds readable.
-			if len(fullContent) > 0 && !g.isFormatCompliant(fullContent) {
+			if len(fullContent) > 0 {
 				fields["content_full"] = fullContent
-				fields["missing_headers"] = g.missingFormatHeaders(fullContent)
-				// On a format miss we also log the request we sent
-				// (system prompt + history + tool specs) so an
-				// operator can see whether the model was actually
-				// told the 4-block contract on this round. The
-				// payload is large (10-30 KB), so we keep it gated
-				// on the failing path. We render each message
-				// as {role, content, tool_calls?} so the slowlog
-				// entry is readable in jq.
-				fields["request_messages"] = formatMessagesForLog(messages)
-				fields["request_tools"] = formatToolsForLog(g.toolSpecs)
 			}
+			fields["request_tools"] = formatToolsForLog(g.toolSpecs)
 			_ = g.slow.Write("llm.round", chatID, fields)
 		}
 
@@ -741,42 +731,6 @@ func (g *GM) Reply(ctx context.Context, chatID, userText string, cb Callbacks) (
 					Int("raw_trace_count", len(rawTrace)).
 					Msg("llm returned empty content (no tools, no text) — hard error, no retry")
 				return totals, fmt.Errorf("model returned no tool_use and no content (round=%d, finish=%s, raw_events=%d)", round, finishReason, len(rawTrace))
-			}
-			if !g.isFormatCompliant(assistantBuf.String()) {
-				fixed, fixedUsage, fixErr := g.repromptForFormat(ctx, chatID, history, assistantBuf.String(), cb)
-				totals.PromptTokens += fixedUsage.PromptTokens
-				totals.CompletionTokens += fixedUsage.CompletionTokens
-				totals.TotalTokens += fixedUsage.TotalTokens
-				if totals.Source == "" || totals.Source == "off" {
-					totals.Source = fixedUsage.Source
-				}
-				if fixErr != nil {
-					g.log.Warn().Err(fixErr).Msg("format re-prompt failed; returning original reply")
-				} else if fixed != "" {
-					if cb.OnDelta != nil {
-						_ = cb.OnDelta("\n\n[формат восстановлен]\n\n" + fixed)
-					}
-					// Persist ONLY the fixed chunk as the
-					// assistant turn. The truncated
-					// original is omitted from history —
-					// otherwise the model sees half a
-					// sentence + a [формат восстановлен]
-					// marker on its next turn and tries
-					// to "continue" the broken text. The
-					// recovered text already satisfies
-					// the 4-block contract, so it is
-					// self-contained as a training
-					// example.
-					conv.mu.Lock()
-					if len(conv.messages) > 0 {
-						last := conv.messages[len(conv.messages)-1]
-						if last.Role == "assistant" {
-							last.Content = fixed
-							conv.messages[len(conv.messages)-1] = last
-						}
-					}
-					conv.mu.Unlock()
-				}
 			}
 			return totals, nil
 		}
@@ -1570,7 +1524,7 @@ func (g *GM) dispatchCreateNpcDirective(_ context.Context, world string, c extra
 		File:        strings.TrimSpace(c.Args["file_slug"]),
 		Temperament: strings.TrimSpace(c.Args["temperament"]),
 		Relations:   strings.TrimSpace(c.Args["relations"]),
-		Abilities:   strings.TrimSpace(c.Args["abilities"]),
+		Abilities:   []string{strings.TrimSpace(c.Args["abilities"])},
 	}
 	if spec.DisplayName == "" || spec.File == "" {
 		return fmt.Errorf("create_npc: display_name and file_slug required")
@@ -2316,7 +2270,7 @@ func (g *GM) dispatchOneTool(ctx context.Context, tc llm.ToolCall) (string, stri
 			File:        toString(args["file_slug"]),
 			Temperament: toString(args["temperament"]),
 			Relations:   toString(args["relations"]),
-			Abilities:   toString(args["abilities"]),
+			Abilities:   toStringSlice(args["abilities"]),
 			Nicknames:   toStringSlice(args["nicknames"]),
 		}
 		if err := g.tools.Create(currentWorldName(g.fs), spec); err != nil {
@@ -2525,84 +2479,6 @@ func readCurrentDay(fs *storage.FileStore, world string) int {
 	return n
 }
 
-// requiredFormatHeaders is the contract the GM enforces on every
-// assistant message. The model is told the four-block structure
-// in prompts/narrative.md; this list is the same one the
-// dispatcher reads. Keeping the names in code lets us detect
-// drift between the prompt and the validator at boot.
-var requiredFormatHeaders = []string{
-	"**диалоги и действия**",
-	"**КОНТЕКСТ И ИЗМЕНЕНИЯ**",
-	"**БУДУЩЕЕ**",
-	"**ВАЛИДАЦИЯ ПРАВИЛ**",
-}
-
-// isFormatCompliant accepts EITHER of two shapes:
-//
-//  1. JSON mode (preferred). The assistant turn is a
-//     JSON object with four fields (narration, context,
-//     future, validation) and no extraneous keys. The
-//     provider with structured_output=json_object
-//     guarantees this shape; the bot still validates
-//     because providers sometimes ignore strict mode.
-//
-//  2. Legacy markdown mode. The assistant turn contains
-//     all four "**диалоги и действия**" / "КОНТЕКСТ" /
-//     "БУДУЩЕЕ" / "ВАЛИДАЦИЯ ПРАВИЛ" headers. The legacy
-//     driver and providers that ignore json_object take
-//     this path.
-//
-// The function does NOT log missing fields — call
-// missingFormatHeaders for that. The distinction matters
-// because for JSON we want to surface a different
-// diagnostic (e.g. "model produced JSON with a missing
-// `future` field") than for markdown.
-func (g *GM) isFormatCompliant(text string) bool {
-	if text == "" {
-		return false
-	}
-	if structured.LooksLikeJSON(text) {
-		n, err := structured.Parse(text)
-		if err != nil {
-			return false
-		}
-		return len(n.MissingFields()) == 0
-	}
-	for _, h := range requiredFormatHeaders {
-		if !strings.Contains(text, h) {
-			return false
-		}
-	}
-	return true
-}
-
-// missingFormatHeaders reports the contract elements
-// that are absent in the assistant turn. For JSON the
-// list is the empty field names; for markdown the list
-// is the bold headers. The format re-prompt path uses
-// the returned strings verbatim, so the wording must
-// be unambiguous to the model — see repromptForFormat
-// for the prompt template.
-func (g *GM) missingFormatHeaders(text string) []string {
-	if text == "" {
-		return requiredFormatHeaders
-	}
-	if structured.LooksLikeJSON(text) {
-		n, err := structured.Parse(text)
-		if err != nil {
-			return requiredFormatHeaders
-		}
-		return n.MissingFields()
-	}
-	var missing []string
-	for _, h := range requiredFormatHeaders {
-		if !strings.Contains(text, h) {
-			missing = append(missing, h)
-		}
-	}
-	return missing
-}
-
 // retryEmptyOnce re-issues the LLM request that just
 // produced 0 content (and 0 surviving tool calls).
 // Two cases motivate this:
@@ -2705,141 +2581,6 @@ func (g *GM) retryEmptyOnce(ctx context.Context, messages []llm.Message, timeout
 		}
 	}
 	return buf.String(), totals, rawTrace, nil
-}
-
-// repromptForFormat appends a corrective user message to history
-// and runs one more LLM round. The corrective text is short and
-// neutral — it only lists the headers that were missing, then
-// asks the model to emit the full reply. The model sees the
-// original reply in the history so it can re-emit it correctly
-// rather than starting from scratch.
-//
-// Limit: at most one re-prompt. Long sessions occasionally
-// produce 2-block replies; one nudge is enough. If the second
-// reply also misses a header we return whatever we got — the
-// operator can see it in the slowlog and tune the prompt.
-func (g *GM) repromptForFormat(ctx context.Context, chatID string, history []llm.Message, original string, cb Callbacks) (string, TokenUsage, error) {
-	var totals TokenUsage
-	if g.tracking == "" || g.tracking == "off" {
-		totals.Source = "off"
-	}
-
-	missing := g.missingFormatHeaders(original)
-	if len(missing) == 0 {
-		return "", totals, nil
-	}
-
-	missingList := strings.Join(missing, ", ")
-	reprompt := fmt.Sprintf(
-		"[system note] твой предыдущий ответ не содержал обязательных блоков: %s. "+
-			"Перепиши ответ с нуля, включив все четыре блока **в этом порядке**: "+
-			"**диалоги и действия**, **КОНТЕКСТ И ИЗМЕНЕНИЯ**, **БУДУЩЕЕ**, **ВАЛИДАЦИЯ ПРАВИЛ**. "+
-			"**КРАТКО**: нарратив ≤ 150 слов, каждый служебный блок — 1-2 строки (иначе ответ оборвётся по лимиту токенов). "+
-			"**Не продолжай** предыдущий оборванный текст — начни с нового абзаца. "+
-			"Не пиши пятый блок (варианты действий / следующий ход / выбор игрока), "+
-			"не задавай игроку вопрос в конце, не нумеруй опции.",
-		missingList,
-	)
-
-	history = append(history,
-		llm.Message{Role: "user", Content: reprompt},
-	)
-
-	convMessages := history
-	ctxPrompt, err := g.buildContextPrompt()
-	if err != nil {
-		return "", totals, fmt.Errorf("reprompt: build context: %w", err)
-	}
-	messages := make([]llm.Message, 0, len(convMessages)+1)
-	messages = append(messages, llm.Message{Role: "system", Content: ctxPrompt})
-	messages = append(messages, convMessages...)
-
-	var (
-		buf          strings.Builder
-		finishReason string
-		usageFromAPI llm.Usage
-		gotUsage     bool
-		compChars    int
-		rawTrace     []string
-	)
-	streamErr := g.llm.Stream(ctx, llm.ChatRequest{
-		Model:       g.role.Model,
-		Messages:    messages,
-		Tools:       g.toolSpecs,
-		Temperature: g.role.Temperature,
-		MaxTokens:   g.role.MaxTokens,
-	}, func(ch llm.Chunk) error {
-		if len(ch.RawTrace) > 0 {
-			rawTrace = ch.RawTrace
-		}
-		if ch.Done {
-			return nil
-		}
-		if ch.Content != "" {
-			buf.WriteString(ch.Content)
-			compChars += len(ch.Content)
-			if cb.OnDelta != nil {
-				if err := cb.OnDelta(ch.Content); err != nil {
-					return err
-				}
-			}
-		}
-		if ch.Finish != "" {
-			finishReason = ch.Finish
-		}
-		if ch.Usage.TotalTokens > 0 || ch.Usage.PromptTokens > 0 {
-			usageFromAPI = ch.Usage
-			gotUsage = true
-		}
-		return nil
-	})
-	if streamErr != nil {
-		return "", totals, streamErr
-	}
-	_ = finishReason
-	_ = gotUsage
-	_ = usageFromAPI
-	_ = compChars
-
-	// Persist the corrective turn as part of conversation
-	// history so the model learns the pattern.
-	conv := g.getConversation(chatID)
-	conv.mu.Lock()
-	conv.messages = append(conv.messages, llm.Message{Role: "user", Content: reprompt})
-	conv.messages = append(conv.messages, llm.Message{Role: "assistant", Content: buf.String()})
-	conv.mu.Unlock()
-
-	if g.slow != nil {
-		origPrev := original
-		if len(origPrev) > 200 {
-			origPrev = origPrev[:200] + "…"
-		}
-		fixPrev := buf.String()
-		if len(fixPrev) > 200 {
-			fixPrev = fixPrev[:200] + "…"
-		}
-		fields := map[string]any{
-			"missing":        missing,
-			"original_chars": len(original),
-			"reprompt_chars": len(buf.String()),
-			"original_prev":  origPrev,
-			"reprompt_prev":  fixPrev,
-		}
-		// If the corrective round also produced no content, the
-		// raw SSE trace is the only diagnostic. Without it the
-		// operator would only see "reprompt_chars: 0" and have
-		// to guess whether the model refused, timed out, or
-		// crashed.
-		if len(buf.String()) == 0 {
-			fields["raw_trace"] = rawTrace
-		}
-		_ = g.slow.Write("format.reprompt", chatID, fields)
-	}
-	g.log.Info().Strs("missing", missing).Int("reprompt_chars", len(buf.String())).Msg("format re-prompt")
-
-	// Return only the new chunk — caller will splice it into
-	// the user-visible buffer with a clear separator.
-	return buf.String(), totals, nil
 }
 
 // formatMessagesForLog renders a messages slice into a list of
