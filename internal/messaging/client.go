@@ -5,7 +5,37 @@
 // platform.
 package messaging
 
-import "context"
+import (
+	"context"
+	"time"
+)
+
+// HealthState is the lifecycle state a Client reports back to
+// the health server. Strings mirror the values exposed by the
+// health package so that the same enum flows through the wire.
+type HealthState string
+
+const (
+	StateUnknown   HealthState = "unknown"
+	StateStarting  HealthState = "starting"
+	StateConnected HealthState = "connected"
+	StateReconnect HealthState = "reconnecting"
+	StateStopped   HealthState = "stopped"
+)
+
+// HealthReport is the snapshot a Client exposes to the health
+// server. Name is a transport identifier ("telegram", "vk"); State
+// is one of the HealthState constants; StartedAt is when the
+// transport first reached StateConnected (zero-value time on
+// transports that have not yet connected); Message is a
+// free-form human-readable detail (last error, last reconnect
+// delay, etc.) — must not contain secrets.
+type HealthReport struct {
+	Name      string
+	State     HealthState
+	StartedAt time.Time
+	Message   string
+}
 
 // Sender is a minimal abstraction over "who is allowed to talk to
 // the bot" and "where do we send replies". Each transport maps the
@@ -81,6 +111,12 @@ type Client interface {
 	// exits. It is safe to call Run for multiple clients in
 	// goroutines — the package owner is responsible for lifecycle.
 	Run(ctx context.Context) error
+
+	// Health returns the current state of the transport. It is
+	// safe to call from any goroutine at any time and must not
+	// block. Health probes poll this on a 1-5s cadence; clients
+	// should report the last known state without re-validating.
+	Health() HealthReport
 
 	// Send posts a new message to the chat. The transport is free
 	// to split very long messages.

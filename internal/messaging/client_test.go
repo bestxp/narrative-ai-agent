@@ -54,6 +54,19 @@ func (f *fakeClient) SetCommands(ctx context.Context, cmds []BotCommand) error {
 	return nil
 }
 
+func (f *fakeClient) Health() HealthReport {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	state := StateUnknown
+	if f.started && !f.stopped {
+		state = StateConnected
+	}
+	if f.started && f.stopped {
+		state = StateStopped
+	}
+	return HealthReport{Name: f.name, State: state}
+}
+
 func TestMultiClient_StartsAll(t *testing.T) {
 	a := &fakeClient{name: "a"}
 	b := &fakeClient{name: "b"}

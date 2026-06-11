@@ -11,3 +11,6 @@ AGENTS.MD
 /test-openapi
 /running
 /planning
+# Docker
+/.docker/
+/docker-compose.override.yml

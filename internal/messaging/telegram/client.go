@@ -37,6 +37,16 @@ type Client struct {
 	isOpen        bool
 	streamsMu     sync.Mutex
 	activeStreams map[string]int
+
+	// healthMu guards the HealthReport snapshot. Health() is
+	// called from the HTTP probe goroutine on a 1-5s cadence;
+	// the Run() goroutine mutates these fields on connect /
+	// reconnect / shutdown. RWMutex is fine because the probe
+	// takes a snapshot.
+	healthMu        sync.RWMutex
+	healthState     messaging.HealthState
+	healthStartedAt time.Time
+	healthMessage   string
 }
 
 // New authenticates with BotFather and prepares the client. The
@@ -53,10 +63,11 @@ func New(cfg Config, log zerolog.Logger) (*Client, error) {
 		cfg.PollingTimeout = 60
 	}
 	return &Client{
-		cfg:  cfg,
-		api:  api,
-		log:  log.With().Str("transport", "telegram").Logger(),
-		recv: make(chan messaging.IncomingMessage, 64),
+		cfg:         cfg,
+		api:         api,
+		log:         log.With().Str("transport", "telegram").Logger(),
+		recv:        make(chan messaging.IncomingMessage, 64),
+		healthState: messaging.StateStarting,
 	}, nil
 }
 
@@ -182,8 +193,10 @@ func (c *Client) Run(ctx context.Context) error {
 	u.Timeout = c.cfg.PollingTimeout
 	updates, err := c.api.GetUpdatesChan(u)
 	if err != nil {
+		c.setHealth(messaging.StateReconnect, "", err.Error())
 		return fmt.Errorf("telegram: get updates: %w", err)
 	}
+	c.setHealth(messaging.StateConnected, c.api.Self.UserName, "")
 	c.log.Info().Str("username", c.api.Self.UserName).Msg("bot started")
 
 	// Typing ticker: refreshes "typing..." for chats with active streams.
@@ -192,10 +205,12 @@ func (c *Client) Run(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
+			c.setHealth(messaging.StateStopped, "", "ctx cancelled")
 			c.log.Info().Msg("shutdown")
 			return nil
 		case upd, ok := <-updates:
 			if !ok {
+				c.setHealth(messaging.StateReconnect, "", "updates channel closed")
 				return errors.New("telegram: updates channel closed")
 			}
 			if upd.Message == nil {
@@ -356,5 +371,32 @@ func (c *Client) typingLoop(ctx context.Context) {
 			}
 			c.streamsMu.Unlock()
 		}
+	}
+}
+
+// Health implements messaging.Client. It is safe to call from any
+// goroutine at any time and must not block.
+func (c *Client) Health() messaging.HealthReport {
+	c.healthMu.RLock()
+	defer c.healthMu.RUnlock()
+	return messaging.HealthReport{
+		Name:      "telegram",
+		State:     c.healthState,
+		StartedAt: c.healthStartedAt,
+		Message:   c.healthMessage,
+	}
+}
+
+// setHealth updates the snapshot fields atomically. name is the
+// transport identifier embedded in the report (passed so the helper
+// can also serve clients whose Name() is non-trivial); message is a
+// free-form detail string and must not contain secrets.
+func (c *Client) setHealth(state messaging.HealthState, _ string, message string) {
+	c.healthMu.Lock()
+	defer c.healthMu.Unlock()
+	c.healthState = state
+	c.healthMessage = message
+	if state == messaging.StateConnected && c.healthStartedAt.IsZero() {
+		c.healthStartedAt = time.Now()
 	}
 }

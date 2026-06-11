@@ -12,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"syscall"
+	"time"
 
 	"github.com/rs/zerolog"
 
@@ -23,6 +24,7 @@ import (
 	"github.com/bestxp/narrative-ai-agent/internal/config"
 	"github.com/bestxp/narrative-ai-agent/internal/dispatcher"
 	"github.com/bestxp/narrative-ai-agent/internal/domain"
+	"github.com/bestxp/narrative-ai-agent/internal/health"
 	"github.com/bestxp/narrative-ai-agent/internal/logging"
 	"github.com/bestxp/narrative-ai-agent/internal/messaging"
 	"github.com/bestxp/narrative-ai-agent/internal/messaging/telegram"
@@ -350,6 +352,19 @@ func main() {
 	}
 	pool := messaging.NewMultiClient(clients...)
 
+	// Health server: k8s livenessProbe / readinessProbe targets.
+	hs := &healthServer{clients: clients}
+	if cfg.Health.ListenAddr != "" {
+		srv := health.New(cfg.Health.ListenAddr, hs)
+		if err := srv.Start(); err != nil {
+			log.Fatal().Err(err).Str("addr", cfg.Health.ListenAddr).Msg("health server bind failed")
+		}
+		hs.srv = srv
+		log.Info().Str("addr", srv.Addr()).Msg("health server ready")
+	} else {
+		log.Info().Msg("health server disabled (config: health.listen_addr is empty)")
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -367,6 +382,10 @@ func main() {
 			log.Error().Err(err).Msg("messaging pool exited")
 		}
 	}()
+
+	if hs != nil && hs.srv != nil {
+		hs.srv.MarkReady()
+	}
 
 	// auto-save: counter increments per freeform bot reply. When
 	// the threshold is reached the bot commits and pushes, and
@@ -439,6 +458,12 @@ func main() {
 	}
 
 	wg.Wait()
+
+	if hs != nil && hs.srv != nil {
+		shutCtx, shutCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = hs.srv.Shutdown(shutCtx)
+		shutCancel()
+	}
 }
 
 // chatMu serialises handleIncoming per chatID so two messages
@@ -856,4 +881,34 @@ func (a summarizerAdapter) SummarizeMemorise(ctx context.Context, world string, 
 		return nil, err
 	}
 	return res.Body, nil
+}
+
+// healthServer is the bridge between the messaging layer (which
+// owns Health() on each client) and the health package (which
+// wants a Reporter). Keeping the conversion here means neither
+// package needs to import the other.
+type healthServer struct {
+	clients []messaging.Client
+	srv     *health.Server
+}
+
+// Reports snapshots each client's Health() and converts the
+// messaging.HealthState enum to the health.Status string used on
+// the wire.
+func (h *healthServer) Reports() []health.Report {
+	out := make([]health.Report, 0, len(h.clients))
+	for _, c := range h.clients {
+		r := c.Health()
+		var startedAt string
+		if !r.StartedAt.IsZero() {
+			startedAt = r.StartedAt.UTC().Format(time.RFC3339)
+		}
+		out = append(out, health.Report{
+			Name:      health.Status(c.Name()),
+			State:     health.Status(r.State),
+			StartedAt: startedAt,
+			Message:   r.Message,
+		})
+	}
+	return out
 }

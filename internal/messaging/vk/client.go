@@ -33,6 +33,13 @@ type Client struct {
 	recv          chan messaging.IncomingMessage
 	mu            sync.Mutex
 	activeStreams map[string]int
+
+	// healthMu guards the HealthReport snapshot. Health() is
+	// called from the HTTP probe goroutine on a 1-5s cadence.
+	healthMu        sync.RWMutex
+	healthState     messaging.HealthState
+	healthStartedAt time.Time
+	healthMessage   string
 }
 
 func New(cfg Config, log zerolog.Logger) (*Client, error) {
@@ -59,6 +66,7 @@ func New(cfg Config, log zerolog.Logger) (*Client, error) {
 		log:           log.With().Str("transport", "vk").Logger(),
 		recv:          make(chan messaging.IncomingMessage, 64),
 		activeStreams: make(map[string]int),
+		healthState:   messaging.StateStarting,
 	}
 
 	lp.MessageNew(c.onMessageNew)
@@ -135,6 +143,7 @@ func (c *Client) Run(ctx context.Context) error {
 	const maxBackoff = 30 * time.Second
 
 	for {
+		c.setHealth(messaging.StateConnected, "", "")
 		errCh := make(chan error, 1)
 		go func() {
 			if err := c.lp.Run(); err != nil {
@@ -145,16 +154,19 @@ func (c *Client) Run(ctx context.Context) error {
 
 		select {
 		case <-ctx.Done():
+			c.setHealth(messaging.StateStopped, "", "ctx cancelled")
 			c.lp.Shutdown()
 			c.log.Info().Msg("vk: shutdown")
 			return nil
 		case err := <-errCh:
+			c.setHealth(messaging.StateReconnect, "", err.Error())
 			c.log.Error().
 				Err(err).
 				Dur("backoff", backoff).
 				Msg("vk: longpoll error, reconnecting")
 			select {
 			case <-ctx.Done():
+				c.setHealth(messaging.StateStopped, "", "ctx cancelled")
 				c.lp.Shutdown()
 				c.log.Info().Msg("vk: shutdown")
 				return nil
@@ -286,4 +298,29 @@ func splitForVK(text string) []string {
 		out = append(out, rest)
 	}
 	return out
+}
+
+// Health implements messaging.Client. It is safe to call from any
+// goroutine at any time and must not block.
+func (c *Client) Health() messaging.HealthReport {
+	c.healthMu.RLock()
+	defer c.healthMu.RUnlock()
+	return messaging.HealthReport{
+		Name:      "vk",
+		State:     c.healthState,
+		StartedAt: c.healthStartedAt,
+		Message:   c.healthMessage,
+	}
+}
+
+// setHealth atomically updates the snapshot fields. message is
+// a free-form detail string and must not contain secrets.
+func (c *Client) setHealth(state messaging.HealthState, _ string, message string) {
+	c.healthMu.Lock()
+	defer c.healthMu.Unlock()
+	c.healthState = state
+	c.healthMessage = message
+	if state == messaging.StateConnected && c.healthStartedAt.IsZero() {
+		c.healthStartedAt = time.Now()
+	}
 }

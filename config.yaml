@@ -110,3 +110,10 @@ llm:
 slowlog:
   enabled: true
   file: "slow.log"
+
+# Health server: k8s livenessProbe / readinessProbe target.
+# Disabled by default. Set to e.g. ":8080" inside a container to
+# expose /healthz (always 200) and /readyz (200 when at least one
+# transport is connected).
+health:
+  listen_addr: ""

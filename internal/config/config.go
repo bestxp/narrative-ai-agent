@@ -40,6 +40,12 @@ type Config struct {
 	// enabled the path is opened in append mode; the parent
 	// directory is created if missing.
 	Slowlog SlowlogConfig `yaml:"slowlog"`
+	// Health configures the k8s-style health HTTP server. When
+	// ListenAddr is non-empty the bot serves /healthz, /readyz
+	// and /health on that address. Set it to "" to disable
+	// the health server (the bot still runs normally, but
+	// k8s / docker-compose cannot probe its readiness).
+	Health HealthConfig `yaml:"health"`
 }
 
 // MessagingConfig groups every chat transport under a single section.
@@ -187,6 +193,31 @@ type NarrativeConfig struct {
 	// from one line to a multi-line breakdown. Honoured only
 	// when CompactionNotify is true.
 	CompactionNotifyVerbose bool `yaml:"compaction_notify_verbose"`
+}
+
+// HealthConfig exposes the k8s-style health server. Three
+// endpoints are served:
+//
+//	GET /healthz — liveness probe. 200 once the process is up.
+//	GET /readyz  — readiness probe. 200 when at least one
+//	               configured messaging client reports
+//	               HealthState == connected.
+//	GET /health  — same payload as /readyz but always returns
+//	               JSON for human / log inspection.
+//
+// Probes are pure reads: no auth, no rate limiting, no body. The
+// server is stdlib net/http only — no metrics framework, no
+// /metrics endpoint. Add one here if you ever need Prometheus
+// scraping; the codebase intentionally stays small.
+type HealthConfig struct {
+	// ListenAddr is the bind address for the health server, in
+	// net.Listen format. ":8080" binds to all interfaces on
+	// port 8080; "127.0.0.1:8080" binds to the loopback only.
+	// Empty string disables the server.
+	ListenAddr string `yaml:"listen_addr"`
+	// ReadHeaderTimeout / ReadTimeout / WriteTimeout are bounded
+	// defaults; the underlying server is configured inside the
+	// health package. Operators do not need to tune them.
 }
 
 // LLMConfig is a registry of named LLM roles. A role is a single

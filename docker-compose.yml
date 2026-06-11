@@ -1,0 +1,71 @@
+services:
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: narrative-ai-agent:latest
+    container_name: narrative-bot
+    restart: unless-stopped
+    # Override the entrypoint to set the log level via flags.
+    command:
+      - "--config=/app/config/config.yaml"
+      - "--log-level=info"
+    volumes:
+      # config.yaml: read-only mount from the host
+      - ./config.yaml:/app/config/config.yaml:ro
+      # Persistent directory for slowlog, run.log, and any
+      # game-data the bot writes (git ops, worldstate cache).
+      - bot-data:/app/data
+      # Game files (characters/, worlds/, info.yaml, npc.yaml).
+      # The bot resolves `data_root` (default "game-data") to
+      # be a sibling of the config file, so the volume target
+      # here matches what the bot will write to.
+      - bot-game:/app/config/game-data
+    ports:
+      # 8080 is the default; override via env or via
+      # health.listen_addr in config.yaml.
+      - "8080:8080"
+    environment:
+      # Pass through any host env (e.g. proxies). The bot does
+      # not currently consume these directly but keeping the
+      # block here makes the override surface obvious.
+      HTTP_PROXY: ${HTTP_PROXY:-}
+      HTTPS_PROXY: ${HTTPS_PROXY:-}
+      NO_PROXY: ${NO_PROXY:-}
+    # Tighter than the default: drop capabilities, read-only
+    # rootfs, no new privs.
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    # k8s-style health checks via the in-container /healthprobe
+    # static binary (distroless has no shell, no curl, no wget).
+    # Two probes are wired:
+    #
+    #   liveness  — /healthz. Restarts the container when the
+    #               process itself is wedged. Aggressive retry:
+    #               3 failures in 10s → restart.
+    #   readiness — /readyz. Takes the bot out of the load
+    #               balancer / Compose `depends_on` chain when
+    #               no transport is connected yet. Slower retries
+    #               because a transport reconnect can take a few
+    #               seconds.
+    healthcheck:
+      test: ["CMD", "/app/healthprobe", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 15s
+    # Limit blast radius if the process ever escapes its sandbox.
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
+
+volumes:
+  bot-data:
+    name: narrative-bot-data
+  bot-game:
+    name: narrative-bot-game
