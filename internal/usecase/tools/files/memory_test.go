@@ -26,8 +26,8 @@ import (
 // touching a real LLM.
 type stubSummarizer struct {
 	returnBody []byte
-	err       error
-	calls     int
+	err        error
+	calls      int
 }
 
 func (s *stubSummarizer) SummarizeNPC(_ context.Context, _, _ string, yamlBody, _ []byte) ([]byte, error) {
@@ -147,6 +147,44 @@ func TestMaintainNPCs_RejectsNoShrink(t *testing.T) {
 	assert.Empty(t, touched, "no shrink — no write")
 }
 
+// TestMaintainNPCs_BackupCreatedBeforeRewrite: when a
+// profile is rewritten by maintain, the previous version
+// is preserved at "<slug>.yaml.bak" so an operator can
+// roll back if a buggy model ever corrupts the canonical
+// file. The .bak is overwritten on the next maintain of
+// the same slug (it is the "previous successful write"
+// checkpoint, not an append-only log).
+func TestMaintainNPCs_BackupCreatedBeforeRewrite(t *testing.T) {
+	fs, _ := storage.NewFileStore(t.TempDir())
+	writeLongNPC(t, fs, "naruto", "kakashi", "Какаши")
+
+	// Summarizer returns a valid shorter YAML.
+	original, _ := npcprofile.Load(yamlFixture())
+	for i := 0; i < 25; i++ {
+		original.PersonalMemory = append(original.PersonalMemory, "compacted")
+	}
+	newBody, err := original.Save()
+	require.NoError(t, err)
+
+	stub := &stubSummarizer{returnBody: []byte(newBody)}
+	m := newMemory(fs, zerolog.Nop(), stub, nil, nil)
+	touched, err := m.MaintainNPCs("naruto")
+	require.NoError(t, err)
+	require.Equal(t, []string{"Какаши"}, touched)
+
+	// .bak must exist and contain the ORIGINAL 50-fact body.
+	bak, err := fs.ReadRaw("worlds/naruto/characters/kakashi.yaml.bak")
+	require.NoError(t, err)
+	assert.Contains(t, bak, "Факт номер 1", ".bak preserves pre-rewrite bytes")
+	assert.Contains(t, bak, "Факт номер 50", ".bak preserves pre-rewrite bytes")
+	assert.Equal(t, 50, strings.Count(bak, "Факт номер"), "all 50 facts survive in the backup")
+
+	// Current file must be the new (compacted) version.
+	cur, err := fs.ReadRaw("worlds/naruto/characters/kakashi.yaml")
+	require.NoError(t, err)
+	assert.NotContains(t, cur, "Факт номер 50", "current file is the compacted body")
+}
+
 func TestMaintainNPCs_RejectsInvalidYAML(t *testing.T) {
 	fs, _ := storage.NewFileStore(t.TempDir())
 	writeLongNPC(t, fs, "naruto", "kakashi", "Какаши")
@@ -257,8 +295,8 @@ temperament: ""
 // touching a real LLM.
 type stubLoreSummarizer struct {
 	returnBody []byte
-	err       error
-	calls     int
+	err        error
+	calls      int
 }
 
 func (s *stubLoreSummarizer) SummarizeLore(_ context.Context, _ string, loreBody, _, _ []byte) ([]byte, error) {

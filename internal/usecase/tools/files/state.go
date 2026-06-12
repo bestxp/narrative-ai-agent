@@ -281,13 +281,12 @@ func (s *State) ArchiveDay(ctx context.Context, world string, day int, summary s
 			return err
 		}
 	}
-	// Этап 0a/0c: end-of-day closes the scene. Drop the
-	// world-state snapshot so the next turn rebuilds
-	// index:1 with the freshly appended "## Протокол
-	// прошедших дней" section. (ArchiveDay is the only
-	// place in the production flow that does this — the
-	// dispatcher /reload path calls GM.InvalidateWorldState
-	// directly.)
+	// End-of-day closes the scene. Drop the world-state
+	// snapshot so the next turn rebuilds index:1 with the
+	// freshly appended "## Протокол прошедших дней" section.
+	// (ArchiveDay is the only place in the production flow
+	// that does this — the dispatcher /reload path calls
+	// GM.InvalidateWorldState directly.)
 	if s.worldStateInvalidate != nil {
 		s.worldStateInvalidate("end_day")
 	}

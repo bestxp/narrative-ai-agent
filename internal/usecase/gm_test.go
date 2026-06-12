@@ -232,10 +232,20 @@ func TestGM_BuildsContextWithNPCs(t *testing.T) {
 	_, err := g.Reply(context.Background(), "chat1", "go", Callbacks{})
 	require.NoError(t, err)
 	require.NotEmpty(t, captured.Messages)
-	assert.Contains(t, captured.Messages[0].Content, "rules")
-	assert.Contains(t, captured.Messages[0].Content, "naruto")
-	assert.Contains(t, captured.Messages[0].Content, "Какаши")
-	assert.Contains(t, captured.Messages[0].Content, "спокойный")
+	// messages[0] is the system prompt (rules + character)
+	// and messages[1] is the WorldState user message (world + NPCs).
+	sys := captured.Messages[0]
+	world := captured.Messages[1]
+	assert.Equal(t, "system", sys.Role)
+	assert.Equal(t, "user", world.Role)
+	assert.Contains(t, sys.Content, "rules")
+	assert.Contains(t, world.Content, "naruto")
+	assert.Contains(t, world.Content, "Какаши",
+		"NPC profile lives in the world user message (Индекс 1), not system")
+	assert.Contains(t, world.Content, "спокойный",
+		"NPC temperament lives in the world user message")
+	assert.NotContains(t, sys.Content, "Какаши",
+		"system prompt must NOT carry world data")
 }
 
 func TestGM_TokenUsage_Estimate(t *testing.T) {
@@ -479,38 +489,47 @@ func TestGM_EmptyWithToolCallsFinish_StillError(t *testing.T) {
 	assert.Empty(t, got.String())
 }
 
-// --- Этап 0a: WorldState snapshotting tests ---------------------
+// --- WorldState snapshotting tests ---------------------
 
 // TestGM_WorldStateSnapshot_StableAcrossTurns verifies the
 // critical cache-hit invariant: between explicit invalidations,
-// the WorldState snapshot MUST be byte-equal across turns,
-// even when update_state / update_npc / update_character
-// mutate the underlying files on disk.
+// the BOTH the system snapshot AND the world-state snapshot
+// MUST be byte-equal across turns, even when update_state /
+// update_npc / update_character mutate the underlying files
+// on disk. The split into system (rules+character) and world
+// (world+NPCs) messages means both share the same sceneKey
+// cache and are rebuilt together.
 func TestGM_WorldStateSnapshot_StableAcrossTurns(t *testing.T) {
 	g, _, _ := newGMTestEnv(t)
 
-	first, err := g.buildContextPrompt()
+	firstSys, firstWorld, err := g.buildContext()
 	require.NoError(t, err)
-	require.NotEmpty(t, first)
+	require.NotEmpty(t, firstSys)
+	require.NotEmpty(t, firstWorld)
 
 	// Now simulate a turn that mutates the world. The
 	// file-backed State is the only thing that changes;
-	// the snapshot MUST stay identical.
+	// the snapshots MUST stay identical.
 	require.NoError(t, g.fs.WriteRawAtomic("worlds/naruto/state.md",
 		"День 1 (в процессе).\nМомент: новая сцена\nАктивные NPC прямо сейчас: Какаши"))
-	second, err := g.buildContextPrompt()
+	secondSys, secondWorld, err := g.buildContext()
 	require.NoError(t, err)
-	assert.Equal(t, first, second,
-		"snapshot must be byte-equal — state.md change should NOT bust cache")
+	assert.Equal(t, firstSys, secondSys,
+		"system snapshot must be byte-equal — state.md change should NOT bust cache")
+	assert.Equal(t, firstWorld, secondWorld,
+		"world snapshot must be byte-equal — state.md change should NOT bust cache")
 }
 
 // TestGM_WorldStateSnapshot_InvalidatedOnEndDay: end_day
-// (ArchiveDay) MUST drop the snapshot so the next turn
-// rebuilds index:1 with the freshly appended "## Протокол".
+// (ArchiveDay) MUST drop the world snapshot so the next turn
+// rebuilds it with the freshly appended "## Протокол". The
+// system snapshot (rules + character) does NOT change on
+// end_day — character and rules are stable across day
+// boundaries. Only the world block needs to be rebuilt.
 func TestGM_WorldStateSnapshot_InvalidatedOnEndDay(t *testing.T) {
 	g, _, _ := newGMTestEnv(t)
 
-	first, err := g.buildContextPrompt()
+	firstSys, firstWorld, err := g.buildContext()
 	require.NoError(t, err)
 
 	// Simulate end_day: write to memorise.md (this is
@@ -520,46 +539,51 @@ func TestGM_WorldStateSnapshot_InvalidatedOnEndDay(t *testing.T) {
 		"д00001: тестовый день\n"))
 	g.InvalidateWorldState("end_day")
 
-	second, err := g.buildContextPrompt()
+	secondSys, secondWorld, err := g.buildContext()
 	require.NoError(t, err)
-	assert.NotEqual(t, first, second,
-		"snapshot must rebuild after end_day invalidation")
-	assert.Contains(t, second, "д00001: тестовый день",
-		"new snapshot must include the freshly archived day")
+	// System does NOT change on end_day (no character
+	// or rules touched). This is the invariant that lets
+	// the Anthropic system cache live across day boundaries.
+	assert.Equal(t, firstSys, secondSys,
+		"system snapshot must NOT change on end_day")
+	assert.NotEqual(t, firstWorld, secondWorld,
+		"world snapshot must rebuild after end_day invalidation")
+	assert.Contains(t, secondWorld, "д00001: тестовый день",
+		"new world snapshot must include the freshly archived day")
 }
 
 // TestGM_WorldStateSnapshot_InvalidatedOnLeave: leave_world
-// (tool) drops the snapshot via the worldStateInvalidate
+// (tool) drops the snapshots via the worldStateInvalidate
 // hook wired in main.go.
 func TestGM_WorldStateSnapshot_InvalidatedOnLeave(t *testing.T) {
 	g, _, _ := newGMTestEnv(t)
 
-	first, err := g.buildContextPrompt()
+	_, _, err := g.buildContext()
 	require.NoError(t, err)
 
 	g.InvalidateWorldState("leave_world")
-	second, err := g.buildContextPrompt()
+	_, _, err = g.buildContext()
 	require.NoError(t, err)
 	// Both rebuilds use the same world so the bodies
 	// are equal — what we test is that the rebuild
 	// HAPPENED, not that the content differs.
-	assert.NotEmpty(t, second)
-	_ = first
 }
 
 // TestGM_WorldStateSnapshot_InvalidatedOnReload: /reload
 // invalidates explicitly via GM.InvalidateWorldState.
 func TestGM_WorldStateSnapshot_InvalidatedOnReload(t *testing.T) {
 	g, _, _ := newGMTestEnv(t)
-	_, err := g.buildContextPrompt()
+	_, _, err := g.buildContext()
 	require.NoError(t, err)
 
 	g.InvalidateWorldState("reload")
-	g.worldStateMu.Lock()
-	snap := g.worldStateSnapshot
-	key := g.worldStateSceneKey
-	g.worldStateMu.Unlock()
-	assert.Empty(t, snap, "snapshot must be empty after reload")
+	g.contextMu.Lock()
+	sys := g.systemSnapshot
+	ws := g.worldSnapshot
+	key := g.contextSceneKey
+	g.contextMu.Unlock()
+	assert.Empty(t, sys, "system snapshot must be empty after reload")
+	assert.Empty(t, ws, "world snapshot must be empty after reload")
 	assert.Empty(t, key, "scene key must be empty after reload")
 }
 
@@ -567,12 +591,15 @@ func TestGM_WorldStateSnapshot_InvalidatedOnReload(t *testing.T) {
 // update_state returns a SHORT ToolResult (does not include
 // the full snapshot body) and includes a human-readable
 // "delta" field for the model to weave into its reply.
+// After dispatch BOTH snapshots (system + world) must
+// remain valid — the cache prefix is preserved.
 func TestGM_ToolResultUpdateState_ShortWithDelta(t *testing.T) {
 	g, _, _ := newGMTestEnv(t)
 
-	snap, err := g.buildContextPrompt()
+	sys, world, err := g.buildContext()
 	require.NoError(t, err)
-	require.NotEmpty(t, snap)
+	require.NotEmpty(t, sys)
+	require.NotEmpty(t, world)
 
 	res, errStr := g.dispatchOneTool(context.Background(), llm.ToolCall{
 		ID:   "t1",
@@ -585,16 +612,21 @@ func TestGM_ToolResultUpdateState_ShortWithDelta(t *testing.T) {
 	require.Empty(t, errStr)
 	assert.Contains(t, res, "recorded")
 	assert.Contains(t, res, "локация/момент обновлены")
-	assert.NotContains(t, res, snap, "ToolResult must NOT echo the snapshot body")
+	// The ToolResult must NOT echo either the system or
+	// the world snapshot body.
+	assert.NotContains(t, res, sys, "ToolResult must NOT echo the system snapshot body")
+	assert.NotContains(t, res, world, "ToolResult must NOT echo the world snapshot body")
 
-	// Snapshot must STILL be valid (cache stable).
-	g.worldStateMu.Lock()
-	cur := g.worldStateSnapshot
-	g.worldStateMu.Unlock()
-	assert.Equal(t, snap, cur, "update_state must not invalidate the snapshot")
+	// Snapshots must STILL be valid (cache stable).
+	g.contextMu.Lock()
+	curSys := g.systemSnapshot
+	curWorld := g.worldSnapshot
+	g.contextMu.Unlock()
+	assert.Equal(t, sys, curSys, "update_state must not invalidate the system snapshot")
+	assert.Equal(t, world, curWorld, "update_state must not invalidate the world snapshot")
 }
 
-// --- Этап 0b: in-place compaction tests -----------------------------
+// --- in-place compaction tests -----------------------------
 
 // newGMTestEnvWithInPlace is a placeholder for future
 // end-to-end in-place compaction tests. Today the
@@ -681,23 +713,28 @@ func TestGM_InPlaceCompaction_NotPastDay(t *testing.T) {
 
 // TestGM_InPlaceCompaction_InvalidatesWorldState: after
 // appendChronicleEntry + invalidateWorldState, the next
-// buildContextPrompt must rebuild from disk.
+// buildContext must rebuild the WORLD snapshot from disk
+// (chronicle was appended to state.md). The system snapshot
+// (rules + character) is unaffected — system cache
+// invariant.
 func TestGM_InPlaceCompaction_InvalidatesWorldState(t *testing.T) {
 	g, _, _ := newGMTestEnv(t)
-	first, err := g.buildContextPrompt()
+	firstSys, firstWorld, err := g.buildContext()
 	require.NoError(t, err)
 
 	require.NoError(t, g.appendChronicleEntry("naruto", 1,
 		[]byte("[События текущего дня Д0001] новая хроника")))
 	g.invalidateWorldState("compaction")
 
-	second, err := g.buildContextPrompt()
+	secondSys, secondWorld, err := g.buildContext()
 	require.NoError(t, err)
-	assert.NotEqual(t, first, second)
-	assert.Contains(t, second, "## Хроника текущего дня")
+	assert.Equal(t, firstSys, secondSys,
+		"system snapshot must NOT change on in-place compaction")
+	assert.NotEqual(t, firstWorld, secondWorld)
+	assert.Contains(t, secondWorld, "## Хроника текущего дня")
 }
 
-// --- Этап 0c: end-of-day protocol tests -----------------------------
+// --- end-of-day protocol tests -----------------------------
 
 // TestGM_AppendProtocolEntry_CreatesSection: first
 // protocol entry creates the "## Протокол прошедших
@@ -784,7 +821,7 @@ func TestGM_EndOfDay_PromptMarksPast(t *testing.T) {
 		"end_of_day prompt must not use the in-place marker")
 }
 
-// --- Этап 0d: /reload tests ------------------------------------------
+// --- /reload tests ------------------------------------------
 
 // TestGM_ResetAllConversations_ClearsAll: ensure
 // all per-chat conversation entries are dropped.
@@ -813,20 +850,22 @@ func TestGM_ResetAllConversations_ClearsAll(t *testing.T) {
 }
 
 // TestGM_InvalidateWorldState_AfterReload: after
-// /reload the next buildContextPrompt rebuilds
-// from disk (the same way end_day does).
+// /reload the next buildContext rebuilds from disk
+// (the same way end_day does). The operator's
+// hand-edit (e.g. adding "Хината" to active NPCs)
+// must surface in the world-state user message.
 func TestGM_InvalidateWorldState_AfterReload(t *testing.T) {
 	g, fs, _ := newGMTestEnv(t)
-	first, err := g.buildContextPrompt()
+	_, firstWorld, err := g.buildContext()
 	require.NoError(t, err)
 	// Operator hand-edits state.md.
 	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/state.md",
 		"День 1 (в процессе).\nАктивные NPC прямо сейчас: Какаши, Хината\n"))
 	// /reload semantics.
 	g.InvalidateWorldState("reload")
-	second, err := g.buildContextPrompt()
+	_, secondWorld, err := g.buildContext()
 	require.NoError(t, err)
-	assert.NotEqual(t, first, second)
-	assert.Contains(t, second, "Хината",
-		"operator's hand edit must be picked up after reload")
+	assert.NotEqual(t, firstWorld, secondWorld)
+	assert.Contains(t, secondWorld, "Хината",
+		"operator's hand edit must be picked up after reload (in world block, not system)")
 }

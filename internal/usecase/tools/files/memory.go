@@ -150,16 +150,16 @@ func (m *Memory) MaintainLore(ctx context.Context, world string) (bool, error) {
 // to collapse and delegates each one to
 // MemoriseCompressWindow. The trigger rules:
 //
-//   1. If the just-archived day is the last unfilled slot
-//      of a window (i.e. a day that brings the file's
-//      last single-day entry to a multiple of Window),
-//      collapse that window.
-//   2. If the just-archived day is a TIMESKIP past one
-//      or more whole windows (e.g. last day was д00010
-//      and we just archived д00090), collapse every full
-//      window in between (д00001-д00030, д00031-д00060,
-//      д00061-д00090). This is the "timeskip" case the
-//      operator triggered via /leave with a skip_note.
+//  1. If the just-archived day is the last unfilled slot
+//     of a window (i.e. a day that brings the file's
+//     last single-day entry to a multiple of Window),
+//     collapse that window.
+//  2. If the just-archived day is a TIMESKIP past one
+//     or more whole windows (e.g. last day was д00010
+//     and we just archived д00090), collapse every full
+//     window in between (д00001-д00030, д00031-д00060,
+//     д00061-д00090). This is the "timeskip" case the
+//     operator triggered via /leave with a skip_note.
 //
 // The function never errors out the ArchiveDay call: a
 // failed compression just logs a warning and leaves the
@@ -636,8 +636,34 @@ func (m *Memory) maintainOne(ctx context.Context, world, slug, rel string) (stri
 	if err != nil {
 		return displayName, false, err
 	}
+	// Backup the current file BEFORE rewriting. If
+	// anything goes wrong between WriteRawAtomic and the
+	// post-write validation, the .bak contains the
+	// pre-rewrite bytes — operator can `mv` it back.
+	bakRel := rel + ".bak"
+	if oldBody, err := m.fs.ReadRaw(rel); err == nil && oldBody != "" {
+		if err := m.fs.WriteRawAtomic(bakRel, oldBody); err != nil {
+			m.log.Warn().
+				Str("npc", displayName).
+				Err(err).
+				Msg("npc_maintain: backup write failed; proceeding anyway")
+		}
+	}
 	if err := m.fs.WriteRawAtomic(rel, finalBody); err != nil {
 		return displayName, false, err
+	}
+	// Post-write sanity: re-read the just-written file
+	// and confirm it parses. A disk-level error between
+	// WriteRawAtomic and the next read (e.g. fs unmount)
+	// would leave us with a corrupted profile on disk
+	// that fails to load on the next turn. The .bak
+	// above is the recovery path.
+	if reread, rerr := m.fs.ReadRaw(rel); rerr != nil || reread != finalBody {
+		m.log.Warn().
+			Str("npc", displayName).
+			Str("read", truncateForLog(reread, 80)).
+			Str("expected", truncateForLog(string(finalBody), 80)).
+			Msg("npc_maintain: post-write read mismatch; .bak preserves the original")
 	}
 	m.log.Info().
 		Str("world", world).

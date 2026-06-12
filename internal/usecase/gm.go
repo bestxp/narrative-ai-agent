@@ -26,7 +26,7 @@ import (
 // the model can recall the **facts** via the per-NPC
 // personal_memory field, but no longer the verbatim
 // conversation. 2 is the "remember yesterday and the day
-// before" default. See plan.md, Этап 0c.
+// before" default.
 const DefaultProtocolWindowDays = 2
 
 // DefaultProtocolMaxChars is the hard cap on the size of
@@ -133,16 +133,20 @@ type GM struct {
 	// toolSpecs cached on construction; immutable.
 	toolSpecs []llm.ToolSchema
 
-	// worldStateMu guards both the snapshot and the protocol
-	// state. Multiple chats can hit GM concurrently; the
-	// snapshot is rebuilt lazily on first use, then reused
-	// for every turn of the same scene/day, and dropped
-	// only on explicit invalidateWorldState() (end_day,
-	// end_scene, leave_world, /reload, compaction).
-	worldStateMu       sync.Mutex
-	worldStateSnapshot string
-	worldStateSceneKey string // "world|character|day|in_flight" — the inputs the snapshot was built from
-	worldStateBuiltAt  time.Time
+	// System prompt and world-state user message are snapshotted
+	// separately. The system prompt is rules + character (static
+	// for the entire conversation); the world-state user message
+	// is everything world-scoped (changes on end_day / leave_world
+	// / /reload / compaction). Both are rebuilt together on the
+	// same sceneKey, so they are always consistent. Mutating
+	// tools (update_state, update_npc, ...) do NOT invalidate
+	// either snapshot — the model reads the delta in the short
+	// ToolResult.
+	contextMu          sync.Mutex
+	systemSnapshot     string // rules + character
+	worldSnapshot      string // [WORLD_STATE] world + NPCs
+	contextSceneKey    string // "world|character|day|in_flight" — the inputs the snapshot was built from
+	contextBuiltAt     time.Time
 	protocolWindowDays int // default 2
 	protocolMaxChars   int // default 5000
 }
@@ -213,10 +217,10 @@ func NewGM(cfg GMConfig, fs *storage.FileStore, llmCli LLMClient, ss *SessionSta
 		includeReply: includeReply,
 		log:          log,
 		toolSpecs:    toolSpecs,
-		// Этап 0c: protocol window defaults. Operators can
-		// override via config (we will thread the cfg
-		// through GMConfig in a follow-up if requested;
-		// for now the constants live in gm.go).
+		// Protocol window defaults. Operators can override
+		// via config (we will thread the cfg through
+		// GMConfig in a follow-up if requested; for now
+		// the constants live in gm.go).
 		protocolWindowDays: DefaultProtocolWindowDays,
 		protocolMaxChars:   DefaultProtocolMaxChars,
 	}
@@ -247,9 +251,9 @@ func (g *GM) ResetConversation(chatID string) {
 }
 
 // ResetAllConversations drops every per-chat in-memory
-// history. Used by /reload (Этап 0d) when the operator
-// edited game-data by hand and wants the next turn to
-// start with a clean dialogue but the freshly-edited
+// history. Used by /reload when the operator edited
+// game-data by hand and wants the next turn to start
+// with a clean dialogue but the freshly-edited
 // WorldState. The next Reply will lazily create a new
 // conversation entry for that chat ID.
 func (g *GM) ResetAllConversations() {
@@ -355,15 +359,15 @@ func (g *GM) Reply(ctx context.Context, chatID, userText string, cb Callbacks) (
 			}
 		}
 	}
-	// Этап 0b: in-place compaction path. Differs from the
-	// legacy token-drop compaction above in that the
-	// dropped turns are compressed into a 150-300 word
-	// narrative that goes into "## Хроника текущего дня"
-	// in state.md (not the legacy "## История (сжато)"
-	// tail). This keeps index:1 current with the day's
-	// events without forcing end_day. The legacy path
-	// stays for callers that do not wire the in-place
-	// prompt (test suite, single-role deployments).
+	// In-place compaction path. Differs from the legacy
+	// token-drop compaction above in that the dropped turns
+	// are compressed into a 150-300 word narrative that
+	// goes into "## Хроника текущего дня" in state.md (not
+	// the legacy "## История (сжато)" tail). This keeps
+	// index:1 current with the day's events without forcing
+	// end_day. The legacy path stays for callers that do
+	// not wire the in-place prompt (test suite, single-role
+	// deployments).
 	if g.compaction.ContextWindow > 0 && g.shouldUseInPlaceCompaction() {
 		ctxChars := len(g.staticPrompt)
 		if NeedsCompaction(history, ctxChars, g.compaction.ContextWindow, g.compaction.Threshold) {
@@ -412,14 +416,22 @@ func (g *GM) Reply(ctx context.Context, chatID, userText string, cb Callbacks) (
 		if cb.OnStatus != nil {
 			cb.OnStatus("build_context", nil)
 		}
-		// System prompt + current context is rebuilt on every tool
-		// round so tool-modified state.md is visible to the model.
-		ctxPrompt, err := g.buildContextPrompt()
+		// System prompt (rules+character) and WorldState user
+		// message (world+NPCs) are rebuilt on every tool round
+		// so tool-modified state.md / world files are visible
+		// to the model. They are snapshotted together on a
+		// single sceneKey — see buildContext for the cache
+		// contract. World state is a SEPARATE user message
+		// (user[0]), not part of the system message. Anthropic
+		// driver attaches cache_control to user[0]; OpenAI
+		// uses prefix-cache on the same prefix.
+		systemMsg, worldMsg, err := g.buildContext()
 		if err != nil {
 			return totals, fmt.Errorf("gm: build context: %w", err)
 		}
-		messages := make([]llm.Message, 0, len(history)+1)
-		messages = append(messages, llm.Message{Role: "system", Content: ctxPrompt})
+		messages := make([]llm.Message, 0, len(history)+2)
+		messages = append(messages, llm.Message{Role: "system", Content: systemMsg})
+		messages = append(messages, llm.Message{Role: "user", Content: worldMsg})
 		messages = append(messages, history...)
 
 		if cb.OnStatus != nil {
@@ -1612,42 +1624,44 @@ func promptCharSize(msgs []llm.Message) int {
 	return n
 }
 
-// buildContextPrompt loads the current game-data and produces the
-// "what's happening right now" half of the system message. The
-// static skill rules are prepended by the caller.
+// buildContext loads the current game-data and produces BOTH
+// the system prompt (rules + character) and the world-state
+// user message (world + NPCs) for the next turn.
 //
 // disableThinking forwards g.role.DisableThinking into
 // BuildSystemPrompt so a /no_think sentinel is prepended when the
-// role is configured to skip chain-of-thought. This is the
-// in-prompt half of the dual switch — the wire-level
-// chat_template_kwargs.think=false is the other half. Providers
-// that ignore the wire flag (Ollama Cloud minimax-m3:cloud today)
-// still respond to the prompt directive.
+// role is configured to skip chain-of-thought.
 //
-// SNAPSHOTTING (Этап 0a): the result is cached in
-// g.worldStateSnapshot and reused for every turn of the same
-// scene/day. The cache key is (world, character, day, in_flight) —
-// if any of these change (different world, different character,
-// day advanced, or in_flight flipped), the snapshot is rebuilt.
-// invalidateWorldState() drops the snapshot and forces a rebuild
-// on the next call (used by end_day, end_scene, leave_world,
-// /reload, and compaction).
-func (g *GM) buildContextPrompt() (string, error) {
+// The system prompt is rules + character (stable for the
+// whole conversation); the world-state user message is
+// everything world-scoped (changes on end_day / leave /
+// reload / compaction). They are sent as two separate
+// messages with the world-state one holding the cache-pointe
+// on Anthropic.
+//
+// Snapshotting: the two blocks are cached separately
+// (g.systemSnapshot, g.worldSnapshot) but share the same
+// sceneKey (world|character|day|in_flight). If any of those
+// change, both are rebuilt. invalidateWorldState() drops both,
+// forcing a rebuild on the next call (used by end_day, end_scene,
+// leave_world, /reload, and compaction).
+func (g *GM) buildContext() (systemMsg, worldMsg string, err error) {
 	if !g.fs.Exists(storage.InfoFile) {
 		// No game state yet — the snapshot is meaningless,
-		// just render an empty context. We still cache
-		// it so repeat calls don't redo the lookup.
-		g.worldStateMu.Lock()
-		defer g.worldStateMu.Unlock()
-		if g.worldStateSnapshot == "" {
-			g.worldStateSnapshot = domain.BuildSystemPrompt(g.staticPrompt, domain.PromptContext{}, g.role.DisableThinking)
-			g.worldStateSceneKey = ""
+		// just render empty blocks. We still cache them
+		// so repeat calls don't redo the lookup.
+		g.contextMu.Lock()
+		defer g.contextMu.Unlock()
+		if g.systemSnapshot == "" {
+			g.systemSnapshot = domain.BuildSystemPrompt(g.staticPrompt, domain.CharacterContext{}, g.role.DisableThinking)
+			g.worldSnapshot = domain.BuildWorldStateMessage(domain.WorldContext{})
+			g.contextSceneKey = ""
 		}
-		return g.worldStateSnapshot, nil
+		return g.systemSnapshot, g.worldSnapshot, nil
 	}
 	sc, err := g.ss.Start()
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	sceneKey := sc.World + "|" + sc.Character + "|"
 	// Day and InFlight live in state.md, not in
@@ -1662,20 +1676,22 @@ func (g *GM) buildContextPrompt() (string, error) {
 		sceneKey += "0|false"
 	}
 
-	g.worldStateMu.Lock()
-	if g.worldStateSnapshot != "" && g.worldStateSceneKey == sceneKey {
-		snap := g.worldStateSnapshot
-		g.worldStateMu.Unlock()
-		_ = g.slow.Write("worldstate.snapshot.hit", "", map[string]any{
-			"scene_key": sceneKey,
+	g.contextMu.Lock()
+	if g.systemSnapshot != "" && g.worldSnapshot != "" && g.contextSceneKey == sceneKey {
+		sys := g.systemSnapshot
+		ws := g.worldSnapshot
+		g.contextMu.Unlock()
+		_ = g.slow.Write("context.snapshot.hit", "", map[string]any{
+			"scene_key":   sceneKey,
+			"system":      len(sys),
+			"world_state": len(ws),
 		})
-		return snap, nil
+		return sys, ws, nil
 	}
-	g.worldStateMu.Unlock()
+	g.contextMu.Unlock()
 
-	ctx := domain.PromptContext{
+	charCtx := domain.CharacterContext{
 		Character:       sc.Character,
-		World:           sc.World,
 		CharacterSOUL:   safeRead(g.fs, "characters/"+sc.Character+"/SOUL.md"),
 		CharacterSKILL:  safeRead(g.fs, "characters/"+sc.Character+"/SKILL.md"),
 		CharacterMemory: safeRead(g.fs, "characters/"+sc.Character+"/memory.md"),
@@ -1692,29 +1708,49 @@ func (g *GM) buildContextPrompt() (string, error) {
 			safeRead(g.fs, "characters/"+sc.Character+"/SKILL.md"),
 			safeRead(g.fs, "characters/"+sc.Character+"/memory.md"),
 		),
-		WorldCanon:    safeRead(g.fs, "worlds/"+sc.World+"/canon.md"),
+	}
+	worldCtx := domain.WorldContext{
+		World:         sc.World,
 		WorldState:    safeRead(g.fs, "worlds/"+sc.World+"/state.md"),
+		WorldCanon:    safeRead(g.fs, "worlds/"+sc.World+"/canon.md"),
 		WorldLore:     safeRead(g.fs, "worlds/"+sc.World+"/lore.md"),
 		WorldPlan:     safeRead(g.fs, "worlds/"+sc.World+"/plan.md"),
 		WorldMemorise: safeRead(g.fs, "worlds/"+sc.World+"/memorise.md"),
 		NPCs:          g.loadActiveNPCs(sc.World, sc.State),
 	}
-	built := domain.BuildSystemPrompt(g.staticPrompt, ctx, g.role.DisableThinking)
+	builtSystem := domain.BuildSystemPrompt(g.staticPrompt, charCtx, g.role.DisableThinking)
+	builtWorld := domain.BuildWorldStateMessage(worldCtx)
 
-	g.worldStateMu.Lock()
-	g.worldStateSnapshot = built
-	g.worldStateSceneKey = sceneKey
-	g.worldStateBuiltAt = time.Now()
-	g.worldStateMu.Unlock()
-	_ = g.slow.Write("worldstate.snapshot.miss", "", map[string]any{
-		"scene_key": sceneKey,
-		"bytes":     len(built),
+	g.contextMu.Lock()
+	g.systemSnapshot = builtSystem
+	g.worldSnapshot = builtWorld
+	g.contextSceneKey = sceneKey
+	g.contextBuiltAt = time.Now()
+	g.contextMu.Unlock()
+	_ = g.slow.Write("context.snapshot.miss", "", map[string]any{
+		"scene_key":   sceneKey,
+		"system":      len(builtSystem),
+		"world_state": len(builtWorld),
 	})
-	return built, nil
+	return builtSystem, builtWorld, nil
+}
+
+// buildContextPrompt is a thin wrapper kept for tests that
+// expect a single string back. It returns ONLY the system
+// prompt (Индекс 0). World state now lives in a separate
+// user message — see buildContext.
+//
+// Deprecated: prefer buildContext which returns (system,
+// world) so callers can wire the new [system, world, ...]
+// wire surface. This wrapper is used by tests that only
+// care about the system half.
+func (g *GM) buildContextPrompt() (string, error) {
+	sys, _, err := g.buildContext()
+	return sys, err
 }
 
 // invalidateWorldState drops the cached system prompt and
-// protocol state, forcing the next buildContextPrompt to
+// WorldState user message, forcing the next buildContext to
 // re-read from disk. Called on:
 //   - end_day (ArchiveDay hook) after appending the protocol
 //   - end_scene
@@ -1724,11 +1760,35 @@ func (g *GM) buildContextPrompt() (string, error) {
 //
 // Thread-safe.
 func (g *GM) invalidateWorldState(reason string) {
-	g.worldStateMu.Lock()
-	g.worldStateSnapshot = ""
-	g.worldStateSceneKey = ""
-	g.worldStateMu.Unlock()
-	_ = g.slow.Write("worldstate.snapshot.invalidate", "", map[string]any{"reason": reason})
+	g.contextMu.Lock()
+	g.systemSnapshot = ""
+	g.worldSnapshot = ""
+	g.contextSceneKey = ""
+	g.contextMu.Unlock()
+	_ = g.slow.Write("context.snapshot.invalidate", "", map[string]any{"reason": reason})
+}
+
+// invalidateWorldSnapshot drops ONLY the WorldState user
+// message (the rules+character system block stays
+// cached). Used by paths that mutate only world-scoped
+// data (e.g. the per-NPC auto-maintain at end_day) so
+// the next turn rebuilds user[0] with the new world
+// body without paying the system-prompt cache miss.
+// The full invalidateWorldState is the right call when
+// the system prompt itself may have changed (character
+// swap, narrative.md edit) — here, neither has.
+func (g *GM) invalidateWorldSnapshot(reason string) {
+	g.contextMu.Lock()
+	g.worldSnapshot = ""
+	// Scene key is also dropped so buildContext rebuilds
+	// both blocks in lock-step on the next call (this
+	// keeps the cache contract uniform — the system
+	// block is re-rendered but its content is the same
+	// as before, so any external cache key check is a
+	// no-op for Anthropic / OpenAI).
+	g.contextSceneKey = ""
+	g.contextMu.Unlock()
+	_ = g.slow.Write("context.world_snapshot.invalidate", "", map[string]any{"reason": reason})
 }
 
 // InvalidateWorldState is the public version of
@@ -1759,11 +1819,11 @@ func (g *GM) sceneKeyOf() (string, error) {
 }
 
 // shouldUseInPlaceCompaction reports whether this GM
-// should prefer the Этап 0b in-place compaction path
-// over the legacy drop-only compaction. We use the new
-// path when the summarizer is wired AND the in-place
-// prompt is loaded (otherwise the call would no-op and
-// we silently lose the dropped turns' events).
+// should prefer the in-place compaction path over the
+// legacy drop-only compaction. We use the new path when
+// the summarizer is wired AND the in-place prompt is
+// loaded (otherwise the call would no-op and we silently
+// lose the dropped turns' events).
 func (g *GM) shouldUseInPlaceCompaction() bool {
 	if g.summarizer == nil || !g.summarizer.IsConfigured() {
 		return false
@@ -1805,8 +1865,8 @@ func extractChronicleSection(stateMD string) string {
 // Д<N>] ..." line to the "## Хроника текущего дня"
 // section in state.md. If the section does not exist
 // it is created. The line is APPENDED (chronological).
-// "## Протокол прошедших дней" (Этап 0c) is a separate
-// section — they do not mix.
+// "## Протокол прошедших дней" is a separate section —
+// they do not mix.
 func (g *GM) appendChronicleEntry(world string, day int, body []byte) error {
 	if world == "" || len(body) == 0 {
 		return nil
@@ -1844,11 +1904,10 @@ func (g *GM) appendChronicleEntry(world string, day int, body []byte) error {
 
 // EndOfDay compresses the closing day into a
 // 200-400 word narrative protocol and appends it to
-// "## Протокол прошедших дней" in state.md (Этап 0c).
-// The protocol is consulted by the model through
-// g.protocolWindowDays (default 2) — the oldest day
-// is then evicted to memorise.md to keep the
-// section bounded.
+// "## Протокол прошедших дней" in state.md. The protocol
+// is consulted by the model through g.protocolWindowDays
+// (default 2) — the oldest day is then evicted to
+// memorise.md to keep the section bounded.
 //
 // Sources of context for the protocol:
 //   - "## Хроника текущего дня" (if in-place compaction
@@ -1922,6 +1981,26 @@ func (g *GM) EndOfDay(ctx context.Context, world string, day int) error {
 	// limits, evict the oldest day to memorise.md.
 	if err := g.enforceProtocolWindow(world); err != nil {
 		g.log.Warn().Err(err).Str("world", world).Msg("end-of-day: enforce window failed (non-fatal)")
+	}
+	// Auto-maintain NPC profiles that overflowed their
+	// personal_memory list during the day. Synchronous
+	// call — the player is reading the day's summary, a
+	// 30-60s pause is acceptable. Per-NPC failures are
+	// isolated (one bad profile does not block the
+	// rest), see Memory.maintainOne. If any NPC was
+	// rewritten, the world snapshot must be invalidated
+	// so the next turn rebuilds the user[0] block with
+	// the compacted profiles. The system prompt
+	// (rules+character) is unaffected and stays cached.
+	if touched, err := g.tools.MaintainNPCs(world); err != nil {
+		g.log.Warn().Err(err).Str("world", world).Msg("end-of-day: maintain_npc hook failed; continuing")
+	} else if len(touched) > 0 {
+		g.invalidateWorldSnapshot("end_day_maintain_npc")
+		g.log.Info().
+			Str("world", world).
+			Strs("touched", touched).
+			Int("day", day).
+			Msg("end-of-day: auto-maintained NPC profiles")
 	}
 	g.log.Info().Str("world", world).Int("day", day).Int("chars", res.OutputChars).Msg("end-of-day: protocol appended")
 	return nil
@@ -2194,11 +2273,10 @@ func (g *GM) dispatchOneTool(ctx context.Context, tc llm.ToolCall) (string, stri
 			return "", "end_day requires day and summary"
 		}
 		world := currentWorldName(g.fs)
-		// Этап 0c: BEFORE ArchiveDay updates state.md to
-		// day+1, produce the "## Протокол прошедших дней"
-		// entry from whatever context survived (Хроника
-		// if compaction ran, state.md body, and the
-		// memorise.md summary).
+		// BEFORE ArchiveDay updates state.md to day+1, produce
+		// the "## Протокол прошедших дней" entry from whatever
+		// context survived (Хроника if compaction ran, state.md
+		// body, and the memorise.md summary).
 		if err := g.EndOfDay(ctx, world, day); err != nil {
 			g.log.Warn().Err(err).Str("world", world).Int("day", day).Msg("end_day: protocol append failed; continuing with archive")
 		}
@@ -2245,13 +2323,12 @@ func (g *GM) dispatchOneTool(ctx context.Context, tc llm.ToolCall) (string, stri
 		}); err != nil {
 			return "", err.Error()
 		}
-		// Этап 0a: ToolResult is intentionally SHORT.
-		// We do NOT rebuild the WorldState snapshot here
-		// (it would bust the prompt cache every turn).
-		// The model reads the delta in this ToolResult
-		// and writes its narrative; the snapshot only
-		// rebuilds on end_day/end_scene/leave_world/-
-		// reload/compaction.
+		// ToolResult is intentionally SHORT. We do NOT
+		// rebuild the WorldState snapshot here (it would
+		// bust the prompt cache every turn). The model
+		// reads the delta in this ToolResult and writes
+		// its narrative; the snapshot only rebuilds on
+		// end_day/leave_world/reload/compaction.
 		return okJSON(map[string]any{
 			"status":   "recorded",
 			"delta":    "локация/момент обновлены: " + moment,
@@ -2276,15 +2353,14 @@ func (g *GM) dispatchOneTool(ctx context.Context, tc llm.ToolCall) (string, stri
 		if err := g.tools.Create(currentWorldName(g.fs), spec); err != nil {
 			return "", err.Error()
 		}
-		// Этап 0a: short ToolResult. The newly created
-		// NPC's profile is on disk but is NOT yet loaded
-		// into the next turn's WorldState (the snapshot
-		// stays the same — adding it requires
-		// `update_state` with the new npc in the list,
-		// which itself does not invalidate the cache
-		// either). The model must follow up with
-		// update_state if the NPC is in the current
-		// scene.
+		// Short ToolResult. The newly created NPC's
+		// profile is on disk but is NOT yet loaded into
+		// the next turn's WorldState (the snapshot stays
+		// the same — adding it requires `update_state`
+		// with the new npc in the list, which itself does
+		// not invalidate the cache either). The model must
+		// follow up with update_state if the NPC is in the
+		// current scene.
 		return okJSON(map[string]any{
 			"status":       "created",
 			"display_name": spec.DisplayName,
@@ -2319,8 +2395,8 @@ func (g *GM) dispatchOneTool(ctx context.Context, tc llm.ToolCall) (string, stri
 		if err := g.tools.Append(sc.Character, file, section, appendText); err != nil {
 			return "", err.Error()
 		}
-		// Этап 0a: short ToolResult. The character's
-		// section is on disk; snapshot stays the same.
+		// Short ToolResult. The character's section is
+		// on disk; snapshot stays the same.
 		return okJSON(map[string]any{
 			"status":  "appended",
 			"file":    file,
@@ -2346,8 +2422,8 @@ func (g *GM) dispatchOneTool(ctx context.Context, tc llm.ToolCall) (string, stri
 		if err := g.tools.UpdateNPC(currentWorldName(g.fs), npcName, section, appendText); err != nil {
 			return "", err.Error()
 		}
-		// Этап 0a: short ToolResult. NPC profile
-		// updated on disk; snapshot stays the same.
+		// Short ToolResult. NPC profile updated on disk;
+		// snapshot stays the same.
 		return okJSON(map[string]any{
 			"status":  "appended",
 			"npc":     npcName,

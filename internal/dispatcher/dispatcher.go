@@ -26,16 +26,16 @@ import (
 // single point that knows about /commands; everything else flows
 // through the GM.
 type Dispatcher struct {
-	cfg    *config.Config
-	fs     *storage.FileStore
-	git    *gitops.Operator
-	rf     *usecase.ResponseFormat
-	fl     *usecase.FirstLaunch
-	ss     *usecase.SessionStart
-	tools  usecase.Tool
-	gm     *usecase.GM // optional; nil until main.go wires the LLM
-	slow   *slowlog.Logger
-	log    zerolog.Logger
+	cfg   *config.Config
+	fs    *storage.FileStore
+	git   *gitops.Operator
+	rf    *usecase.ResponseFormat
+	fl    *usecase.FirstLaunch
+	ss    *usecase.SessionStart
+	tools usecase.Tool
+	gm    *usecase.GM // optional; nil until main.go wires the LLM
+	slow  *slowlog.Logger
+	log   zerolog.Logger
 }
 
 func New(cfg *config.Config, fs *storage.FileStore, git *gitops.Operator, tools usecase.Tool, slow *slowlog.Logger, log zerolog.Logger) *Dispatcher {
@@ -438,17 +438,16 @@ func (d *Dispatcher) cmdReload() (string, error) {
 			return "⚠️ reload: " + err.Error(), nil
 		}
 	}
-	// Этап 0d: /reload forces the operator's hand-
-	// edited state.md / lore.md to be picked up.
-	// We drop the cached worldStateSnapshot so the
-	// next turn rebuilds index:1 from disk, AND we
-	// walk every per-chat conversation and clear it
-	// — the player re-starts from a clean dialogue
-	// while the LLM still sees the fresh world
-	// state. This is more aggressive than
-	// compaction (which keeps the last 2-3 turns)
-	// because /reload means "I edited the world,
-	// throw away the in-memory chat history".
+	// /reload forces the operator's hand-edited state.md /
+	// lore.md to be picked up. We drop the cached
+	// worldStateSnapshot so the next turn rebuilds index:1
+	// from disk, AND we walk every per-chat conversation
+	// and clear it — the player re-starts from a clean
+	// dialogue while the LLM still sees the fresh world
+	// state. This is more aggressive than compaction
+	// (which keeps the last 2-3 turns) because /reload
+	// means "I edited the world, throw away the in-memory
+	// chat history".
 	if d.gm != nil {
 		d.gm.InvalidateWorldState("reload")
 		d.gm.ResetAllConversations()

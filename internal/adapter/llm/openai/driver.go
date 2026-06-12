@@ -2,9 +2,9 @@
 // on top of the official github.com/openai/openai-go/v3 SDK.
 //
 // **H4-by-default config**: this driver hardcodes the
-// production wire surface (see internal/config + research.md
-// for the probe results). It is the only set of parameters
-// supported; there are no configuration knobs for:
+// production wire surface (see internal/config for the probe
+// results). It is the only set of parameters supported; there
+// are no configuration knobs for:
 //
 //   - response_format: always `json_object` (the 4-field
 //     narrative shape is described in the system prompt).

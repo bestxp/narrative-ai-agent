@@ -23,28 +23,28 @@ import (
 //
 // Three configurations are supported:
 //
-//   1. Dedicated summary role (e.g. deepseek-v4-flash). Cheap,
-//      fast, isolated from narrative. RECOMMENDED.
-//   2. Fallback: the narrative role itself is used with
-//      lowered max_tokens and temperature so a single-model
-//      deployment still gets a written fact log. The cost is
-//      one extra round-trip to the same model per compaction;
-//      latency is comparable to the dedicated role.
-//   3. Disabled: no summary at all — drop-only. The OnCompaction
-//      notice still fires, but state.md gets no history section.
+//  1. Dedicated summary role (e.g. deepseek-v4-flash). Cheap,
+//     fast, isolated from narrative. RECOMMENDED.
+//  2. Fallback: the narrative role itself is used with
+//     lowered max_tokens and temperature so a single-model
+//     deployment still gets a written fact log. The cost is
+//     one extra round-trip to the same model per compaction;
+//     latency is comparable to the dedicated role.
+//  3. Disabled: no summary at all — drop-only. The OnCompaction
+//     notice still fires, but state.md gets no history section.
 type Summarizer struct {
 	llm    LLMClient
 	role   llm.RoleConfig
 	prompt string
-	// compactionInPlacePrompt is used by SummarizeInPlace
-	// (Этап 0b). When empty, SummarizeInPlace no-ops
-	// and returns an empty body. Wired in main.go via
-	// SetCompactionInPlacePrompt or NewSummarizerWith
-	// (we keep the basic NewSummarizer constructor for
-	// backward compat with the migrate tests).
+	// compactionInPlacePrompt is used by SummarizeInPlace.
+	// When empty, SummarizeInPlace no-ops and returns an
+	// empty body. Wired in main.go via
+	// SetCompactionInPlacePrompt or NewSummarizerWith (we
+	// keep the basic NewSummarizer constructor for backward
+	// compat with the migrate tests).
 	compactionInPlacePrompt string
-	// endOfDayPrompt is used by SummarizeEndOfDay
-	// (Этап 0c). Same nil-safety as compactionInPlace.
+	// endOfDayPrompt is used by SummarizeEndOfDay. Same
+	// nil-safety as compactionInPlace.
 	endOfDayPrompt string
 	slow           *slowlog.Logger
 	log            zerolog.Logger
@@ -200,11 +200,11 @@ func source(s *Summarizer) string {
 // AfterCount are personal_memory lengths so the operator
 // can see "40 → 28 facts" at a glance in slowlog.
 type NPCSummaryResult struct {
-	Body         []byte
-	Compressed   bool
-	BeforeCount  int
-	AfterCount   int
-	OutputChars  int
+	Body        []byte
+	Compressed  bool
+	BeforeCount int
+	AfterCount  int
+	OutputChars int
 }
 
 // SummarizeNPC asks the LLM to compact a single NPC
@@ -483,10 +483,10 @@ func stripMarkdownFence(s string) string {
 // when the body is non-empty and shorter than the input
 // window (i.e. a real shrink happened, not a no-op echo).
 type MemoriseSummaryResult struct {
-	Body       []byte
-	Compressed bool
+	Body        []byte
+	Compressed  bool
 	OutputChars int
-	InputDays  int
+	InputDays   int
 }
 
 // SummarizeMemorise asks the LLM to compact a window of
@@ -574,7 +574,6 @@ func (s *Summarizer) SummarizeMemorise(ctx context.Context, world string, startD
 	return res, nil
 }
 
-
 // InPlaceSummaryResult is what SummarizeInPlace returns.
 // Body is the compressed text the caller should append to
 // index:1 as "## Хроника текущего дня (Д<N>)". It is
@@ -582,10 +581,10 @@ func (s *Summarizer) SummarizeMemorise(ctx context.Context, world string, startD
 // (the prompt enforces this). Compressed is true when
 // a real shrink happened.
 type InPlaceSummaryResult struct {
-	Body       []byte
-	Compressed bool
+	Body        []byte
+	Compressed  bool
 	OutputChars int
-	Day        int
+	Day         int
 }
 
 // SetCompactionInPlacePrompt wires the prompt loaded
@@ -605,13 +604,13 @@ func (s *Summarizer) SetEndOfDayPrompt(p string) {
 // SummarizeInPlace compresses the current in-memory
 // conversation of day N into a 150-300 word narrative
 // that will be appended to index:1 as "## Хроника
-// текущего дня". This is the Этап 0b compaction path,
+// текущего дня". This is the in-place compaction path,
 // triggered when messages[2:] grows past
 // g.compaction.Threshold * context_window.
 //
 // The summarizer does NOT mark the day as closed
 // (the compaction_in_place.md prompt is explicit about
-// this). On end_day (Этап 0c) the same conversation is
+// this). On end_day the same conversation is
 // re-compressed differently — see SummarizeEndOfDay.
 func (s *Summarizer) SummarizeInPlace(ctx context.Context, world string, day int, messages []llm.Message) (InPlaceSummaryResult, error) {
 	res := InPlaceSummaryResult{Day: day}
@@ -683,14 +682,14 @@ func (s *Summarizer) SummarizeInPlace(ctx context.Context, world string, day int
 // "## Протокол прошедших дней" in index:1. It should
 // start with "[События прошедшего дня Д<N>]".
 type EndOfDaySummaryResult struct {
-	Body       []byte
-	Compressed bool
+	Body        []byte
+	Compressed  bool
 	OutputChars int
-	Day        int
+	Day         int
 }
 
 // SummarizeEndOfDay produces the full narrative protocol
-// for a closing day. Called from GM.EndOfDay (Этап 0c).
+// for a closing day. Called from GM.EndOfDay.
 // The body is appended to "## Протокол прошедших дней"
 // in WorldState and (when the window overflows) eventually
 // moved to memorise.md.
