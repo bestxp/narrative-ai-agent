@@ -1,7 +1,6 @@
 /.idea/
 /.veai/
 /bin/
-AGENTS.MD
 /cmd/test-openapi
 /cmd/test-anthropic
 /cmd/migrate-npc-yaml

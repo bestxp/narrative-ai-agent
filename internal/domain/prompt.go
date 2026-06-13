@@ -152,8 +152,8 @@ func BuildSystemPrompt(staticRules string, char CharacterContext, disableThinkin
 //
 // The block opens with a `[WORLD_STATE]` marker so the LLM
 // recognises it on re-read. After the marker come the world's
-// state.md (here-and-now), canon (external, read-only), lore
-// (deviations), plan (3-5 upcoming events), memorise (full
+// world state (here-and-now), canon (external, read-only), lore
+// (deviations), plan (3-5 upcoming events), chronicle (full
 // history including compressed windows), and finally the
 // active NPC profiles.
 //
@@ -175,7 +175,7 @@ func BuildWorldStateMessage(world WorldContext) string {
 	if world.World != "" {
 		fmt.Fprintf(&b, "\n## Активный мир: %s\n\n", world.World)
 		if world.WorldState != "" {
-			b.WriteString("### state.md (здесь и сейчас)\n")
+			b.WriteString("### world state (здесь и сейчас)\n")
 			b.WriteString(world.WorldState)
 			b.WriteString("\n\n")
 		}
@@ -185,17 +185,17 @@ func BuildWorldStateMessage(world WorldContext) string {
 			b.WriteString("\n\n")
 		}
 		if world.WorldLore != "" {
-			b.WriteString("### Отклонения от канона (lore.md)\n")
+			b.WriteString("### Отклонения от канона (lore)\n")
 			b.WriteString(world.WorldLore)
 			b.WriteString("\n\n")
 		}
 		if world.WorldPlan != "" {
-			b.WriteString("### plan.md (3-5 предстоящих событий)\n")
+			b.WriteString("### plan (3-5 предстоящих событий)\n")
 			b.WriteString(world.WorldPlan)
 			b.WriteString("\n\n")
 		}
 		if world.WorldMemorise != "" {
-			b.WriteString("### Хронология (memorise.md)\n")
+			b.WriteString("### Хронология (chronicle)\n")
 			b.WriteString(world.WorldMemorise)
 			b.WriteString("\n\n")
 		}

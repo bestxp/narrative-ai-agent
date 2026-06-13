@@ -59,7 +59,8 @@ func TestTools_StrictAdditionalProperties(t *testing.T) {
 
 func TestEndDayTool_Shape(t *testing.T) {
 	tool := findTool(t, "end_day")
-	assert.Contains(t, tool.Function.Description, "memorise")
+	assert.Contains(t, tool.Function.Description, "chronicle")
+	assert.Contains(t, tool.Function.Description, "world state")
 	probe := paramsJSON(t, tool.Function.Parameters)
 	props := probe["properties"].(map[string]any)
 	assert.Equal(t, "integer", props["day"].(map[string]any)["type"])

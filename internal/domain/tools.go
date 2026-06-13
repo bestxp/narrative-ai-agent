@@ -211,7 +211,7 @@ func endDayTool() Tool {
 		Type: "function",
 		Function: ToolFunctionSchema{
 			Name:        "end_day",
-			Description: "Записать итоги прошедшего дня в memorise.md и обновить state.md. Вызывай в конце сцены/дня по правилу MAINTENANCE FIRST.",
+			Description: "Записать итоги прошедшего дня в **chronicle** и обновить **world state**. Вызывай в конце сцены/дня по правилу MAINTENANCE FIRST.",
 			Parameters: Object(
 				Required("day", Integer("Номер завершённого дня")),
 				Required("summary", String("1-2 предложения сухой выжимки, без диалогов и эмоций")),
@@ -225,9 +225,9 @@ func endSceneTool() Tool {
 		Type: "function",
 		Function: ToolFunctionSchema{
 			Name:        "end_scene",
-			Description: "Зафиксировать конец текущей сцены: сжать диалог в state.md («## Хроника сцены Д<N>»), очистить список активных NPC (оставить только тех, кто в permanent party), сбросить историю диалога. Используй когда сцена исчерпана (игрок уходит из локации / переключается на новый сюжет), но день ещё не закончен. Не вызывай в конце дня — для этого есть end_day.",
+			Description: "Зафиксировать конец текущей сцены: сжать диалог в **world state** («## Хроника сцены Д<N>»), очистить список активных NPC (оставить только тех, кто в permanent party), сбросить историю диалога. Используй когда сцена исчерпана (игрок уходит из локации / переключается на новый сюжет), но день ещё не закончен. Не вызывай в конце дня — для этого есть end_day.",
 			Parameters: Object(
-				Optional("permanent_party", String("Список имён NPC, которые остаются в активном ростере (через запятую). Если пусто — берётся из «## permanent party» в worlds/<active>/state.md. Если нигде не указано — ростер не меняется.")),
+				Optional("permanent_party", String("Список имён NPC, которые остаются в активном ростере (через запятую). Если пусто — берётся из «## permanent party» в world state активного мира. Если нигде не указано — ростер не меняется.")),
 			),
 		},
 	}
@@ -249,7 +249,7 @@ func maintainLoreTool() Tool {
 		Type: "function",
 		Function: ToolFunctionSchema{
 			Name:        "maintain_lore",
-			Description: "Сжать lore.md при > 500 строк. Хронологический порядок + отклонения от канона + смерть NPC + первые появления NPC — сохраняем; повседневные действия / промежуточные эмоции / случайные реплики — удаляем. canon.md НЕ трогаем (внешний канон).",
+			Description: "Сжать **lore** при > 500 строк. Хронологический порядок + отклонения от канона + смерть NPC + первые появления NPC — сохраняем; повседневные действия / промежуточные эмоции / случайные реплики — удаляем. **Canon** НЕ трогаем (внешний канон).",
 			Parameters:  emptyObjectSchema(),
 		},
 	}
@@ -280,7 +280,7 @@ func updateStateTool() Tool {
 		Type: "function",
 		Function: ToolFunctionSchema{
 			Name:        "update_state",
-			Description: "Обновить state.md: текущий момент + активные NPC + хронология дня. Вызывай при КАЖДОЙ смене сцены: момент — что происходит прямо сейчас; npcs — **ВСЕ персонажи, которых ты упомянул в нарративе этого ответа, кто физически присутствует в сцене** (не только тот, с кем Маркус говорит; если Ирука и Хокаге оба на полигоне — оба в списке); events — 1-3 строки ключевых событий текущего хода (решения игрока, новые открытия, важные реплики NPC), которые должны остаться в дневной хронологии.",
+			Description: "Обновить **world state**: текущий момент + активные NPC + хронология дня. Вызывай при КАЖДОЙ смене сцены: момент — что происходит прямо сейчас; npcs — **ВСЕ персонажи, которых ты упомянул в нарративе этого ответа, кто физически присутствует в сцене** (не только тот, с кем Маркус говорит; если Ирука и Хокаге оба на полигоне — оба в списке); events — 1-3 строки ключевых событий текущего хода (решения игрока, новые открытия, важные реплики NPC), которые должны остаться в дневной хронологии.",
 			Parameters: Object(
 				Required("moment", String("1-2 предложения: что происходит прямо сейчас")),
 				Optional("npcs", ArrayOfStrings("ВСЕ имена NPC, физически присутствующих в сцене (упомянутые в твоём нарративе этого хода). Пустой массив = никого.")),
@@ -296,9 +296,9 @@ func rotatePlanTool() Tool {
 		Type: "function",
 		Function: ToolFunctionSchema{
 			Name:        "rotate_plan",
-			Description: "Заменить plan.md на новые 3-5 предстоящих событий.",
+			Description: "Заменить **plan** на новые 3-5 предстоящих событий.",
 			Parameters: Object(
-				Required("events", ArrayOfStringsBounded("3-5 предстоящих событий. Правило plan.md: 3-5 и только вперёд.", 3, 5)),
+				Required("events", ArrayOfStringsBounded("3-5 предстоящих событий. Правило plan: 3-5 и только вперёд.", 3, 5)),
 			),
 		},
 	}
@@ -361,7 +361,7 @@ func updateSoulTool() Tool {
 		Type: "function",
 		Function: ToolFunctionSchema{
 			Name:        "update_soul",
-			Description: "Дописать факт в characters/<active>/SOUL.yaml — кто ГГ (сущность, философия, предпочтения, легенда). Секции СВОБОДНЫЕ: можно создавать новые ('Легенда', 'Мотивация', что угодно). Один вызов = один факт, не абзац. Без markdown, без маркеров. Секции append-only, дедуп exact-string.",
+			Description: "Дописать факт в **soul** активного персонажа — кто ГГ (сущность, философия, предпочтения, легенда). Секции СВОБОДНЫЕ: можно создавать новые ('Легенда', 'Мотивация', что угодно). Один вызов = один факт, не абзац. Без markdown, без маркеров. Секции append-only, дедуп exact-string.",
 			Parameters: Object(
 				Required("section", String("Заголовок секции (например, 'Истинная сущность', 'Предпочтения', 'Философия и принципы', 'Легенда для прикрытия'). Если секции нет — она создастся.")),
 				Required("append", String("Текст для добавления в конец секции. 1 предложение.")),
@@ -390,9 +390,9 @@ func updateSkillTool() Tool {
 		Type: "function",
 		Function: ToolFunctionSchema{
 			Name:        "update_skill",
-			Description: "Дописать факт в characters/<active>/skill.yaml — что ГГ умеет (ранг, оружие, техники, ограничения). Секции СТРОГО по enum: Ранг / Оружие / Базовые способности / Фундаментальные стихии / Особые проявления / Универсальные навыки / Ограничения / Глаза / Доспех. Любая другая секция будет отклонена. Один вызов = один факт. Без markdown, без маркеров.",
+			Description: "Дописать факт в **skill** активного персонажа — что ГГ умеет (ранг, оружие, техники, ограничения). Секции СТРОГО по enum: Ранг / Оружие / Базовые способности / Фундаментальные стихии / Особые проявления / Универсальные навыки / Ограничения / Глаза / Доспех. Любая другая секция будет отклонена. Один вызов = один факт. Без markdown, без маркеров.",
 			Parameters: Object(
-				Required("section", StringEnum("Секция из фиксированного списка (skill.yaml — справочник способностей)", canonical...)),
+				Required("section", StringEnum("Секция из фиксированного списка (skill — справочник способностей)", canonical...)),
 				Required("append", String("Текст для добавления. 1 предложение, БЕЗ markdown.")),
 			),
 		},
@@ -413,9 +413,9 @@ func updateMemoryTool() Tool {
 		Type: "function",
 		Function: ToolFunctionSchema{
 			Name:        "update_memory",
-			Description: "Дописать яркое воспоминание / факт в characters/<active>/memory.yaml. Секции СТРОГО: Яркие моменты / Факты о мире / Обещания и цели / Важные люди. ЗАПРЕЩЕНО: даты, 'День N', дублирование state.md / memorise.md. Только то, что ГГ реально запомнил — эмоционально или фактически. Один вызов = один факт.",
+			Description: "Дописать яркое воспоминание / факт в **memory** активного персонажа. Секции СТРОГО: Яркие моменты / Факты о мире / Обещания и цели / Важные люди. ЗАПРЕЩЕНО: даты, 'День N', дублирование world state / chronicle. Только то, что ГГ реально запомнил — эмоционально или фактически. Один вызов = один факт.",
 			Parameters: Object(
-				Required("section", StringEnum("Секция из фиксированного списка (memory.yaml — яркие воспоминания ГГ)", canonical...)),
+				Required("section", StringEnum("Секция из фиксированного списка (memory — яркие воспоминания ГГ)", canonical...)),
 				Required("append", String("Текст для добавления. 1-2 предложения, без дат, без 'День N'.")),
 			),
 		},
@@ -449,7 +449,7 @@ func updateInventoryTool() Tool {
 		Type: "function",
 		Function: ToolFunctionSchema{
 			Name:        "update_inventory",
-			Description: "Добавить или заменить предмет в characters/<active>/inventory.yaml. Идентификация — по name: если предмет с таким name уже есть, его атрибуты (description / equip / special) ОБНОВЛЯЮТСЯ. Для удаления — отдельный remove_inventory_item. Количество кодируется именем (один items[]-элемент на единицу, или 'Кунай x3' одним элементом).",
+			Description: "Добавить или заменить предмет в **inventory** активного персонажа. Идентификация — по name: если предмет с таким name уже есть, его атрибуты (description / equip / special) ОБНОВЛЯЮТСЯ. Для удаления — отдельный remove_inventory_item. Количество кодируется именем (один items[]-элемент на единицу, или 'Кунай x3' одним элементом).",
 			Parameters: Object(
 				Required("name", String("Уникальное имя предмета. Используется как первичный ключ. Регистрозависимо.")),
 				Required("type", StringEnum("Категория из канонического списка", canonical...)),
@@ -473,7 +473,7 @@ func removeInventoryItemTool() Tool {
 		Type: "function",
 		Function: ToolFunctionSchema{
 			Name:        "remove_inventory_item",
-			Description: "Удалить предмет из characters/<active>/inventory.yaml по name. Возвращает ошибку если такого name нет — не придумывай.",
+			Description: "Удалить предмет из **inventory** активного персонажа по name. Возвращает ошибку если такого name нет — не придумывай.",
 			Parameters: Object(
 				Required("name", String("Имя предмета для удаления. Должно совпадать с существующим (case-sensitive).")),
 			),
@@ -491,7 +491,7 @@ func setCurrencyTool() Tool {
 		Type: "function",
 		Function: ToolFunctionSchema{
 			Name:        "set_currency",
-			Description: "Заменить count валютной строки в characters/<active>/inventory.yaml. Абсолютное значение (не дельта). Если такой валюты ещё нет — создаётся новая строка. Clamp: [0, 999_999_999].",
+			Description: "Заменить count валютной строки в **inventory** активного персонажа. Абсолютное значение (не дельта). Если такой валюты ещё нет — создаётся новая строка. Clamp: [0, 999_999_999].",
 			Parameters: Object(
 				Required("name", String("Название валюты: 'Рё', 'Кредиты империи', 'Золотые', etc.")),
 				Required("count", Integer("Абсолютное количество после изменения. Не отрицательное.")),
@@ -508,7 +508,7 @@ func removeCurrencyTool() Tool {
 		Type: "function",
 		Function: ToolFunctionSchema{
 			Name:        "remove_currency",
-			Description: "Удалить валютную строку из characters/<active>/inventory.yaml по name. Возвращает ошибку если такой валюты нет.",
+			Description: "Удалить валютную строку из **inventory** активного персонажа по name. Возвращает ошибку если такой валюты нет.",
 			Parameters: Object(
 				Required("name", String("Название валюты для удаления.")),
 			),
