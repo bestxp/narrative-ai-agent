@@ -46,8 +46,16 @@ type Summarizer struct {
 	// endOfDayPrompt is used by SummarizeEndOfDay. Same
 	// nil-safety as compactionInPlace.
 	endOfDayPrompt string
-	slow           *slowlog.Logger
-	log            zerolog.Logger
+	// characterMemoryPrompt is used by
+	// SummarizeCharacterMemory. Loaded from
+	// prompts/character_memory_maintain.md. When
+	// empty, SummarizeCharacterMemory no-ops (the
+	// caller still runs the size check; the LLM
+	// call is the only thing skipped). Wired in
+	// main.go via SetCharacterMemoryPrompt.
+	characterMemoryPrompt string
+	slow                  *slowlog.Logger
+	log                   zerolog.Logger
 	// fallbackMode is true when this summarizer shares the
 	// narrative model. We use the same role config but with
 	// a small MaxTokens override to keep the response tight.
@@ -453,7 +461,115 @@ func (s *Summarizer) SummarizeLore(ctx context.Context, world string, loreBody, 
 	cleaned := stripMarkdownFence(out)
 	res.Body = []byte(cleaned)
 	res.OutputChars = len(cleaned)
-	res.Compressed = len(cleaned) < len(loreBody)
+	res.Compressed = true
+	return res, nil
+}
+
+// CharacterMemorySummaryResult is what
+// SummarizeCharacterMemory returns. Body is the
+// new memory.yaml in `data: [{section, values}]`
+// shape. Compressed is true when the body shrank
+// (a real defragmentation happened, not a no-op
+// echo). BeforeBytes / AfterBytes / BeforeValues /
+// AfterValues feed the slowlog line.
+type CharacterMemorySummaryResult struct {
+	Body         []byte
+	Compressed   bool
+	BeforeBytes  int
+	AfterBytes   int
+	OutputChars  int
+	BeforeValues int
+	AfterValues  int
+}
+
+// SummarizeCharacterMemory asks the LLM to
+// defragment the active character's memory.yaml:
+// dedupe, drop redundant day-of references, and
+// refile legacy free-form sections ("## Действия
+// дня 1", "## Видения Кагуи", "## Эмоции", "##
+// Эволюция", …) into the 4 canonical sections
+// ("Яркие моменты", "Факты о мире", "Обещания и
+// цели", "Важные люди"). The system prompt
+// (loaded from prompts/character_memory_maintain.md)
+// is the source of truth for what counts as
+// "legacy" and how to refile.
+//
+// The world name (for canon context), the display
+// name (not the dir slug), the current YAML body,
+// and the world's memorise.md tail are passed to
+// the model. The model emits a NEW YAML body in
+// the canonical `data: [{section, values}]` shape.
+//
+// Best-effort: empty, equal-sized, larger, or
+// unparseable output leaves the on-disk file
+// untouched (the caller writes nothing). The
+// caller (MaintainCharacterMemory) is the only
+// gatekeeper — we just produce the body.
+func (s *Summarizer) SummarizeCharacterMemory(ctx context.Context, world, character string, memoryBody, memoriseTail []byte) (CharacterMemorySummaryResult, error) {
+	res := CharacterMemorySummaryResult{Body: memoryBody, Compressed: false, BeforeBytes: len(memoryBody)}
+	if !s.IsConfigured() {
+		return res, nil
+	}
+	if s.characterMemoryPrompt == "" {
+		return res, fmt.Errorf("summarizer: character_memory prompt not wired")
+	}
+	if len(memoryBody) == 0 {
+		return res, nil
+	}
+
+	var userBuf strings.Builder
+	userBuf.WriteString("# World: ")
+	userBuf.WriteString(world)
+	userBuf.WriteString("\n\n# Character: ")
+	userBuf.WriteString(character)
+	userBuf.WriteString("\n\n# Current memory.yaml\n```yaml\n")
+	userBuf.Write(memoryBody)
+	userBuf.WriteString("\n```\n")
+	if len(memoriseTail) > 0 {
+		userBuf.WriteString("\n# Полный memorise.md (контекст хронологии, без обрезки)\n```\n")
+		userBuf.Write(memoriseTail)
+		userBuf.WriteString("\n```\n")
+	}
+	userBuf.WriteString("\nВерни сжатый memory.yaml. Только YAML, без обёрток и комментариев.")
+
+	role := s.role
+	if role.MaxTokens < 4000 {
+		role.MaxTokens = 4000
+	}
+	if role.Temperature == 0 || role.Temperature > 0.4 {
+		role.Temperature = 0.2
+	}
+
+	req := llm.ChatRequest{
+		Model: role.Model,
+		Messages: []llm.Message{
+			{Role: "system", Content: s.characterMemoryPrompt},
+			{Role: "user", Content: userBuf.String()},
+		},
+		Temperature: role.Temperature,
+		MaxTokens:   role.MaxTokens,
+	}
+
+	var buf strings.Builder
+	streamErr := s.llm.Stream(ctx, req, func(ch llm.Chunk) error {
+		if ch.Done || ch.Content == "" {
+			return nil
+		}
+		buf.WriteString(ch.Content)
+		return nil
+	})
+	if streamErr != nil {
+		return res, fmt.Errorf("summarizer: character_memory stream: %w", streamErr)
+	}
+	out := strings.TrimSpace(buf.String())
+	if out == "" {
+		return res, nil
+	}
+	cleaned := stripYAMLFence(out)
+	res.Body = []byte(cleaned)
+	res.OutputChars = len(cleaned)
+	res.AfterBytes = len(cleaned)
+	res.Compressed = len(cleaned) < len(memoryBody)
 	return res, nil
 }
 
@@ -599,6 +715,17 @@ func (s *Summarizer) SetCompactionInPlacePrompt(p string) {
 // time from main.go.
 func (s *Summarizer) SetEndOfDayPrompt(p string) {
 	s.endOfDayPrompt = p
+}
+
+// SetCharacterMemoryPrompt wires the prompt loaded
+// from prompts/character_memory_maintain.md. Called
+// once at construction time from main.go. The
+// SummarizeCharacterMemory call is the only consumer
+// of this prompt; nil-safety matches the other
+// prompt setters (empty = no-op, caller skips the
+// LLM call but still records the size check).
+func (s *Summarizer) SetCharacterMemoryPrompt(p string) {
+	s.characterMemoryPrompt = p
 }
 
 // SummarizeInPlace compresses the current in-memory

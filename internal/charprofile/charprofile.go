@@ -76,29 +76,30 @@ type Section struct {
 	Values []string `yaml:"values"`
 }
 
-// Base is the common shape of Soul / Skill / Memory:
-// a display name, plus an ordered list of sections.
-// The three files differ only in their (optional)
-// extra scalars (Soul adds `soul`) and in the
-// enum-validity of the section list (Soul is
-// free-form + "Прочее" fallback, Skill / Memory are
-// strict).
+// Base is the common shape of Skill / Memory:
+// an ordered list of sections. The two files
+// differ only in the enum-validity of the section
+// list (Skill / Memory are strict). Soul has its
+// own `name` + `soul` fields (defined on the Soul
+// struct) and does NOT use Base.
+//
+// The character name lives ONLY in SOUL.yaml.
+// Duplicating it in skill.yaml / memory.yaml /
+// inventory.yaml is redundant — info.yaml is the
+// canonical source for the character dir, and
+// SOUL.yaml is the canonical source for the
+// display name. Every other file references
+// SOUL.yaml implicitly through the FileStore.
 type Base struct {
-	// Name is the human-readable character name.
-	// Required by all four files. Loaded from
-	// info.yaml on first launch; copied into each
-	// file so the operator can grep the on-disk
-	// character by name without cross-referencing
-	// the registry.
-	Name string `yaml:"name"`
 	// Data is the ordered list of sections. Order
 	// matters only for rendering; the LLM is
 	// allowed to insert new sections at the end.
 	Data []Section `yaml:"data"`
 }
 
-// Soul is the SOUL.yaml payload. Adds a single-line
-// `soul` summary on top of Base. Sums up "who is the
+// Soul is the SOUL.yaml payload. The ONLY file
+// carrying the character name (`name`) and the
+// one-line summary (`soul`). Sums up "who is the
 // GG" in one short string (age, kind, key trait).
 //
 // Sections are free-form in SOUL.yaml — the LLM may
@@ -106,12 +107,23 @@ type Base struct {
 // the canonical catch-all so old free-form MD files
 // with non-standard headings do not block migration.
 type Soul struct {
-	Base `yaml:",inline"`
+	// Name is the human-readable character name.
+	// "Маркус Мрачный" — what shows up in the
+	// system block and the narrative. Required
+	// (info.yaml's `display_name` is the seed on
+	// firstlaunch; on subsequent loads SOUL.yaml
+	// is canonical).
+	Name string `yaml:"name"`
 	// Soul is a one-line summary (e.g. "13 лет,
 	// попаданец"). The prompt surfaces this verbatim
 	// in the system block — it is the cheapest
 	// "what kind of character is this" hint.
 	Soul string `yaml:"soul"`
+	// Data is the ordered list of sections. Same
+	// shape as Base.Data but inlined here so the
+	// file renders as `name:`, `soul:`, `data:`
+	// without a wrapping `base:` key.
+	Data []Section `yaml:"data"`
 }
 
 // Skill is the skill.yaml payload. The sections
@@ -226,17 +238,17 @@ func (s Memory) Save() (string, error) { return saveBase(s) }
 // the fixed enum; otherwise ErrSectionNotFound. Soul
 // accepts any name.
 func (s *Soul) Append(section, value string) bool {
-	return appendIntoBase(&s.Base, section, value, false)
+	return appendIntoSections(&s.Data, section, value, false)
 }
 
 // Append on Skill uses the strict enum.
 func (s *Skill) Append(section, value string) bool {
-	return appendIntoBase(&s.Base, section, value, true)
+	return appendIntoSections(&s.Data, section, value, true)
 }
 
 // Append on Memory uses the strict enum.
 func (s *Memory) Append(section, value string) bool {
-	return appendIntoBase(&s.Base, section, value, true)
+	return appendIntoSections(&s.Data, section, value, true)
 }
 
 // ReplaceSection REPLACES the entire values[] of
@@ -249,15 +261,15 @@ func (s *Memory) Append(section, value string) bool {
 // replaced. False on a missing section — Append is
 // the right tool for adding a new one.
 func (s *Soul) ReplaceSection(section, value string) bool {
-	return replaceSectionInto(&s.Base, section, value)
+	return replaceSectionInto(&s.Data, section, value, false)
 }
 
 func (s *Skill) ReplaceSection(section, value string) bool {
-	return replaceSectionInto(&s.Base, section, value, true)
+	return replaceSectionInto(&s.Data, section, value, true)
 }
 
 func (s *Memory) ReplaceSection(section, value string) bool {
-	return replaceSectionInto(&s.Base, section, value, true)
+	return replaceSectionInto(&s.Data, section, value, true)
 }
 
 // --- internals ---
@@ -287,10 +299,10 @@ func saveBase[T any](s T) (string, error) {
 	return string(out), nil
 }
 
-// appendIntoBase is the shared Append logic. The
-// strict flag controls whether unknown sections
-// are rejected (Skill / Memory) or accepted (Soul).
-func appendIntoBase(b *Base, section, value string, strict bool) bool {
+// appendIntoSections is the shared Append logic. The
+// strict flag controls whether unknown sections are
+// rejected (Skill / Memory) or accepted (Soul).
+func appendIntoSections(data *[]Section, section, value string, strict bool) bool {
 	section = strings.TrimSpace(section)
 	value = strings.TrimSpace(value)
 	if section == "" || value == "" {
@@ -303,22 +315,22 @@ func appendIntoBase(b *Base, section, value string, strict bool) bool {
 		// unknown-section attempts upstream.
 		return false
 	}
-	for i := range b.Data {
-		if b.Data[i].Name == section {
-			if containsString(b.Data[i].Values, value) {
+	for i := range *data {
+		if (*data)[i].Name == section {
+			if containsString((*data)[i].Values, value) {
 				return false
 			}
-			b.Data[i].Values = append(b.Data[i].Values, value)
+			(*data)[i].Values = append((*data)[i].Values, value)
 			return true
 		}
 	}
-	b.Data = append(b.Data, Section{Name: section, Values: []string{value}})
+	*data = append(*data, Section{Name: section, Values: []string{value}})
 	return true
 }
 
 // replaceSectionInto REPLACES the values[] of the
 // named section. The strict flag mirrors Append.
-func replaceSectionInto(b *Base, section, value string, strict ...bool) bool {
+func replaceSectionInto(data *[]Section, section, value string, strict ...bool) bool {
 	section = strings.TrimSpace(section)
 	value = strings.TrimSpace(value)
 	if section == "" {
@@ -330,12 +342,12 @@ func replaceSectionInto(b *Base, section, value string, strict ...bool) bool {
 			return false
 		}
 	}
-	for i := range b.Data {
-		if b.Data[i].Name == section {
-			if len(b.Data[i].Values) == 1 && b.Data[i].Values[0] == value {
+	for i := range *data {
+		if (*data)[i].Name == section {
+			if len((*data)[i].Values) == 1 && (*data)[i].Values[0] == value {
 				return false
 			}
-			b.Data[i].Values = []string{value}
+			(*data)[i].Values = []string{value}
 			return true
 		}
 	}
@@ -370,11 +382,30 @@ func enumContains(target string, list []string) bool {
 // section, alphabetically sorted. Used by the
 // operator-facing diagnostic (`/inspect`) and by
 // the LLM prompt to know which sections are
-// populated.
-func (b *Base) SortedSectionNames() []string {
-	keys := make([]string, 0, len(b.Data))
-	for _, s := range b.Data {
-		keys = append(keys, s.Name)
+// populated. Defined on each file type since they
+// no longer share a common Base receiver.
+func (s *Soul) SortedSectionNames() []string {
+	keys := make([]string, 0, len(s.Data))
+	for _, sec := range s.Data {
+		keys = append(keys, sec.Name)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func (s *Skill) SortedSectionNames() []string {
+	keys := make([]string, 0, len(s.Data))
+	for _, sec := range s.Data {
+		keys = append(keys, sec.Name)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func (s *Memory) SortedSectionNames() []string {
+	keys := make([]string, 0, len(s.Data))
+	for _, sec := range s.Data {
+		keys = append(keys, sec.Name)
 	}
 	sort.Strings(keys)
 	return keys

@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
+	"github.com/bestxp/narrative-ai-agent/internal/slowlog"
 	"github.com/bestxp/narrative-ai-agent/internal/usecase/tools"
 )
 
@@ -23,7 +24,7 @@ func newTestToolset(t *testing.T) *Toolset {
 	require.NoError(t, fs.EnsureDir("worlds/naruto/characters"))
 	require.NoError(t, fs.WriteRawAtomic("info.yaml",
 		"active_character: markus\nactive_world: naruto\n"))
-	return New(fs, zerolog.Nop(), nil, nil, nil, nil)
+	return New(fs, zerolog.Nop(), slowlog.Discard(), nil, nil, nil, nil)
 }
 
 // TestUpdateState_DedupesAppendEvents is the regression
@@ -54,7 +55,7 @@ func TestUpdateState_DedupesAppendEvents(t *testing.T) {
 		NPCs:     []string{"Ирука", "Хокаге"},
 		AppendEvents: []string{
 			"ирука повёл маркуса в столовую", // duplicate
-			"Хокаге пришёл на полигон",     // new
+			"Хокаге пришёл на полигон",       // new
 		},
 	}))
 	body, err := ts.State.fs.ReadRaw("worlds/naruto/state.md")

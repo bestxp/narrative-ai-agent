@@ -79,7 +79,7 @@ func newGMTestEnv(t *testing.T) (*GM, *storage.FileStore, *fakeLLM) {
 	// One Tool bundles every concern; the tests use the
 	// file-backed implementation so on-disk state changes
 	// are observable via fs.ReadRaw.
-	tools := NewFileToolset(fs, discardLogger(), slowlog.Discard(), nil, nil, nil)
+	tools := NewFileToolset(fs, discardLogger(), slowlog.Discard(), nil, nil, nil, nil)
 	fake := &fakeLLM{}
 	log, _ := newBufLogger()
 	g := NewGM(GMConfig{

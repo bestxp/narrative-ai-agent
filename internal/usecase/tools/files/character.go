@@ -348,7 +348,6 @@ func (c *Character) AppendSkill(charDir, section, value string) (bool, error) {
 	s, err := charprofile.LoadSkill(body)
 	if err != nil {
 		s = charprofile.Skill{}
-		s.Name = charDir
 	}
 	if !enumContains(section, charprofile.SkillFixedSections) {
 		return false, charprofile.ErrSectionNotFound
@@ -386,7 +385,6 @@ func (c *Character) AppendMemorySection(charDir, section, value string) (bool, e
 	m, err := charprofile.LoadMemory(body)
 	if err != nil {
 		m = charprofile.Memory{}
-		m.Name = charDir
 	}
 	if !enumContains(section, charprofile.MemoryFixedSections) {
 		return false, charprofile.ErrSectionNotFound
@@ -421,7 +419,7 @@ func (c *Character) AppendInventoryItem(charDir string, item charprofile.Item) (
 	body, _ := c.fs.ReadRaw(inventoryPath(charDir))
 	inv, err := charprofile.LoadInventory(body)
 	if err != nil {
-		inv = charprofile.Inventory{Name: charDir}
+		inv = charprofile.Inventory{}
 	}
 	changed := inv.AppendItem(item)
 	if !changed {
@@ -468,7 +466,7 @@ func (c *Character) SetCurrency(charDir, name string, count int) (bool, error) {
 	body, _ := c.fs.ReadRaw(inventoryPath(charDir))
 	inv, err := charprofile.LoadInventory(body)
 	if err != nil {
-		inv = charprofile.Inventory{Name: charDir}
+		inv = charprofile.Inventory{}
 	}
 	changed := inv.SetCurrency(name, count)
 	if !changed {

@@ -78,7 +78,7 @@ func TestMaintainNPCs_NilSummarizerWarnsAndSkips(t *testing.T) {
 	fs, err := storage.NewFileStore(t.TempDir())
 	require.NoError(t, err)
 	writeLongNPC(t, fs, "naruto", "kakashi", "Какаши")
-	m := newMemory(fs, zerolog.Nop(), nil, nil, nil)
+	m := newMemory(fs, zerolog.Nop(), nil, nil, nil, nil)
 	touched, err := m.MaintainNPCs("naruto")
 	require.NoError(t, err)
 	assert.Empty(t, touched, "no summarizer — file should not be touched")
@@ -98,7 +98,7 @@ file_slug: "x"
 
 	// Summarizer records no calls.
 	stub := &stubSummarizer{}
-	m := newMemory(fs, zerolog.Nop(), stub, nil, nil)
+	m := newMemory(fs, zerolog.Nop(), stub, nil, nil, nil)
 	touched, err := m.MaintainNPCs("naruto")
 	require.NoError(t, err)
 	assert.Empty(t, touched)
@@ -121,7 +121,7 @@ func TestMaintainNPCs_ShrinksPersonalMemory(t *testing.T) {
 	require.NoError(t, err)
 
 	stub := &stubSummarizer{returnBody: []byte(newBody)}
-	m := newMemory(fs, zerolog.Nop(), stub, nil, nil)
+	m := newMemory(fs, zerolog.Nop(), stub, nil, nil, nil)
 	touched, err := m.MaintainNPCs("naruto")
 	require.NoError(t, err)
 	assert.Equal(t, []string{"Какаши"}, touched)
@@ -141,7 +141,7 @@ func TestMaintainNPCs_RejectsNoShrink(t *testing.T) {
 
 	// Stub summarizer returns the SAME body (no shrink).
 	stub := &stubSummarizer{returnBody: []byte("uncompressed")}
-	m := newMemory(fs, zerolog.Nop(), stub, nil, nil)
+	m := newMemory(fs, zerolog.Nop(), stub, nil, nil, nil)
 	touched, err := m.MaintainNPCs("naruto")
 	require.NoError(t, err)
 	assert.Empty(t, touched, "no shrink — no write")
@@ -167,7 +167,7 @@ func TestMaintainNPCs_BackupCreatedBeforeRewrite(t *testing.T) {
 	require.NoError(t, err)
 
 	stub := &stubSummarizer{returnBody: []byte(newBody)}
-	m := newMemory(fs, zerolog.Nop(), stub, nil, nil)
+	m := newMemory(fs, zerolog.Nop(), stub, nil, nil, nil)
 	touched, err := m.MaintainNPCs("naruto")
 	require.NoError(t, err)
 	require.Equal(t, []string{"Какаши"}, touched)
@@ -191,7 +191,7 @@ func TestMaintainNPCs_RejectsInvalidYAML(t *testing.T) {
 
 	// Stub summarizer returns garbage.
 	stub := &stubSummarizer{returnBody: []byte("not valid yaml: [")}
-	m := newMemory(fs, zerolog.Nop(), stub, nil, nil)
+	m := newMemory(fs, zerolog.Nop(), stub, nil, nil, nil)
 	touched, err := m.MaintainNPCs("naruto")
 	require.NoError(t, err)
 	assert.Empty(t, touched, "invalid YAML — no write")
@@ -202,7 +202,7 @@ func TestMaintainNPCs_PropagatesError(t *testing.T) {
 	writeLongNPC(t, fs, "naruto", "kakashi", "Какаши")
 
 	stub := &stubSummarizer{err: errTest}
-	m := newMemory(fs, zerolog.Nop(), stub, nil, nil)
+	m := newMemory(fs, zerolog.Nop(), stub, nil, nil, nil)
 	// Per-NPC errors are isolated: a failed
 	// summarizer call is logged at warn level but
 	// does not abort the loop, and MaintainNPCs
@@ -225,7 +225,7 @@ func TestMaintainNPCs_LegacyMarkdownMigratedOnTheFly(t *testing.T) {
 		"# Какаши\nспокойный\n"))
 
 	stub := &stubSummarizer{}
-	m := newMemory(fs, zerolog.Nop(), stub, nil, nil)
+	m := newMemory(fs, zerolog.Nop(), stub, nil, nil, nil)
 	touched, err := m.MaintainNPCs("naruto")
 	require.NoError(t, err)
 	assert.Empty(t, touched)
@@ -257,7 +257,7 @@ file_slug: "short_npc"
 	newBody, _ := original.Save()
 	stub := &stubSummarizer{returnBody: []byte(newBody)}
 
-	m := newMemory(fs, zerolog.Nop(), stub, nil, nil)
+	m := newMemory(fs, zerolog.Nop(), stub, nil, nil, nil)
 	touched, err := m.MaintainNPCs("naruto")
 	require.NoError(t, err)
 	assert.Equal(t, []string{"Длинный NPC"}, touched, "only the long NPC is touched")
@@ -331,7 +331,7 @@ func writeLongLore(t *testing.T, fs *storage.FileStore, world string) string {
 func TestMaintainLore_NilSummarizerWarnsAndSkips(t *testing.T) {
 	fs, _ := storage.NewFileStore(t.TempDir())
 	writeLongLore(t, fs, "naruto")
-	m := newMemory(fs, zerolog.Nop(), nil, nil, nil)
+	m := newMemory(fs, zerolog.Nop(), nil, nil, nil, nil)
 	rewritten, err := m.MaintainLore(context.Background(), "naruto")
 	require.NoError(t, err)
 	assert.False(t, rewritten, "no summarizer — file should not be touched")
@@ -342,7 +342,7 @@ func TestMaintainLore_BelowThresholdSkips(t *testing.T) {
 	// 50 lines, well under 500.
 	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/lore.md", "# Lore\n\n## Day 1\n- fact\n\n## Day 2\n- fact\n"))
 	stub := &stubLoreSummarizer{}
-	m := newMemory(fs, zerolog.Nop(), nil, stub, nil)
+	m := newMemory(fs, zerolog.Nop(), nil, stub, nil, nil)
 	rewritten, err := m.MaintainLore(context.Background(), "naruto")
 	require.NoError(t, err)
 	assert.False(t, rewritten)
@@ -355,7 +355,7 @@ func TestMaintainLore_ShrinksLoreFile(t *testing.T) {
 	// Return a smaller body.
 	shortBody := "# Lore — мир naruto\n\n## День 1\n- ключевой факт\n"
 	stub := &stubLoreSummarizer{returnBody: []byte(shortBody)}
-	m := newMemory(fs, zerolog.Nop(), nil, stub, nil)
+	m := newMemory(fs, zerolog.Nop(), nil, stub, nil, nil)
 	rewritten, err := m.MaintainLore(context.Background(), "naruto")
 	require.NoError(t, err)
 	assert.True(t, rewritten)
@@ -374,7 +374,7 @@ func TestMaintainLore_RejectsNoShrink(t *testing.T) {
 	require.NoError(t, err)
 	// Return the same body (no shrink).
 	stub := &stubLoreSummarizer{returnBody: []byte(original)}
-	m := newMemory(fs, zerolog.Nop(), nil, stub, nil)
+	m := newMemory(fs, zerolog.Nop(), nil, stub, nil, nil)
 	rewritten, err := m.MaintainLore(context.Background(), "naruto")
 	require.NoError(t, err)
 	assert.False(t, rewritten, "no shrink — no write")
@@ -386,7 +386,7 @@ func TestMaintainLore_RejectsNoSections(t *testing.T) {
 	// Return prose with no "## " headers — would
 	// destroy the canonical section structure.
 	stub := &stubLoreSummarizer{returnBody: []byte("just one long sentence with no sections")}
-	m := newMemory(fs, zerolog.Nop(), nil, stub, nil)
+	m := newMemory(fs, zerolog.Nop(), nil, stub, nil, nil)
 	rewritten, err := m.MaintainLore(context.Background(), "naruto")
 	require.NoError(t, err)
 	assert.False(t, rewritten, "no sections — no write")
@@ -396,7 +396,7 @@ func TestMaintainLore_PropagatesError(t *testing.T) {
 	fs, _ := storage.NewFileStore(t.TempDir())
 	writeLongLore(t, fs, "naruto")
 	stub := &stubLoreSummarizer{err: errTest}
-	m := newMemory(fs, zerolog.Nop(), nil, stub, nil)
+	m := newMemory(fs, zerolog.Nop(), nil, stub, nil, nil)
 	_, err := m.MaintainLore(context.Background(), "naruto")
 	assert.Error(t, err)
 }
@@ -404,7 +404,7 @@ func TestMaintainLore_PropagatesError(t *testing.T) {
 func TestMaintainLore_MissingFileNoop(t *testing.T) {
 	fs, _ := storage.NewFileStore(t.TempDir())
 	stub := &stubLoreSummarizer{}
-	m := newMemory(fs, zerolog.Nop(), nil, stub, nil)
+	m := newMemory(fs, zerolog.Nop(), nil, stub, nil, nil)
 	rewritten, err := m.MaintainLore(context.Background(), "naruto")
 	require.NoError(t, err)
 	assert.False(t, rewritten)
@@ -414,6 +414,249 @@ func TestMaintainLore_MissingFileNoop(t *testing.T) {
 // Compile-time guard: stubLoreSummarizer satisfies the
 // LoreSummarizer interface.
 var _ tools.LoreSummarizer = (*stubLoreSummarizer)(nil)
+
+// --- character memory maintain ---------------------------------------
+
+// stubCharMemSummarizer is a deterministic test double
+// for tools.CharacterMemorySummarizer. Returns the
+// configured returnBody verbatim (or the input if
+// returnBody is nil — the "no shrink" path), records
+// every call.
+type stubCharMemSummarizer struct {
+	returnBody []byte
+	err        error
+	calls      int
+	lastWorld  string
+	lastChar   string
+}
+
+func (s *stubCharMemSummarizer) SummarizeCharacterMemory(_ context.Context, world, character string, memoryBody, _ []byte) ([]byte, error) {
+	s.calls++
+	s.lastWorld = world
+	s.lastChar = character
+	if s.err != nil {
+		return nil, s.err
+	}
+	if s.returnBody != nil {
+		return s.returnBody, nil
+	}
+	return memoryBody, nil
+}
+
+var _ tools.CharacterMemorySummarizer = (*stubCharMemSummarizer)(nil)
+
+// writeLongMemory seeds the FileStore with a memory.yaml
+// over tools.CharacterMemoryMaintainBytes (4KB). The
+// fixture carries 4 legacy free-form sections ("Эмоции",
+// "Действия дня 1", "Видения Кагуи", "Яркие моменты")
+// so the regression test for "refile legacy into
+// canonical" can be one test, not two.
+func writeLongMemory(t *testing.T, fs *storage.FileStore, character string) string {
+	t.Helper()
+	// Build a body that crosses the 4KB threshold and
+	// has the 4-section enum + 4 legacy free-form
+	// sections, so tests can assert "the canonical
+	// version still has the 4 enum sections" after
+	// maintain.
+	var b strings.Builder
+	b.WriteString("data:\n")
+	for _, sec := range []string{
+		"Яркие моменты",
+		"Факты о мире",
+		"Обещания и цели",
+		"Важные люди",
+		// Legacy / non-canonical sections the
+		// summarizer is expected to refile into one of
+		// the 4 above.
+		"Эмоции",
+		"Эволюция",
+		"Действия дня 1",
+		"Действия дня 9",
+		"Видения Кагуи",
+		"Контакт с семьёй Яманака",
+		"Яркие воспоминания Маркус",
+	} {
+		fmt.Fprintf(&b, "    - section: %q\n      values:\n", sec)
+		// 8 long bullets per section — the long Russian
+		// sentences (~140 bytes each) push the total
+		// body past 4KB after 7+ sections.
+		for i := 0; i < 8; i++ {
+			fmt.Fprintf(&b, "        - \"Длинный факт номер %d в секции %s с подробностями и контекстом истории и пейзажа долины Огня\" \n", i+1, sec)
+		}
+	}
+	body := b.String()
+	require.NoError(t, fs.WriteRawAtomic("characters/"+character+"/memory.yaml", body))
+	return body
+}
+
+func TestMaintainCharacterMemory_NilSummarizerWarnsAndSkips(t *testing.T) {
+	fs, _ := storage.NewFileStore(t.TempDir())
+	writeLongMemory(t, fs, "markus")
+	m := newMemory(fs, zerolog.Nop(), nil, nil, nil, nil)
+	rewritten, err := m.MaintainCharacterMemory(context.Background(), "naruto", "markus")
+	require.NoError(t, err)
+	assert.False(t, rewritten, "no summarizer — file should not be touched")
+}
+
+func TestMaintainCharacterMemory_BelowThresholdSkips(t *testing.T) {
+	fs, _ := storage.NewFileStore(t.TempDir())
+	// 200-byte file — well under 4KB. The LLM must not
+	// be called: maintain is for already-bloated files.
+	require.NoError(t, fs.WriteRawAtomic("characters/markus/memory.yaml", "data:\n    - section: \"Яркие моменты\"\n      values:\n        - \"один факт\"\n"))
+	stub := &stubCharMemSummarizer{}
+	m := newMemory(fs, zerolog.Nop(), nil, nil, nil, stub)
+	rewritten, err := m.MaintainCharacterMemory(context.Background(), "naruto", "markus")
+	require.NoError(t, err)
+	assert.False(t, rewritten)
+	assert.Equal(t, 0, stub.calls, "summarizer must not be called for under-threshold memory")
+}
+
+func TestMaintainCharacterMemory_ShrinksAndRefilesLegacy(t *testing.T) {
+	fs, _ := storage.NewFileStore(t.TempDir())
+	writeLongMemory(t, fs, "markus")
+	// Return a strictly smaller, valid Memory YAML
+	// with the 4 canonical sections. The summarizer
+	// is responsible for refiling legacy free-form
+	// sections (we just verify the file is the new
+	// canonical shape).
+	shrunk := `data:
+    - section: "Яркие моменты"
+      values:
+        - "Видение с Кагуей"
+    - section: "Факты о мире"
+      values:
+        - "Ринне-шаринган — глаза Оцуцуки"
+    - section: "Обещания и цели"
+      values:
+        - "Спасти Кагую"
+    - section: "Важные люди"
+      values:
+        - "Наруто, Ирука, Хокаге"
+`
+	stub := &stubCharMemSummarizer{returnBody: []byte(shrunk)}
+	m := newMemory(fs, zerolog.Nop(), nil, nil, nil, stub)
+	rewritten, err := m.MaintainCharacterMemory(context.Background(), "naruto", "markus")
+	require.NoError(t, err)
+	assert.True(t, rewritten)
+	assert.Equal(t, 1, stub.calls)
+	assert.Equal(t, "naruto", stub.lastWorld)
+	assert.Equal(t, "markus", stub.lastChar)
+
+	got, err := fs.ReadRaw("characters/markus/memory.yaml")
+	require.NoError(t, err)
+	assert.Contains(t, got, "Видение с Кагуей", "new content must be on disk")
+	assert.NotContains(t, got, "Длинный факт номер", "old long bullets must be gone")
+	// The 4 canonical sections must be present.
+	for _, s := range []string{"Яркие моменты", "Факты о мире", "Обещания и цели", "Важные люди"} {
+		assert.Contains(t, got, s, "canonical section %q must remain", s)
+	}
+}
+
+func TestMaintainCharacterMemory_RejectsNoShrink(t *testing.T) {
+	fs, _ := storage.NewFileStore(t.TempDir())
+	writeLongMemory(t, fs, "markus")
+	before, _ := fs.ReadRaw("characters/markus/memory.yaml")
+	// Return the same body (no shrink) — caller bails
+	// because maintenance never grows a file.
+	stub := &stubCharMemSummarizer{returnBody: []byte(before)}
+	m := newMemory(fs, zerolog.Nop(), nil, nil, nil, stub)
+	rewritten, err := m.MaintainCharacterMemory(context.Background(), "naruto", "markus")
+	require.NoError(t, err)
+	assert.False(t, rewritten, "no shrink — no write")
+}
+
+func TestMaintainCharacterMemory_RejectsEmpty(t *testing.T) {
+	fs, _ := storage.NewFileStore(t.TempDir())
+	writeLongMemory(t, fs, "markus")
+	before, _ := fs.ReadRaw("characters/markus/memory.yaml")
+	stub := &stubCharMemSummarizer{returnBody: []byte("")}
+	m := newMemory(fs, zerolog.Nop(), nil, nil, nil, stub)
+	rewritten, err := m.MaintainCharacterMemory(context.Background(), "naruto", "markus")
+	require.NoError(t, err)
+	assert.False(t, rewritten)
+	after, _ := fs.ReadRaw("characters/markus/memory.yaml")
+	assert.Equal(t, before, after, "empty body — file untouched")
+}
+
+func TestMaintainCharacterMemory_RejectsInvalidYAML(t *testing.T) {
+	fs, _ := storage.NewFileStore(t.TempDir())
+	writeLongMemory(t, fs, "markus")
+	before, _ := fs.ReadRaw("characters/markus/memory.yaml")
+	stub := &stubCharMemSummarizer{returnBody: []byte("not valid yaml: [")}
+	m := newMemory(fs, zerolog.Nop(), nil, nil, nil, stub)
+	rewritten, err := m.MaintainCharacterMemory(context.Background(), "naruto", "markus")
+	require.NoError(t, err)
+	assert.False(t, rewritten, "invalid YAML — no write")
+	after, _ := fs.ReadRaw("characters/markus/memory.yaml")
+	assert.Equal(t, before, after)
+}
+
+func TestMaintainCharacterMemory_RejectsNoSections(t *testing.T) {
+	fs, _ := storage.NewFileStore(t.TempDir())
+	writeLongMemory(t, fs, "markus")
+	before, _ := fs.ReadRaw("characters/markus/memory.yaml")
+	// Empty data: array — would destroy the file.
+	empty := "data: []\n"
+	stub := &stubCharMemSummarizer{returnBody: []byte(empty)}
+	m := newMemory(fs, zerolog.Nop(), nil, nil, nil, stub)
+	rewritten, err := m.MaintainCharacterMemory(context.Background(), "naruto", "markus")
+	require.NoError(t, err)
+	assert.False(t, rewritten, "no sections — no write")
+	after, _ := fs.ReadRaw("characters/markus/memory.yaml")
+	assert.Equal(t, before, after)
+}
+
+func TestMaintainCharacterMemory_BackupCreatedBeforeRewrite(t *testing.T) {
+	fs, _ := storage.NewFileStore(t.TempDir())
+	writeLongMemory(t, fs, "markus")
+	before, _ := fs.ReadRaw("characters/markus/memory.yaml")
+	shrunk := `data:
+    - section: "Яркие моменты"
+      values:
+        - "Видение с Кагуей"
+    - section: "Факты о мире"
+      values:
+        - "Ринне-шаринган"
+    - section: "Обещания и цели"
+      values:
+        - "Спасти Кагую"
+    - section: "Важные люди"
+      values:
+        - "Наруто"
+`
+	stub := &stubCharMemSummarizer{returnBody: []byte(shrunk)}
+	m := newMemory(fs, zerolog.Nop(), nil, nil, nil, stub)
+	rewritten, err := m.MaintainCharacterMemory(context.Background(), "naruto", "markus")
+	require.NoError(t, err)
+	require.True(t, rewritten)
+	// .bak must contain the ORIGINAL long body.
+	bak, err := fs.ReadRaw("characters/markus/memory.yaml.bak")
+	require.NoError(t, err)
+	assert.Equal(t, before, bak, ".bak preserves pre-rewrite bytes")
+	// Current file must be the new (compacted) version.
+	cur, _ := fs.ReadRaw("characters/markus/memory.yaml")
+	assert.Contains(t, cur, "Видение с Кагуей", "current file is the compacted body")
+}
+
+func TestMaintainCharacterMemory_MissingFileNoop(t *testing.T) {
+	fs, _ := storage.NewFileStore(t.TempDir())
+	stub := &stubCharMemSummarizer{}
+	m := newMemory(fs, zerolog.Nop(), nil, nil, nil, stub)
+	rewritten, err := m.MaintainCharacterMemory(context.Background(), "naruto", "markus")
+	require.NoError(t, err)
+	assert.False(t, rewritten)
+	assert.Equal(t, 0, stub.calls, "missing file — no summarizer call")
+}
+
+func TestMaintainCharacterMemory_EmptyCharacterNoop(t *testing.T) {
+	fs, _ := storage.NewFileStore(t.TempDir())
+	stub := &stubCharMemSummarizer{}
+	m := newMemory(fs, zerolog.Nop(), nil, nil, nil, stub)
+	rewritten, err := m.MaintainCharacterMemory(context.Background(), "naruto", "")
+	require.NoError(t, err)
+	assert.False(t, rewritten)
+	assert.Equal(t, 0, stub.calls, "empty character — no summarizer call")
+}
 
 // Reference to slowlog keeps the import live in case
 // the test ever needs a real Logger.
@@ -502,7 +745,7 @@ func TestMemoriseCompressWindow_Basic30Days(t *testing.T) {
 	}
 	writeMemoriseDays(t, fs, "naruto", days)
 	stub := &stubMemoriseSummarizer{returnedBody: "выжимка 30 дней"}
-	mem := newMemory(fs, zerolog.Nop(), nil, nil, stub)
+	mem := newMemory(fs, zerolog.Nop(), nil, nil, stub, nil)
 	// ArchiveDay will call the hook after writing. We use
 	// the state struct directly because the tool wiring
 	// (State.ArchiveDay → Memory.memoriseCompressAfterArchive)
@@ -536,7 +779,7 @@ func TestMemoriseCompressWindow_Ladder(t *testing.T) {
 	}
 	writeMemoriseDays(t, fs, "naruto", days)
 	stub := &stubMemoriseSummarizer{returnedBody: "выжимка"}
-	mem := newMemory(fs, zerolog.Nop(), nil, nil, stub)
+	mem := newMemory(fs, zerolog.Nop(), nil, nil, stub, nil)
 	err := mem.memoriseCompressAfterArchive(context.Background(), "naruto", 60)
 	require.NoError(t, err)
 	assert.Equal(t, 2, stub.calls, "two windows → two LLM calls")
@@ -571,7 +814,7 @@ func TestMemoriseCompressWindow_Timeskip(t *testing.T) {
 	}
 	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/memorise.md", buf.String()))
 	stub := &stubMemoriseSummarizer{returnedBody: "окно"}
-	mem := newMemory(fs, zerolog.Nop(), nil, nil, stub)
+	mem := newMemory(fs, zerolog.Nop(), nil, nil, stub, nil)
 	err := mem.memoriseCompressAfterArchive(context.Background(), "naruto", 90)
 	require.NoError(t, err)
 	assert.Equal(t, 3, stub.calls, "three windows → three LLM calls")
@@ -600,7 +843,7 @@ func TestMemoriseCompressWindow_NoSummarizer(t *testing.T) {
 	}
 	writeMemoriseDays(t, fs, "naruto", days)
 	before, _ := fs.ReadRaw("worlds/naruto/memorise.md")
-	mem := newMemory(fs, zerolog.Nop(), nil, nil, nil)
+	mem := newMemory(fs, zerolog.Nop(), nil, nil, nil, nil)
 	err := mem.memoriseCompressAfterArchive(context.Background(), "naruto", 30)
 	require.NoError(t, err)
 	after, _ := fs.ReadRaw("worlds/naruto/memorise.md")
@@ -620,7 +863,7 @@ func TestMemoriseCompressWindow_BadPrefix(t *testing.T) {
 	writeMemoriseDays(t, fs, "naruto", days)
 	before, _ := fs.ReadRaw("worlds/naruto/memorise.md")
 	stub := &stubMemoriseSummarizer{badPrefix: true}
-	mem := newMemory(fs, zerolog.Nop(), nil, nil, stub)
+	mem := newMemory(fs, zerolog.Nop(), nil, nil, stub, nil)
 	err := mem.memoriseCompressAfterArchive(context.Background(), "naruto", 30)
 	require.NoError(t, err)
 	after, _ := fs.ReadRaw("worlds/naruto/memorise.md")
@@ -635,7 +878,7 @@ func TestMemoriseCompressWindow_TooThin(t *testing.T) {
 	days := map[int]string{1: "a", 5: "b", 10: "c"}
 	writeMemoriseDays(t, fs, "naruto", days)
 	stub := &stubMemoriseSummarizer{returnedBody: "should not be called"}
-	mem := newMemory(fs, zerolog.Nop(), nil, nil, stub)
+	mem := newMemory(fs, zerolog.Nop(), nil, nil, stub, nil)
 	err := mem.memoriseCompressAfterArchive(context.Background(), "naruto", 10)
 	require.NoError(t, err)
 	assert.Equal(t, 0, stub.calls, "window too thin (3 days out of 30) — no LLM call")
@@ -658,7 +901,7 @@ func TestMemoriseCompressWindow_WithGap(t *testing.T) {
 	}
 	writeMemoriseDays(t, fs, "naruto", days)
 	stub := &stubMemoriseSummarizer{returnedBody: "сжато"}
-	mem := newMemory(fs, zerolog.Nop(), nil, nil, stub)
+	mem := newMemory(fs, zerolog.Nop(), nil, nil, stub, nil)
 	err := mem.memoriseCompressAfterArchive(context.Background(), "naruto", 60)
 	require.NoError(t, err)
 	// First window saw 29 days (1..29); second saw 30
@@ -694,7 +937,7 @@ func TestMemoriseCompressWindow_KeepsEarlierSummaries(t *testing.T) {
 	}
 	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/memorise.md", pre))
 	stub := &stubMemoriseSummarizer{returnedBody: "новая сводка 2"}
-	mem := newMemory(fs, zerolog.Nop(), nil, nil, stub)
+	mem := newMemory(fs, zerolog.Nop(), nil, nil, stub, nil)
 	err := mem.memoriseCompressAfterArchive(context.Background(), "naruto", 60)
 	require.NoError(t, err)
 	assert.Equal(t, 1, stub.calls, "only one window left to compress")
@@ -722,7 +965,7 @@ func TestStateArchiveDay_TriggersCompression(t *testing.T) {
 	}
 	writeMemoriseDays(t, fs, "naruto", days)
 	stub := &stubMemoriseSummarizer{returnedBody: "сводка"}
-	mem := newMemory(fs, zerolog.Nop(), nil, nil, stub)
+	mem := newMemory(fs, zerolog.Nop(), nil, nil, stub, nil)
 	st := newState(fs, zerolog.Nop())
 	st.SetMemoriseCompress(mem.memoriseCompressAfterArchive)
 	require.NoError(t, st.ArchiveDay(context.Background(), "naruto", 30, "итог"))
@@ -748,7 +991,7 @@ func TestStateArchiveDay_NotMultipleOf30(t *testing.T) {
 	}
 	writeMemoriseDays(t, fs, "naruto", days)
 	stub := &stubMemoriseSummarizer{returnedBody: "no"}
-	mem := newMemory(fs, zerolog.Nop(), nil, nil, stub)
+	mem := newMemory(fs, zerolog.Nop(), nil, nil, stub, nil)
 	st := newState(fs, zerolog.Nop())
 	st.SetMemoriseCompress(mem.memoriseCompressAfterArchive)
 	require.NoError(t, st.ArchiveDay(context.Background(), "naruto", 25, "x"))

@@ -33,12 +33,25 @@ var ErrUnknownFile = errors.New("charprofile: unknown legacy file")
 // `<digits>. ` is treated as raw text. Empty
 // trailing lines are dropped.
 //
-// The "name" field of the resulting payload is
-// taken from the legacy H1 if present, else from
-// fileSlug. The "soul" field (Soul only) is left
-// empty — the LLM-driven path is the right tool
-// to fill it; a deterministic parser that guesses
-// a soul line would just be wrong.
+// # DATA-PRESERVATION CONTRACT
+//
+// MigrateFromMarkdown is LOSS-LESS. The strict
+// section enum is enforced ONLY at write-time
+// (Append, ReplaceSection). Migration must keep
+// every `## <section>` heading the legacy file had,
+// even if the name is not on the canonical enum —
+// dropping it would silently delete the player's
+// memory. The next Append call will then refile the
+// legacy section's value into a canonical bucket
+// when the model is ready, but until that happens
+// the data is preserved.
+//
+// The character name (for SOUL.yaml) is taken from
+// the legacy H1 if present, else from fileSlug. The
+// "soul" field (Soul only) is left empty — the
+// LLM-driven path is the right tool to fill it; a
+// deterministic parser that guesses a soul line
+// would just be wrong.
 func MigrateFromMarkdown(kind string, body, fileSlug string) (any, error) {
 	body = strings.TrimSpace(body)
 	if body == "" {
@@ -47,58 +60,79 @@ func MigrateFromMarkdown(kind string, body, fileSlug string) (any, error) {
 	switch kind {
 	case "SOUL":
 		var s Soul
-		s.Name = fileSlug
-		parseMarkdownSections(body, &s.Base, false)
+		// name from H1 ("# <Title>"); fall back
+		// to fileSlug if the file has no H1
+		// (extremely rare — every legacy .md had
+		// a free-form title).
+		if n := extractH1(body); n != "" {
+			s.Name = n
+		} else {
+			s.Name = fileSlug
+		}
+		parseMarkdownSections(body, &s.Data, false)
 		return s, nil
 	case "skill":
 		var s Skill
-		s.Name = fileSlug
-		parseMarkdownSections(body, &s.Base, true)
+		parseMarkdownSections(body, &s.Data, true)
 		return s, nil
 	case "memory":
 		var m Memory
-		m.Name = fileSlug
-		parseMarkdownSections(body, &m.Base, true)
+		// LOSS-LESS: keep every `## <section>` even
+		// if the name is not on MemoryFixedSections.
+		// See the data-preservation contract above.
+		parseMarkdownSections(body, &m.Data, false)
 		return m, nil
 	}
 	return nil, fmt.Errorf("%w: %s", ErrUnknownFile, kind)
 }
 
 // parseMarkdownSections walks the body line-by-line
-// and populates b.Data. The strict flag controls
-// whether unknown section names are dropped (Soul)
-// or kept (Skill / Memory get their canonical
-// sections; non-canonical names are folded into
-// the "Прочее" section on Soul, dropped on
-// Skill / Memory).
-func parseMarkdownSections(body string, b *Base, strict bool) {
+// and populates data. The strict flag controls
+// whether unknown section names are dropped (Soul:
+// never, Memory in legacy: never — see
+// MigrateFromMarkdown contract; Skill: yes, only
+// canonical names survive).
+//
+// The H1 line ("# Some Title") is NOT stored in
+// data — MigrateFromMarkdown reads it via
+// extractH1() when it needs the legacy title. The
+// title is free-form prose (e.g. "Маркус — Ядро
+// персонажа") and is not a section the model
+// would ever call Append on.
+func parseMarkdownSections(body string, data *[]Section, strict bool) {
 	lines := strings.Split(body, "\n")
 	var current *Section
 	for _, raw := range lines {
 		t := strings.TrimSpace(raw)
 		switch {
 		case strings.HasPrefix(t, "# ") && !strings.HasPrefix(t, "## "):
-			b.Name = strings.TrimSpace(t[2:])
+			// H1 ignored — b.Name is set by the caller
+			// (MigrateFromMarkdown uses fileSlug, which
+			// is the canonical character dir name and
+			// matches the rest of the YAML tree).
+			continue
 		case strings.HasPrefix(t, "## "):
 			name := strings.TrimSpace(t[3:])
 			if name == "" {
 				current = nil
 				continue
 			}
-			// Strict mode (Skill / Memory) drops
-			// sections that are not on the
-			// fixed enum. Soul is free-form and
-			// accepts any name.
+			// Strict mode (Skill migration only)
+			// drops sections that are not on the
+			// fixed enum. Soul and Memory migrations
+			// are LOSS-LESS — see the
+			// data-preservation contract in
+			// MigrateFromMarkdown.
 			if strict && !isCanonicalSection(name) {
 				current = nil
 				continue
 			}
-			idx := findSection(b, name)
+			idx := findSection(data, name)
 			if idx < 0 {
-				b.Data = append(b.Data, Section{Name: name})
-				idx = len(b.Data) - 1
+				*data = append(*data, Section{Name: name})
+				idx = len(*data) - 1
 			}
-			current = &b.Data[idx]
+			current = &(*data)[idx]
 		case t == "":
 			// Blank line — keep current section
 			// alive (text under the same section
@@ -127,13 +161,27 @@ func parseMarkdownSections(body string, b *Base, strict bool) {
 
 // findSection returns the index of the section with
 // the given name, or -1.
-func findSection(b *Base, name string) int {
-	for i := range b.Data {
-		if b.Data[i].Name == name {
+func findSection(data *[]Section, name string) int {
+	for i := range *data {
+		if (*data)[i].Name == name {
 			return i
 		}
 	}
 	return -1
+}
+
+// extractH1 returns the first H1 line's body
+// ("# Foo" -> "Foo") or "" if there is no H1. Used
+// by MigrateFromMarkdown to seed the Soul.Name from
+// the legacy free-form title.
+func extractH1(body string) string {
+	for _, line := range strings.Split(body, "\n") {
+		t := strings.TrimSpace(line)
+		if strings.HasPrefix(t, "# ") && !strings.HasPrefix(t, "## ") {
+			return strings.TrimSpace(t[2:])
+		}
+	}
+	return ""
 }
 
 // isCanonicalSection reports whether the section

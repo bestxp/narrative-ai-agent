@@ -139,9 +139,13 @@ func buildSeedSoul(c CharacterSpec) string {
 // does not include "weapons at launch" today, and
 // seeding sample values would just be noise the
 // LLM would later have to delete.
+//
+// The character name is NOT seeded here. SOUL.yaml
+// is the canonical place for the display name; the
+// other three files (skill / memory / inventory)
+// derive their identity from the directory.
 func buildSeedSkill(c CharacterSpec) string {
 	s := charprofile.Skill{}
-	s.Name = strings.TrimSpace(c.DisplayName)
 	for _, name := range charprofile.SkillFixedSections {
 		s.Data = append(s.Data, charprofile.Section{Name: name})
 	}
@@ -155,9 +159,10 @@ func buildSeedSkill(c CharacterSpec) string {
 // ("Субъективные моменты. От первого лица.")
 // does not survive in YAML — the file's name and
 // section headers are self-describing.
+//
+// The character name is NOT seeded here.
 func buildSeedMemory(c CharacterSpec) string {
 	m := charprofile.Memory{}
-	m.Name = strings.TrimSpace(c.DisplayName)
 	for _, name := range charprofile.MemoryFixedSections {
 		m.Data = append(m.Data, charprofile.Section{Name: name})
 	}
@@ -166,11 +171,11 @@ func buildSeedMemory(c CharacterSpec) string {
 }
 
 // buildSeedInventory renders the canonical
-// inventory.yaml seed: an empty file with name +
-// empty currency and items arrays. The model will
+// inventory.yaml seed: an empty file with empty
+// currency and items arrays. The model will
 // start adding items on the first scene.
 func buildSeedInventory(c CharacterSpec) string {
-	inv := charprofile.Inventory{Name: strings.TrimSpace(c.DisplayName)}
+	inv := charprofile.Inventory{}
 	out, _ := inv.Save()
 	return out
 }

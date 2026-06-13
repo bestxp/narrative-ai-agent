@@ -244,6 +244,11 @@ func main() {
 			} else {
 				log.Warn().Err(err).Msg("end_of_day.md unreadable; end-of-day protocol will no-op")
 			}
+			if charMemPrompt, err := promptpkg.LoadSystemPrompt("", "character_memory_maintain.md"); err == nil && charMemPrompt != "" {
+				summarizer.SetCharacterMemoryPrompt(charMemPrompt)
+			} else {
+				log.Warn().Err(err).Msg("character_memory_maintain.md unreadable; end-of-day memory defrag will no-op")
+			}
 		}
 	}
 
@@ -258,24 +263,25 @@ func main() {
 	// the single Tool surface fails closed.
 	//
 	// summarizer is the LLM-driven compaction hook used for
-	// THREE different compaction kinds: NPC profiles, lore.md,
-	// and the 30-day memorise.md windows. The same
-	// *usecase.Summarizer implements all three (it has a
-	// SummarizeNPC / SummarizeLore / SummarizeMemorise
-	// method each); we pass the SAME adapter in all three
-	// slots so the production deployment gets the LLM path
-	// for every compaction. Pass nil to disable a slot
+	// FOUR different compaction kinds: NPC profiles, lore.md,
+	// the 30-day memorise.md windows, and the active
+	// character's memory.yaml. The same *usecase.Summarizer
+	// implements all four; we pass the SAME adapter in all
+	// four slots so the production deployment gets the LLM
+	// path for every compaction. Pass nil to disable a slot
 	// (the file backend will log a warning and skip).
 	var npcSum tools.NPCSummarizer
 	var loreSum tools.LoreSummarizer
 	var memSum tools.MemoriseSummarizer
+	var charMemSum tools.CharacterMemorySummarizer
 	if summarizer != nil {
 		adapter := summarizerAdapter{s: summarizer}
 		npcSum = adapter
 		loreSum = adapter
 		memSum = adapter
+		charMemSum = adapter
 	}
-	fileTools := usecase.NewFileToolset(fs, log, slow, npcSum, loreSum, memSum)
+	fileTools := usecase.NewFileToolset(fs, log, slow, npcSum, loreSum, memSum, charMemSum)
 	log.Info().Str("source", fileTools.Source()).Msg("file-backed toolset ready")
 	disp := dispatcher.New(cfg, fs, gitOp, fileTools, slow, log)
 
@@ -876,6 +882,14 @@ func (a summarizerAdapter) SummarizeLore(ctx context.Context, world string, lore
 
 func (a summarizerAdapter) SummarizeMemorise(ctx context.Context, world string, startDay, endDay int, fullMemorise string) ([]byte, error) {
 	res, err := a.s.SummarizeMemorise(ctx, world, startDay, endDay, fullMemorise)
+	if err != nil {
+		return nil, err
+	}
+	return res.Body, nil
+}
+
+func (a summarizerAdapter) SummarizeCharacterMemory(ctx context.Context, world, character string, memoryBody, memoriseTail []byte) ([]byte, error) {
+	res, err := a.s.SummarizeCharacterMemory(ctx, world, character, memoryBody, memoriseTail)
 	if err != nil {
 		return nil, err
 	}

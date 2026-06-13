@@ -157,8 +157,7 @@ func TestBase_SortedSectionNames(t *testing.T) {
 // --- Inventory ---
 
 func TestInventory_LoadSave_RoundTrip(t *testing.T) {
-	body := `name: Маркус Мрачный
-currency:
+	body := `currency:
   - name: Рё
     count: 5000
   - name: Кредиты империи
@@ -177,9 +176,8 @@ items:
 	if err != nil {
 		t.Fatalf("LoadInventory: %v", err)
 	}
-	if inv.Name != "Маркус Мрачный" {
-		t.Errorf("Name = %q", inv.Name)
-	}
+	// inventory.yaml does not carry a `name` field —
+	// the character identity is in SOUL.yaml.
 	if len(inv.Currency) != 2 {
 		t.Errorf("Currency len = %d", len(inv.Currency))
 	}
@@ -214,7 +212,6 @@ func TestInventory_Load_Empty(t *testing.T) {
 
 func TestInventory_AppendItem_New(t *testing.T) {
 	var inv Inventory
-	inv.Name = "X"
 	if !inv.AppendItem(Item{Name: "Кунай", Equip: false, Special: "нет"}) {
 		t.Fatal("expected change on first item")
 	}
@@ -382,5 +379,40 @@ func TestMigrateFromMarkdown_Soul_KeepsUnknownSection(t *testing.T) {
 	s := got.(Soul)
 	if len(s.Data) != 1 || s.Data[0].Name != "Свободная секция" {
 		t.Fatalf("Soul must keep free-form section, got %+v", s.Data)
+	}
+}
+
+// TestMigrateFromMarkdown_Memory_KeepsAllSections is the
+// regression test for the data-loss bug: legacy
+// memory.md had ~20 free-form ## sections
+// (Видения, Контакты семьи Яманака, etc.) that
+// the strict migration dropped silently, leaving
+// the new memory.yaml empty.
+//
+// MigrateFromMarkdown is LOSS-LESS — see the
+// data-preservation contract. The strict enum is
+// enforced only at Append / ReplaceSection.
+func TestMigrateFromMarkdown_Memory_KeepsAllSections(t *testing.T) {
+	body := "# M\n\n## Видения Кагуи\n- сон 1\n- сон 2\n\n## Контакт с семьёй Яманака\n- тётя\n\n## Яркие моменты\n- первый поцелуй\n\n## Действия дня 1\n- душ\n- завтрак\n"
+	got, err := MigrateFromMarkdown("memory", body, "m")
+	if err != nil {
+		t.Fatalf("MigrateFromMarkdown: %v", err)
+	}
+	m := got.(Memory)
+	if len(m.Data) != 4 {
+		t.Fatalf("memory migration must keep all 4 legacy sections, got %+v", m.Data)
+	}
+	want := map[string]int{
+		"Видения Кагуи":            2,
+		"Контакт с семьёй Яманака": 1,
+		"Яркие моменты":            1,
+		"Действия дня 1":           2,
+	}
+	for _, sec := range m.Data {
+		if w, ok := want[sec.Name]; !ok {
+			t.Errorf("unexpected section %q", sec.Name)
+		} else if len(sec.Values) != w {
+			t.Errorf("%q: want %d values, got %d", sec.Name, w, len(sec.Values))
+		}
 	}
 }

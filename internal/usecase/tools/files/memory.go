@@ -7,8 +7,10 @@ import (
 	"strings"
 
 	"github.com/rs/zerolog"
+	"gopkg.in/yaml.v3"
 
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
+	"github.com/bestxp/narrative-ai-agent/internal/charprofile"
 	"github.com/bestxp/narrative-ai-agent/internal/domain"
 	"github.com/bestxp/narrative-ai-agent/internal/npcprofile"
 	"github.com/bestxp/narrative-ai-agent/internal/usecase/tools"
@@ -38,15 +40,23 @@ type Memory struct {
 	// MemoriseCompressWindow whenever a window closes
 	// (default: day % 30 == 0, or any wider timeskip).
 	memoriseSummarizer tools.MemoriseSummarizer
+	// characterMemorySummarizer is the LLM-driven
+	// memory.yaml compaction hook for the active
+	// character. Called from MaintainCharacterMemory
+	// during the end-of-day pass (and from the
+	// /maintenance operator path). Same nil
+	// semantics as the other summarizers.
+	characterMemorySummarizer tools.CharacterMemorySummarizer
 }
 
-func newMemory(fs *storage.FileStore, log zerolog.Logger, summarizer tools.NPCSummarizer, loreSummarizer tools.LoreSummarizer, memoriseSummarizer tools.MemoriseSummarizer) *Memory {
+func newMemory(fs *storage.FileStore, log zerolog.Logger, summarizer tools.NPCSummarizer, loreSummarizer tools.LoreSummarizer, memoriseSummarizer tools.MemoriseSummarizer, characterMemorySummarizer tools.CharacterMemorySummarizer) *Memory {
 	return &Memory{
-		fs:                 fs,
-		log:                log.With().Str("component", "memory").Logger(),
-		summarizer:         summarizer,
-		loreSummarizer:     loreSummarizer,
-		memoriseSummarizer: memoriseSummarizer,
+		fs:                        fs,
+		log:                       log.With().Str("component", "memory").Logger(),
+		summarizer:                summarizer,
+		loreSummarizer:            loreSummarizer,
+		memoriseSummarizer:        memoriseSummarizer,
+		characterMemorySummarizer: characterMemorySummarizer,
 	}
 }
 
@@ -673,6 +683,197 @@ func (m *Memory) maintainOne(ctx context.Context, world, slug, rel string) (stri
 		Int("output_chars", len(finalBody)).
 		Msg("npc_maintain: compacted")
 	return displayName, true, nil
+}
+
+// MaintainCharacterMemory is the end-of-day (and
+// /maintenance) hook for the active character's
+// memory.yaml. It runs AFTER the NPC maintenance
+// pass — the player is reading the day's summary,
+// the slowlog already has the per-NPC events, a
+// 30-60s pause for one extra LLM call is
+// acceptable.
+//
+// Threshold: tools.CharacterMemoryMaintainBytes
+// (4KB). Below the threshold the file is left
+// alone — the model has nothing to do, and the
+// cost of an LLM call is not worth a marginal
+// shrink. Above the threshold the summarizer is
+// asked to defragment, dedup, and refile the
+// memory into the 4 canonical sections.
+//
+// Safety net (mirrors MaintainNPCs):
+//
+//   - result must parse as charprofile.Memory
+//   - result must be strictly shorter than the
+//     input (the LLM never grows a maintenance
+//     pass — the only valid direction is shrink)
+//   - result must contain at least one section
+//     (no full wipe)
+//   - the pre-rewrite body is preserved as
+//     `<rel>.bak` so the operator can `mv` it
+//     back on a regression
+//
+// Returns true when the file was rewritten.
+func (m *Memory) MaintainCharacterMemory(ctx context.Context, world, character string) (bool, error) {
+	if strings.TrimSpace(character) == "" {
+		return false, nil
+	}
+	rel := "characters/" + character + "/memory.yaml"
+	raw, err := m.fs.ReadRaw(rel)
+	if err != nil || strings.TrimSpace(raw) == "" {
+		return false, nil
+	}
+	beforeBytes := len(raw)
+	if beforeBytes <= tools.CharacterMemoryMaintainBytes {
+		m.log.Debug().
+			Str("world", world).
+			Str("character", character).
+			Int("bytes", beforeBytes).
+			Int("threshold", tools.CharacterMemoryMaintainBytes).
+			Msg("character_memory_maintain: under threshold; skipping")
+		return false, nil
+	}
+	if m.characterMemorySummarizer == nil {
+		m.log.Warn().
+			Str("world", world).
+			Str("character", character).
+			Int("bytes", beforeBytes).
+			Msg("character_memory_maintain: no summarizer wired; skipping")
+		return false, nil
+	}
+	// Resolve display name from SOUL.yaml when
+	// available — the LLM prompt expects the
+	// human name, not the directory slug. SOUL
+	// may be missing in edge cases (operator
+	// pre-migration) — fall back to the slug.
+	displayName := character
+	if soulBody, err := m.fs.ReadRaw("characters/" + character + "/SOUL.yaml"); err == nil {
+		var s charprofile.Soul
+		if yamlErr := yaml.Unmarshal([]byte(soulBody), &s); yamlErr == nil {
+			if t := strings.TrimSpace(s.Name); t != "" {
+				displayName = t
+			}
+		}
+	}
+	memoriseFull, _ := m.fs.ReadRaw("worlds/" + world + "/memorise.md")
+
+	newBody, err := m.characterMemorySummarizer.SummarizeCharacterMemory(ctx, world, displayName, []byte(raw), []byte(memoriseFull))
+	if err != nil {
+		return false, fmt.Errorf("character_memory_maintain: summarizer call: %w", err)
+	}
+	if len(newBody) == 0 {
+		m.log.Info().
+			Str("character", character).
+			Int("bytes", beforeBytes).
+			Msg("character_memory_maintain: summarizer returned empty body; skipping")
+		return false, nil
+	}
+	if len(newBody) >= beforeBytes {
+		m.log.Info().
+			Str("character", character).
+			Int("before", beforeBytes).
+			Int("output_chars", len(newBody)).
+			Msg("character_memory_maintain: summarizer returned equal/larger body; skipping")
+		return false, nil
+	}
+	// Validate the new body parses as Memory. A
+	// malformed reply from the LLM must NOT corrupt
+	// the on-disk file — bail before WriteRawAtomic.
+	var newMem charprofile.Memory
+	if yamlErr := yaml.Unmarshal(newBody, &newMem); yamlErr != nil {
+		m.log.Warn().
+			Str("character", character).
+			Err(yamlErr).
+			Int("output_chars", len(newBody)).
+			Msg("character_memory_maintain: summarizer returned invalid YAML; skipping")
+		return false, nil
+	}
+	if len(newMem.Data) == 0 {
+		m.log.Warn().
+			Str("character", character).
+			Int("output_chars", len(newBody)).
+			Msg("character_memory_maintain: summarizer returned body with no sections; skipping")
+		return false, nil
+	}
+	// Re-serialise through the typed model so the
+	// on-disk file is canonical (alphabetical
+	// sections, stable field order). The LLM's
+	// free-form output is normalised here.
+	finalBody, err := newMem.Save()
+	if err != nil {
+		return false, fmt.Errorf("character_memory_maintain: re-serialise: %w", err)
+	}
+	// Snapshot the pre-rewrite body so a
+	// post-write corruption can be reversed.
+	bakRel := rel + ".bak"
+	if err := m.fs.WriteRawAtomic(bakRel, raw); err != nil {
+		m.log.Warn().
+			Str("character", character).
+			Err(err).
+			Msg("character_memory_maintain: backup write failed; proceeding anyway")
+	}
+	if err := m.fs.WriteRawAtomic(rel, finalBody); err != nil {
+		return false, err
+	}
+	// Post-write sanity: re-read and confirm
+	// round-trip is stable. A torn write would
+	// leave us with a non-parseable file on the
+	// next turn; the .bak above is the recovery
+	// path.
+	if reread, rerr := m.fs.ReadRaw(rel); rerr != nil || reread != finalBody {
+		m.log.Warn().
+			Str("character", character).
+			Str("read", truncateForLog(reread, 80)).
+			Str("expected", truncateForLog(string(finalBody), 80)).
+			Msg("character_memory_maintain: post-write read mismatch; .bak preserves the original")
+	}
+	// Count the values across all sections for the
+	// slowlog line — operators want to see "30
+	// values → 18 values" at a glance.
+	beforeValues := countValuesInMemoryYAML(raw)
+	afterValues := countValuesInMemoryYAML(finalBody)
+	m.log.Info().
+		Str("world", world).
+		Str("character", character).
+		Str("display_name", displayName).
+		Int("before_bytes", beforeBytes).
+		Int("after_bytes", len(finalBody)).
+		Int("before_values", beforeValues).
+		Int("after_values", afterValues).
+		Int("sections", len(newMem.Data)).
+		Msg("character_memory_maintain: compacted")
+	return true, nil
+}
+
+// countValuesInMemoryYAML is a best-effort
+// counter that walks the YAML body and sums
+// the `values:` lists. Used purely for the
+// slowlog "30 → 18 values" line — it does not
+// need to be 100% accurate (we are not making
+// decisions on it), so we just count lines
+// starting with "- " under any `values:` key.
+// Cheap and dependency-free.
+func countValuesInMemoryYAML(body string) int {
+	count := 0
+	lines := strings.Split(body, "\n")
+	inValues := false
+	for _, l := range lines {
+		trimmed := strings.TrimRight(l, " \t")
+		switch {
+		case strings.HasSuffix(trimmed, "values:"):
+			inValues = true
+		case strings.HasPrefix(trimmed, "    - ") || strings.HasPrefix(trimmed, "  - "):
+			if inValues {
+				count++
+			}
+		case strings.HasPrefix(trimmed, "- section:") || strings.HasPrefix(trimmed, "data:"):
+			inValues = false
+		case strings.HasPrefix(trimmed, "name:") || strings.HasPrefix(trimmed, "soul:"):
+			// top-level SOUL fields, not in data block
+			inValues = false
+		}
+	}
+	return count
 }
 
 // looksLikeLegacyNPC returns true when the body looks

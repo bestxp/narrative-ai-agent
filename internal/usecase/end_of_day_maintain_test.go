@@ -2,6 +2,7 @@ package usecase
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -126,12 +127,13 @@ temperament: "спокойный"
 	sum := NewSummarizer(summaryLLM, role, "npc_summary marker", slowlog.Discard(), discardLogger())
 	sum.SetCompactionInPlacePrompt("Compaction In-Place placeholder")
 	sum.SetEndOfDayPrompt("End-of-Day placeholder")
+	sum.SetCharacterMemoryPrompt("Character-Memory placeholder")
 
 	// Wire the same summarizer into the file toolset for
 	// NPC compaction (production code uses summarizerAdapter
 	// in main.go for the same purpose).
 	adapter := summarizerAdapterForTest{s: sum}
-	tools := NewFileToolset(fs, discardLogger(), slowlog.Discard(), adapter, nil, nil)
+	tools := NewFileToolset(fs, discardLogger(), slowlog.Discard(), adapter, nil, nil, adapter)
 
 	log, _ := newBufLogger()
 	g := NewGM(GMConfig{
@@ -148,14 +150,40 @@ temperament: "спокойный"
 }
 
 // summarizerAdapterForTest is a local shim that exposes
-// *usecase.Summarizer as tools.NPCSummarizer (the
-// production main.go uses a similar adapter; we inline
-// a copy here to avoid dragging the main-package-only
+// *usecase.Summarizer as tools.NPCSummarizer,
+// tools.LoreSummarizer, tools.MemoriseSummarizer and
+// tools.CharacterMemorySummarizer (the production
+// main.go uses a similar adapter; we inline a copy
+// here to avoid dragging the main-package-only
 // adapter into the test binary).
 type summarizerAdapterForTest struct{ s *Summarizer }
 
 func (a summarizerAdapterForTest) SummarizeNPC(ctx context.Context, displayName, world string, yamlBody, memoriseTail []byte) ([]byte, error) {
 	res, err := a.s.SummarizeNPC(ctx, displayName, world, yamlBody, memoriseTail)
+	if err != nil {
+		return nil, err
+	}
+	return res.Body, nil
+}
+
+func (a summarizerAdapterForTest) SummarizeLore(ctx context.Context, world string, loreBody, memoriseTail, stateMD []byte) ([]byte, error) {
+	res, err := a.s.SummarizeLore(ctx, world, loreBody, memoriseTail, stateMD)
+	if err != nil {
+		return nil, err
+	}
+	return res.Body, nil
+}
+
+func (a summarizerAdapterForTest) SummarizeMemorise(ctx context.Context, world string, startDay, endDay int, fullMemorise string) ([]byte, error) {
+	res, err := a.s.SummarizeMemorise(ctx, world, startDay, endDay, fullMemorise)
+	if err != nil {
+		return nil, err
+	}
+	return res.Body, nil
+}
+
+func (a summarizerAdapterForTest) SummarizeCharacterMemory(ctx context.Context, world, character string, memoryBody, memoriseTail []byte) ([]byte, error) {
+	res, err := a.s.SummarizeCharacterMemory(ctx, world, character, memoryBody, memoriseTail)
 	if err != nil {
 		return nil, err
 	}
@@ -333,4 +361,142 @@ temperament: "спокойный"
 	world := g.worldSnapshot
 	g.contextMu.Unlock()
 	assert.Empty(t, world, "world snapshot must be dropped after maintain")
+}
+
+// writeLongCharacterMemory seeds characters/markus/SOUL.yaml
+// (for display name) and characters/markus/memory.yaml
+// (over the 4KB maintain threshold). Returns the raw
+// memory body so the caller can assert on it.
+func writeLongCharacterMemory(t *testing.T, fs *storage.FileStore) string {
+	t.Helper()
+	require.NoError(t, fs.EnsureDir("characters/markus"))
+	require.NoError(t, fs.WriteRawAtomic("characters/markus/SOUL.yaml",
+		"name: Маркус\nsoul: \"подросток, попаданец\"\ndata:\n    - section: \"Истинная сущность\"\n      values:\n        - \"человек из другого мира\"\n"))
+	var b strings.Builder
+	b.WriteString("data:\n")
+	for _, sec := range []string{
+		"Яркие моменты",
+		"Факты о мире",
+		"Обещания и цели",
+		"Важные люди",
+		// Legacy / non-canonical — must be refiled by
+		// the summarizer into one of the 4 above.
+		"Эмоции",
+		"Действия дня 1",
+		"Видения Кагуи",
+		"Контакт с семьёй Яманака",
+	} {
+		fmt.Fprintf(&b, "    - section: %q\n      values:\n", sec)
+		for i := 0; i < 8; i++ {
+			fmt.Fprintf(&b, "        - \"Длинный факт номер %d в секции %s — попаданец учится в Академии, тренируется на полигоне, вспоминает видения Кагуи и продолжает помнить свою семью из иного мира\"\n", i+1, sec)
+		}
+	}
+	body := b.String()
+	require.NoError(t, fs.WriteRawAtomic("characters/markus/memory.yaml", body))
+	return body
+}
+
+// TestEndOfDay_MaintainsOverflowedMemory: calling the
+// end_day tool with a memory.yaml over the 4KB
+// threshold triggers Memory.MaintainCharacterMemory
+// and shrinks the on-disk YAML. The .bak file
+// preserves the pre-rewrite body.
+//
+// The end-of-day narrative call (SummarizeEndOfDay)
+// runs FIRST; the NPC summarise runs SECOND; the
+// character memory summarise runs THIRD. Each
+// consumes one slot in the scriptingLLM queue.
+func TestEndOfDay_MaintainsOverflowedMemory(t *testing.T) {
+	g, fs, scripting := newEndOfDayTestEnv(t)
+	writeLongCharacterMemory(t, fs)
+
+	// 1) end-of-day narrative (success).
+	scripting.push("[События прошедшего дня Д0001] Утром ГГ встретил Какаши, тот показал ловушку в лесу; днём ГГ и Хината обезвредили её; вечером в Академии Ирука устроил разбор полётов; ГГ пообещал себе вернуться к ловушкам завтра.", nil)
+	// 2) NPC summarise: returns 25 compacted facts
+	// (under the 40 threshold, file IS rewritten).
+	shrunk, _ := npcprofile.Load(`display_name: "Какаши"
+file_slug: "kakashi"
+temperament: "спокойный"
+`)
+	for i := 0; i < 25; i++ {
+		shrunk.PersonalMemory = append(shrunk.PersonalMemory, "compacted")
+	}
+	shrunkBody, _ := shrunk.Save()
+	scripting.push(string(shrunkBody), nil)
+	// 3) character memory summarise: returns a strictly
+	// smaller, valid Memory YAML.
+	shrunkMem := `data:
+    - section: "Яркие моменты"
+      values:
+        - "Видение с Кагуей"
+    - section: "Факты о мире"
+      values:
+        - "Ринне-шаринган"
+    - section: "Обещания и цели"
+      values:
+        - "Спасти Кагую"
+    - section: "Важные люди"
+      values:
+        - "Наруто, Ирука, Хокаге"
+`
+	scripting.push(shrunkMem, nil)
+
+	require.NoError(t, g.EndOfDay(context.Background(), "naruto", 1))
+
+	// memory.yaml: original long body replaced by the
+	// shrunken canonical version.
+	cur, err := fs.ReadRaw("characters/markus/memory.yaml")
+	require.NoError(t, err)
+	assert.Contains(t, cur, "Видение с Кагуей", "new content must be on disk")
+	assert.NotContains(t, cur, "Длинный факт номер", "old long bullets must be gone")
+	// All 4 canonical sections still present.
+	for _, s := range []string{"Яркие моменты", "Факты о мире", "Обещания и цели", "Важные люди"} {
+		assert.Contains(t, cur, s, "canonical section %q must remain", s)
+	}
+	// Legacy sections must be gone (refiled).
+	for _, s := range []string{"Эмоции", "Видения Кагуи", "Контакт с семьёй Яманака", "Действия дня 1"} {
+		assert.NotContains(t, cur, fmt.Sprintf("section: %q", s), "legacy section %q must be refiled", s)
+	}
+}
+
+// TestEndOfDay_DoesNotMaintainUnderLimitMemory: a
+// memory.yaml below 4KB stays untouched through
+// EndOfDay. The .bak file is never created (no
+// maintain = no backup).
+func TestEndOfDay_DoesNotMaintainUnderLimitMemory(t *testing.T) {
+	g, fs, scripting := newEndOfDayTestEnv(t)
+	// Tiny memory.yaml — well under 4KB.
+	require.NoError(t, fs.EnsureDir("characters/markus"))
+	require.NoError(t, fs.WriteRawAtomic("characters/markus/SOUL.yaml",
+		"name: Маркус\nsoul: \"\"\ndata:\n    - section: \"Истинная сущность\"\n      values:\n        - \"человек\"\n"))
+	require.NoError(t, fs.WriteRawAtomic("characters/markus/memory.yaml",
+		"data:\n    - section: \"Яркие моменты\"\n      values:\n        - \"один факт\"\n"))
+	before, _ := fs.ReadRaw("characters/markus/memory.yaml")
+
+	// 1) end-of-day narrative (success).
+	scripting.push("[События прошедшего дня Д0001] Утром ГГ встретил Какаши.", nil)
+	// 2) NPC summarise: returns 30 under-limit facts
+	// (no NPC maintain fired, file NOT rewritten).
+	underNPC, _ := npcprofile.Load(`display_name: "Какаши"
+file_slug: "kakashi"
+temperament: "спокойный"
+`)
+	for i := 0; i < 30; i++ {
+		underNPC.PersonalMemory = append(underNPC.PersonalMemory, "под лимитом")
+	}
+	underNPCBody, _ := underNPC.Save()
+	scripting.push(string(underNPCBody), nil)
+	// 3) character memory summarise: should NOT be
+	// called (memory under threshold). Push a
+	// sentinel that the test will assert was unused.
+	scripting.push("THIS_SHOULD_NEVER_BE_RETURNED", nil)
+
+	require.NoError(t, g.EndOfDay(context.Background(), "naruto", 1))
+
+	after, _ := fs.ReadRaw("characters/markus/memory.yaml")
+	assert.Equal(t, before, after, "under-threshold memory stays untouched")
+	bak, _ := fs.ReadRaw("characters/markus/memory.yaml.bak")
+	assert.Empty(t, bak, ".bak is not created when nothing was rewritten")
+	// scripting.idx should be at most 2 (eod + npc).
+	assert.LessOrEqual(t, scripting.idx, 2, "character memory summariser must not be called for under-threshold memory")
 }

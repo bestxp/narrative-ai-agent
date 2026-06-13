@@ -167,12 +167,14 @@ func main() {
 	}
 
 	if memBody != "" {
-		// Count legacy sections that will be dropped
-		// by the strict enum BEFORE running the migration
-		// (we still have the raw body in scope). The
-		// operator sees a concrete "X sections dropped"
-		// number and can grep memory.md.bak to recover.
-		dropped := countMemorySectionsNotOnEnum(memBody)
+		// Count legacy sections that are NOT on the
+		// canonical 4-section enum. The strict enum
+		// is enforced only at Append-time; the
+		// migration path keeps every section. This
+		// counter feeds the operator-facing INFO log
+		// so they know how many free-form sections
+		// the model will eventually need to refile.
+		preserved := countMemorySectionsNotOnEnum(memBody)
 		raw, err := charprofile.MigrateFromMarkdown("memory", memBody, *charDir)
 		if err != nil {
 			log.Fatalf("migrate memory: %v", err)
@@ -181,25 +183,27 @@ func main() {
 		if !ok {
 			log.Fatalf("memory migration returned %T, want Memory", raw)
 		}
-		// The legacy H1 was the journal title (e.g.
-		// "# Яркие воспоминания Маркус"), not the
-		// character name. We replace it with the
-		// character dir so memory.yaml name matches
-		// SOUL.yaml and inventory.yaml.
-		m.Name = *charDir
-		// memory.yaml uses a STRICT 4-section enum. The
-		// legacy file had ad-hoc "## Действия дня N" /
-		// "## Эмоции" / "## Эволюция" / "## Яркие
-		// воспоминания Маркус" (note: NOT a canonical
-		// section — it duplicates the H1 title) sections.
-		// The strict parser drops all of them.
+		// memory.yaml uses a STRICT 4-section enum AT
+		// WRITE TIME (Append / ReplaceSection). The
+		// MIGRATION path, however, is LOSS-LESS — every
+		// `## <section>` from the legacy .md is kept
+		// verbatim, even names that are not on the
+		// canonical enum ("## Видения Кагуи",
+		// "## Контакт с семьёй Яманака",
+		// "## Действия дня 1", etc.). The model can
+		// then refile values into a canonical bucket
+		// on the next Append — but the data is
+		// preserved on disk.
 		//
-		// Note: per-day actions live in memorise.md
-		// (д<NNNNN>: ...) and lore.md. We do not lose
-		// them — the .md journal was a redundant copy
-		// that diverged from the canonical sources.
-		if dropped > 0 {
-			log.Printf("WARN: %d legacy memory sections dropped (kept only Яркие моменты / Факты о мире / Обещания и цели / Важные люди). Originals in memory.md.bak.", dropped)
+		// Rationale: the previous strict migration
+		// dropped 17 sections silently, leaving the
+		// new memory.yaml empty and losing the
+		// player's actual history. The strict enum
+		// is a forward-looking contract for the
+		// model, not a backwards-looking filter
+		// for legacy data.
+		if preserved > 0 {
+			log.Printf("INFO: %d legacy memory sections preserved verbatim (kept on memory.yaml even though they are not on the 4-section enum).", preserved)
 		}
 		body, err := m.Save()
 		if err != nil {
@@ -217,7 +221,7 @@ func main() {
 	// ~4210 рё из 5000"). The operator can repopulate by
 	// hand from the narrative, or via the running bot's
 	// set_currency tool calls.
-	inv := charprofile.Inventory{Name: *charDir}
+	inv := charprofile.Inventory{}
 	invBody, err := inv.Save()
 	if err != nil {
 		log.Fatalf("save inventory: %v", err)
@@ -396,9 +400,13 @@ func readActiveWorld(path string) string {
 // countMemorySectionsNotOnEnum walks the raw memory
 // body and counts "## <name>" sections whose name is
 // not in the strict 4-section enum. Used to surface
-// a concrete operator-facing WARN before the
-// strict migration drops them. Returns 0 for empty
-// bodies or files with no ## sections.
+// a concrete operator-facing INFO log before the
+// migration runs. The migration itself is
+// loss-less — see MigrateFromMarkdown — so the
+// count is "free-form sections preserved on
+// memory.yaml" rather than "sections dropped".
+// Returns 0 for empty bodies or files with no ##
+// sections.
 func countMemorySectionsNotOnEnum(body string) int {
 	kept := map[string]bool{}
 	for _, s := range charprofile.MemoryFixedSections {

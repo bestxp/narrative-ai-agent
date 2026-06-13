@@ -2250,6 +2250,37 @@ func (g *GM) EndOfDay(ctx context.Context, world string, day int) error {
 			Int("day", day).
 			Msg("end-of-day: auto-maintained NPC profiles")
 	}
+	// Auto-maintain the ACTIVE character's
+	// memory.yaml. Runs AFTER MaintainNPCs so the
+	// LLM call budget is spent on the more
+	// frequent compaction (NPC) first — character
+	// memory is per-day, NPC is per-NPC, so NPC
+	// wins on volume. Both hooks are best-effort:
+	// the daily protocol already landed, a
+	// 30-second LLM call failure does not roll
+	// back the day.
+	//
+	// Resolves the active character from the
+	// session start (the EndOfDay path is reached
+	// from the end_day tool, where the player
+	// just typed "end day N" with a character
+	// already in the active session). When no
+	// character is set (a brand-new world before
+	// /launch), the hook is a no-op.
+	if g.ss != nil {
+		if sc, err := g.ss.Start(); err == nil && sc.Character != "" {
+			if rewritten, err := g.tools.MaintainCharacterMemory(ctx, world, sc.Character); err != nil {
+				g.log.Warn().Err(err).Str("world", world).Str("character", sc.Character).Msg("end-of-day: maintain_character_memory hook failed; continuing")
+			} else if rewritten {
+				g.invalidateWorldSnapshot("end_day_maintain_memory")
+				g.log.Info().
+					Str("world", world).
+					Str("character", sc.Character).
+					Int("day", day).
+					Msg("end-of-day: defragmented character memory")
+			}
+		}
+	}
 	g.log.Info().Str("world", world).Int("day", day).Int("chars", res.OutputChars).Msg("end-of-day: protocol appended")
 	return nil
 }

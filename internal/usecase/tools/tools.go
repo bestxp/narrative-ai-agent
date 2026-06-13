@@ -219,6 +219,21 @@ type Tool interface {
 	// GM is in a per-turn deadline, /maintenance is
 	// operator-triggered with a longer one).
 	MaintainLore(ctx context.Context, world string) (bool, error)
+	// MaintainCharacterMemory defragments the active
+	// character's memory.yaml when it grows past
+	// tools.CharacterMemoryMaintainBytes (4KB by
+	// default). Called from the end-of-day pass
+	// AFTER MaintainNPCs — a long-running campaign
+	// does not bloat the prompt with the same fact
+	// rewritten 30 times. The summarizer refiles
+	// legacy free-form sections (## Действия дня 1,
+	// ## Видения Кагуи, etc.) into the 4 canonical
+	// buckets ("Яркие моменты", "Факты о мире",
+	// "Обещания и цели", "Важные люди"). Returns
+	// true when the file was rewritten. The context
+	// carries the per-turn deadline (the call is a
+	// single LLM round-trip).
+	MaintainCharacterMemory(ctx context.Context, world, character string) (bool, error)
 
 	// --- world transitions ---
 	Leave(fromWorld, toWorld, skipNote, character string) (*LeaveResult, error)

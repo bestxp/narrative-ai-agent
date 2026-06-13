@@ -21,13 +21,11 @@ import (
 //	currency: [{name, count}, ...]   — money
 //	items:    [{name, description, equip, special}, ...]
 //
-// The name field is the primary key for items —
-// REPLACE-on-collision is the rule (item identity
-// stays stable across scenes). The currency name
-// follows the same keying.
+// The character name is NOT here. SOUL.yaml is
+// the canonical place for the display name; this
+// file's identity is the directory it lives in
+// (characters/<dir>/inventory.yaml).
 type Inventory struct {
-	// Name is the character name. Required.
-	Name string `yaml:"name"`
 	// Currency is a flat list of {name, count}
 	// records. The count is REPLACE-only — the
 	// model is expected to read the current value

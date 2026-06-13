@@ -46,10 +46,13 @@ type Toolset struct {
 // by MaintainNPCs. loreSummarizer is the LLM-driven lore.md
 // compaction hook used by MaintainLore. memoriseSummarizer
 // is the LLM-driven 30-day window compression hook used by
-// ArchiveDay. Pass nil to any of them to disable the LLM
-// path — the file backend will then log a warning and skip.
-func New(fs *storage.FileStore, log zerolog.Logger, slow *slowlog.Logger, summarizer tools.NPCSummarizer, loreSummarizer tools.LoreSummarizer, memoriseSummarizer tools.MemoriseSummarizer) *Toolset {
-	mem := newMemory(fs, log, summarizer, loreSummarizer, memoriseSummarizer)
+// ArchiveDay. characterMemorySummarizer is the LLM-driven
+// memory.yaml defragmentation hook used by
+// MaintainCharacterMemory. Pass nil to any of them to
+// disable the LLM path — the file backend will then log a
+// warning and skip.
+func New(fs *storage.FileStore, log zerolog.Logger, slow *slowlog.Logger, summarizer tools.NPCSummarizer, loreSummarizer tools.LoreSummarizer, memoriseSummarizer tools.MemoriseSummarizer, characterMemorySummarizer tools.CharacterMemorySummarizer) *Toolset {
+	mem := newMemory(fs, log, summarizer, loreSummarizer, memoriseSummarizer, characterMemorySummarizer)
 	st := newState(fs, log)
 	// Wire the post-ArchiveDay hook so the state writer
 	// does not need a direct reference to the memory
@@ -103,6 +106,15 @@ var _ tools.Tool = (*Toolset)(nil)
 // directly.
 func (t *Toolset) MaintainLore(ctx context.Context, world string) (bool, error) {
 	return t.Memory.MaintainLore(ctx, world)
+}
+
+// MaintainCharacterMemory is the end-of-day hook
+// for the active character's memory.yaml. Forwarder
+// to the embedded *Memory. The interface takes a
+// context so the per-turn deadline applies; the
+// /maintenance operator path supplies a longer one.
+func (t *Toolset) MaintainCharacterMemory(ctx context.Context, world, character string) (bool, error) {
+	return t.Memory.MaintainCharacterMemory(ctx, world, character)
 }
 
 // SearchNPC resolves a free-form query against the
