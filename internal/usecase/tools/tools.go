@@ -31,6 +31,8 @@ package tools
 import (
 	"context"
 	"time"
+
+	"github.com/bestxp/narrative-ai-agent/internal/charprofile"
 )
 
 // StateSnapshot is the trimmed "here and now" written to
@@ -222,8 +224,34 @@ type Tool interface {
 	Leave(fromWorld, toWorld, skipNote, character string) (*LeaveResult, error)
 	ReturnWorld(world, days string) (string, error)
 
-	// --- character files ---
-	Append(characterDir, file, section, appendText string) error
+	// --- character files (h5 refactor) ---
+	//
+	// The legacy single Append(file=...) dispatcher
+	// was replaced with one method per file kind.
+	// The split removes the stringy `file` argument
+	// (one of SOUL / SKILL / memory) that was easy
+	// to typo, and adds explicit inventory ops so
+	// the model does not have to encode REPLACE /
+	// delete semantics in a "magic" append payload.
+	AppendSoul(characterDir, section, value string) (bool, error)
+	AppendSkill(characterDir, section, value string) (bool, error)
+	// AppendMemorySection is the per-NPC-name collision
+	// avoidance: the *Memory concern (memorise.md
+	// inside worlds) already has its own AppendMemory
+	// method on a different type. They are reachable
+	// from different call sites — a `*Toolset` in
+	// production code wires the *Character one into
+	// the per-character file path and the *Memory one
+	// into the world-state path.
+	AppendMemorySection(characterDir, section, value string) (bool, error)
+	// AppendInventoryItem is REPLACE-on-name. Same
+	// name = overwrite description/equip/special.
+	AppendInventoryItem(characterDir string, item charprofile.Item) (bool, error)
+	RemoveInventoryItem(characterDir, name string) error
+	SetCurrency(characterDir, name string, count int) (bool, error)
+	RemoveCurrency(characterDir, name string) error
+	// Read returns the snapshot of the current
+	// character (the four YAML files + state.md).
 	Read(activeChar, activeWorld string) (*CharacterSnapshot, error)
 
 	// --- NPC profiles ---

@@ -190,7 +190,15 @@ func ProdTools() []Tool {
 		updateStateTool(),
 		createNpcTool(),
 		updateNpcTool(),
-		updateCharacterTool(),
+		// Character file tools (h5 refactor — split
+		// out of the legacy update_character dispatcher).
+		updateSoulTool(),
+		updateSkillTool(),
+		updateMemoryTool(),
+		updateInventoryTool(),
+		removeInventoryItemTool(),
+		setCurrencyTool(),
+		removeCurrencyTool(),
 		searchNpcTool(),
 		maintainNpcsTool(),
 		maintainLoreTool(),
@@ -219,7 +227,7 @@ func endSceneTool() Tool {
 			Name:        "end_scene",
 			Description: "Зафиксировать конец текущей сцены: сжать диалог в state.md («## Хроника сцены Д<N>»), очистить список активных NPC (оставить только тех, кто в permanent party), сбросить историю диалога. Используй когда сцена исчерпана (игрок уходит из локации / переключается на новый сюжет), но день ещё не закончен. Не вызывай в конце дня — для этого есть end_day.",
 			Parameters: Object(
-				Optional("permanent_party", String("Список имён NPC, которые остаются в активном ростере (через запятую). Если пусто — берётся из «## permanent party» в characters/<active>/SKILL.md. Если нигде не указано — ростер не меняется.")),
+				Optional("permanent_party", String("Список имён NPC, которые остаются в активном ростере (через запятую). Если пусто — берётся из «## permanent party» в worlds/<active>/state.md. Если нигде не указано — ростер не меняется.")),
 			),
 		},
 	}
@@ -332,16 +340,177 @@ func worldLeaveTool() Tool {
 	}
 }
 
-func updateCharacterTool() Tool {
+// updateSoulTool appends a fact to a section in
+// characters/<active>/SOUL.yaml. The file holds
+// "who the GG is": identity, age, preferences,
+// philosophy, etc. SOUL sections are FREE-FORM —
+// the LLM may invent new section names (a
+// "Прочее" fallback is implied for unknown
+// headings).
+//
+// h5 refactor: the legacy update_character tool
+// dispatched on a `file` argument
+// (SOUL/SKILL/memory). The dispatcher was
+// stringy and easy to confuse — a single typo
+// (`memory` vs `Memory`) silently dropped the
+// call. Splitting into one tool per file removes
+// the discriminator and gives each file its own
+// clean schema.
+func updateSoulTool() Tool {
 	return Tool{
 		Type: "function",
 		Function: ToolFunctionSchema{
-			Name:        "update_character",
-			Description: "Записать новую информацию о персонаже игрока. Вызывай КАЖДЫЙ раз, когда игрок сообщает новое о себе (имя, возраст, занятие, навык, особенность) — чтобы это не потерялось при следующей сессии.",
+			Name:        "update_soul",
+			Description: "Дописать факт в characters/<active>/SOUL.yaml — кто ГГ (сущность, философия, предпочтения, легенда). Секции СВОБОДНЫЕ: можно создавать новые ('Легенда', 'Мотивация', что угодно). Один вызов = один факт, не абзац. Без markdown, без маркеров. Секции append-only, дедуп exact-string.",
 			Parameters: Object(
-				Required("file", StringEnum("В какой файл писать: SOUL (сущность/предыстория), SKILL (навыки/способности), memory (межмировые воспоминания)", "SOUL", "SKILL", "memory")),
-				Required("section", String("Заголовок секции в файле (например, 'Истинная сущность', 'Оружие', 'Базовые способности'). Если секции нет — она создастся.")),
-				Required("append", String("Текст для добавления в конец секции. Не переписывай существующее — только дополняй.")),
+				Required("section", String("Заголовок секции (например, 'Истинная сущность', 'Предпочтения', 'Философия и принципы', 'Легенда для прикрытия'). Если секции нет — она создастся.")),
+				Required("append", String("Текст для добавления в конец секции. 1 предложение.")),
+			),
+		},
+	}
+}
+
+// updateSkillTool appends a fact to a section in
+// characters/<active>/skill.yaml. Sections are
+// STRICT — must be on charprofile.SkillFixedSections
+// (Ранг, Оружие, Базовые способности,
+// Фундаментальные стихии, Особые проявления,
+// Универсальные навыки, Ограничения, Глаза,
+// Доспех). Unknown section names are rejected
+// at the dispatcher level so the LLM does not
+// silently pollute the file with "Misc"-style
+// noise.
+func updateSkillTool() Tool {
+	canonical := []string{
+		"Ранг", "Оружие", "Базовые способности",
+		"Фундаментальные стихии", "Особые проявления",
+		"Универсальные навыки", "Ограничения", "Глаза", "Доспех",
+	}
+	return Tool{
+		Type: "function",
+		Function: ToolFunctionSchema{
+			Name:        "update_skill",
+			Description: "Дописать факт в characters/<active>/skill.yaml — что ГГ умеет (ранг, оружие, техники, ограничения). Секции СТРОГО по enum: Ранг / Оружие / Базовые способности / Фундаментальные стихии / Особые проявления / Универсальные навыки / Ограничения / Глаза / Доспех. Любая другая секция будет отклонена. Один вызов = один факт. Без markdown, без маркеров.",
+			Parameters: Object(
+				Required("section", StringEnum("Секция из фиксированного списка (skill.yaml — справочник способностей)", canonical...)),
+				Required("append", String("Текст для добавления. 1 предложение, БЕЗ markdown.")),
+			),
+		},
+	}
+}
+
+// updateMemoryTool appends a fact to a section in
+// characters/<active>/memory.yaml — what the GG
+// remembers. Sections are STRICT and the
+// enumerator is narrower than skill.yaml
+// (Яркие моменты / Факты о мире / Обещания и цели
+// / Важные люди). Anything else is rejected.
+func updateMemoryTool() Tool {
+	canonical := []string{
+		"Яркие моменты", "Факты о мире", "Обещания и цели", "Важные люди",
+	}
+	return Tool{
+		Type: "function",
+		Function: ToolFunctionSchema{
+			Name:        "update_memory",
+			Description: "Дописать яркое воспоминание / факт в characters/<active>/memory.yaml. Секции СТРОГО: Яркие моменты / Факты о мире / Обещания и цели / Важные люди. ЗАПРЕЩЕНО: даты, 'День N', дублирование state.md / memorise.md. Только то, что ГГ реально запомнил — эмоционально или фактически. Один вызов = один факт.",
+			Parameters: Object(
+				Required("section", StringEnum("Секция из фиксированного списка (memory.yaml — яркие воспоминания ГГ)", canonical...)),
+				Required("append", String("Текст для добавления. 1-2 предложения, без дат, без 'День N'.")),
+			),
+		},
+	}
+}
+
+// updateInventoryTool adds (or REPLACES) an item
+// in characters/<active>/inventory.yaml. Items
+// are identified by `name` (primary key) — same
+// name = REPLACE the description/equip/special.
+//
+// equip=true means the item is currently worn /
+// held / active. The model uses this to filter
+// "what I'm using right now".
+//
+// `type` is the canonical item category (see
+// charprofile inventory.go for the enum: weapon,
+// armor, accessory, consumable, tool, quest,
+// document, material, other). 'other' is the
+// fallback when nothing fits.
+//
+// `special` is free-form text — квестовые флаги,
+// одноразовость, привязка к душе, скрытность, etc.
+// "нет" if no special properties.
+func updateInventoryTool() Tool {
+	canonical := []string{
+		"weapon", "armor", "accessory", "consumable",
+		"tool", "quest", "document", "material", "other",
+	}
+	return Tool{
+		Type: "function",
+		Function: ToolFunctionSchema{
+			Name:        "update_inventory",
+			Description: "Добавить или заменить предмет в characters/<active>/inventory.yaml. Идентификация — по name: если предмет с таким name уже есть, его атрибуты (description / equip / special) ОБНОВЛЯЮТСЯ. Для удаления — отдельный remove_inventory_item. Количество кодируется именем (один items[]-элемент на единицу, или 'Кунай x3' одним элементом).",
+			Parameters: Object(
+				Required("name", String("Уникальное имя предмета. Используется как первичный ключ. Регистрозависимо.")),
+				Required("type", StringEnum("Категория из канонического списка", canonical...)),
+				Optional("description", String("Литературное описание, до 4 предложений. Что это, как выглядит.")),
+				Optional("equip", Boolean("true если предмет сейчас надет / в руках / активен. По умолчанию false.")),
+				Optional("special", String("Особые свойства: 'привязан к душе', 'одноразовый', 'квестовый', 'скрытный', 'ядовитый', 'хрупкий', 'нет'. Свободный текст.")),
+			),
+		},
+	}
+}
+
+// removeInventoryItemTool deletes a single item
+// by name. Distinct from update_inventory so an
+// empty call cannot accidentally nuke the
+// inventory. The dispatcher returns the same
+// charprofile.ErrItemNotFound when the name is
+// not present — the LLM sees the error and can
+// recover (no-op, or try a different name).
+func removeInventoryItemTool() Tool {
+	return Tool{
+		Type: "function",
+		Function: ToolFunctionSchema{
+			Name:        "remove_inventory_item",
+			Description: "Удалить предмет из characters/<active>/inventory.yaml по name. Возвращает ошибку если такого name нет — не придумывай.",
+			Parameters: Object(
+				Required("name", String("Имя предмета для удаления. Должно совпадать с существующим (case-sensitive).")),
+			),
+		},
+	}
+}
+
+// setCurrencyTool REPLACES the count of a currency
+// line. The model sends the absolute new value
+// (not a delta) — read the current value from
+// /me, do the arithmetic, submit the new number.
+// Clamped to [0, 999_999_999] by the dispatcher.
+func setCurrencyTool() Tool {
+	return Tool{
+		Type: "function",
+		Function: ToolFunctionSchema{
+			Name:        "set_currency",
+			Description: "Заменить count валютной строки в characters/<active>/inventory.yaml. Абсолютное значение (не дельта). Если такой валюты ещё нет — создаётся новая строка. Clamp: [0, 999_999_999].",
+			Parameters: Object(
+				Required("name", String("Название валюты: 'Рё', 'Кредиты империи', 'Золотые', etc.")),
+				Required("count", Integer("Абсолютное количество после изменения. Не отрицательное.")),
+			),
+		},
+	}
+}
+
+// removeCurrencyTool deletes a currency line.
+// Returns charprofile.ErrItemNotFound if the
+// currency name is not present.
+func removeCurrencyTool() Tool {
+	return Tool{
+		Type: "function",
+		Function: ToolFunctionSchema{
+			Name:        "remove_currency",
+			Description: "Удалить валютную строку из characters/<active>/inventory.yaml по name. Возвращает ошибку если такой валюты нет.",
+			Parameters: Object(
+				Required("name", String("Название валюты для удаления.")),
 			),
 		},
 	}

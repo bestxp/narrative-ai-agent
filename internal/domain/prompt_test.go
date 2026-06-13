@@ -114,16 +114,20 @@ func TestBuildSystemPrompt_NoCharacter(t *testing.T) {
 	assert.NotContains(t, got, "## Персонаж")
 }
 
-// TestBuildSystemPrompt_RendersCharacterSections: the list of
-// `## <name>` headers from SOUL/SKILL/memory goes into the
-// system prompt under "### Доступные секции для `update_character`"
-// so the model never invents a section name.
-func TestBuildSystemPrompt_RendersCharacterSections(t *testing.T) {
+// TestBuildSystemPrompt_CharacterSectionsIgnored: the
+// h5 refactor removed the per-file section list
+// block from the system prompt — section names
+// already live inside each YAML body as
+// `data: [{section, values}]`, so the model sees
+// them verbatim. The CharacterSections field is
+// kept on the struct for backward compat but the
+// renderer no longer echoes it. We assert the
+// block is NOT present.
+func TestBuildSystemPrompt_CharacterSectionsIgnored(t *testing.T) {
 	got := BuildSystemPrompt("rules", CharacterContext{
 		Character:         "Маркус",
 		CharacterSections: "SOUL: Истинная сущность / Философия\nSKILL: Базовые способности / Оружие",
 	})
-	assert.Contains(t, got, "### Доступные секции для `update_character`")
-	assert.Contains(t, got, "Истинная сущность")
-	assert.Contains(t, got, "Базовые способности")
+	assert.NotContains(t, got, "### Доступные секции",
+		"section enumeration block is no longer rendered; the YAML body has it")
 }

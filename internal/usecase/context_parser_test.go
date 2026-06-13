@@ -177,55 +177,96 @@ func TestExtractContextCommands_AppendLoreShortForm(t *testing.T) {
 	assert.Equal(t, "Маркус приземлился в Конохе", cmds[0].Args["bullet"])
 }
 
-func TestExtractContextCommands_UpdateCharacter(t *testing.T) {
+// TestExtractContextCommands_UpdateSoul covers the
+// per-character file directive in its
+// two-arg form (the h5 refactor dropped the `file=`
+// discriminator — the tool name IS the file).
+func TestExtractContextCommands_UpdateSoul(t *testing.T) {
 	body := `**КОНТЕКСТ И ИЗМЕНЕНИЯ**
-⦁ update_character: file=SKILL; section=martial_arts; append=киокушинкай, муай-тай`
+⦁ update_soul: section=Легенда для прикрытия, append=сирота с другого континента, кораблекрушение`
 	cmds := extractContextCommands(body)
 	require.Len(t, cmds, 1)
-	assert.Equal(t, "update_character", cmds[0].Kind)
-	assert.Equal(t, "SKILL", cmds[0].Args["file"])
-	assert.Equal(t, "martial_arts", cmds[0].Args["section"])
-	assert.Equal(t, "киокушинкай, муай-тай", cmds[0].Args["append"])
+	assert.Equal(t, "update_soul", cmds[0].Kind)
+	assert.Equal(t, "Легенда для прикрытия", cmds[0].Args["section"])
+	assert.Contains(t, cmds[0].Args["append"], "кораблекрушение")
 }
 
-// TestExtractContextCommands_UpdateCharacterCommaForm
-// covers the comma-separated shape the prompt
-// recommends. parseMixedPairs must pick the comma
-// split when the body uses commas (otherwise the
-// whole thing collapses into one key with the rest
-// as its value, which is exactly the bug the mixed
-// parser was introduced to fix).
-func TestExtractContextCommands_UpdateCharacterCommaForm(t *testing.T) {
+// TestExtractContextCommands_UpdateSkill covers the
+// strict-enum skill dispatcher.
+func TestExtractContextCommands_UpdateSkill(t *testing.T) {
 	body := `**КОНТЕКСТ И ИЗМЕНЕНИЯ**
-⦁ update_character: file=SOUL, section=внешность, append=стандартная форма шиноби Конохи, сидит по фигуре`
+⦁ update_skill: section=Оружие, append=Кунай — 3 шт.`
 	cmds := extractContextCommands(body)
 	require.Len(t, cmds, 1)
-	assert.Equal(t, "update_character", cmds[0].Kind)
-	assert.Equal(t, "SOUL", cmds[0].Args["file"])
-	assert.Equal(t, "внешность", cmds[0].Args["section"])
-	assert.Equal(t, "стандартная форма шиноби Конохи, сидит по фигуре", cmds[0].Args["append"])
+	assert.Equal(t, "update_skill", cmds[0].Kind)
+	assert.Equal(t, "Оружие", cmds[0].Args["section"])
+	assert.Equal(t, "Кунай — 3 шт.", cmds[0].Args["append"])
 }
 
-// TestExtractContextCommands_UpdateCharacterMultiple
-// covers the recommended pattern from the strengthened
-// prompt: one player fact (outfit + spended + emotions)
-// → multiple update_character directives in one
-// КОНТЕКСТ block. All must be parsed, in order, with
-// the comma form.
-func TestExtractContextCommands_UpdateCharacterMultiple(t *testing.T) {
+// TestExtractContextCommands_UpdateMemory covers the
+// 4-section memory dispatcher. Note the strict ban
+// on "День N" — the test guards the post-parse
+// contract: the directive form is "section=X,
+// append=Y" with no date metadata.
+func TestExtractContextCommands_UpdateMemory(t *testing.T) {
 	body := `**КОНТЕКСТ И ИЗМЕНЕНИЯ**
-⦁ update_character: file=SOUL, section=внешность, append=одет в форму шиноби
-⦁ update_character: file=SKILL, section=снаряжение, append=2 куная в кобуре
-⦁ update_character: file=SKILL, section=ресурсы, append=потрачено 540 рё из 5000
-⦁ update_character: file=memory, section=эмоции, append=костюм нравится`
+⦁ update_memory: section=Яркие моменты, append=первый поцелуй с Ино на вечерней прогулке по Конохе`
+	cmds := extractContextCommands(body)
+	require.Len(t, cmds, 1)
+	assert.Equal(t, "update_memory", cmds[0].Kind)
+	assert.Equal(t, "Яркие моменты", cmds[0].Args["section"])
+	assert.Equal(t, "первый поцелуй с Ино на вечерней прогулке по Конохе", cmds[0].Args["append"])
+}
+
+// TestExtractContextCommands_UpdateInventory covers
+// the REPLACE-by-name inventory path with all 4
+// optional attrs (description/equip/special).
+func TestExtractContextCommands_UpdateInventory(t *testing.T) {
+	body := `**КОНТЕКСТ И ИЗМЕНЕНИЯ**
+⦁ update_inventory: name=Кунай, type=weapon, description=стандартный клинок Конохи, equip=false, special=нет`
+	cmds := extractContextCommands(body)
+	require.Len(t, cmds, 1)
+	assert.Equal(t, "update_inventory", cmds[0].Kind)
+	assert.Equal(t, "Кунай", cmds[0].Args["name"])
+	assert.Equal(t, "weapon", cmds[0].Args["type"])
+	assert.Equal(t, "стандартный клинок Конохи", cmds[0].Args["description"])
+	assert.Equal(t, "false", cmds[0].Args["equip"])
+	assert.Equal(t, "нет", cmds[0].Args["special"])
+}
+
+// TestExtractContextCommands_RemoveInventoryItem
+// + SetCurrency + RemoveCurrency in one block: the
+// three sibling tools share the same comma-pair
+// grammar. One test covers all three for compactness.
+func TestExtractContextCommands_InventoryAndCurrency(t *testing.T) {
+	body := `**КОНТЕКСТ И ИЗМЕНЕНИЯ**
+⦁ update_inventory: name=Пилюля, type=consumable, description=восстанавливает чакру
+⦁ remove_inventory_item: name=Пилюля
+⦁ set_currency: name=Рё, count=4200
+⦁ remove_currency: name=Кредиты империи`
 	cmds := extractContextCommands(body)
 	require.Len(t, cmds, 4)
-	assert.Equal(t, []string{"SOUL", "SKILL", "SKILL", "memory"},
-		[]string{cmds[0].Args["file"], cmds[1].Args["file"], cmds[2].Args["file"], cmds[3].Args["file"]})
-	assert.Equal(t, "одет в форму шиноби", cmds[0].Args["append"])
-	assert.Equal(t, "2 куная в кобуре", cmds[1].Args["append"])
-	assert.Equal(t, "потрачено 540 рё из 5000", cmds[2].Args["append"])
-	assert.Equal(t, "костюм нравится", cmds[3].Args["append"])
+	assert.Equal(t, "update_inventory", cmds[0].Kind)
+	assert.Equal(t, "remove_inventory_item", cmds[1].Kind)
+	assert.Equal(t, "set_currency", cmds[2].Kind)
+	assert.Equal(t, "remove_currency", cmds[3].Kind)
+	assert.Equal(t, "4200", cmds[2].Args["count"])
+	assert.Equal(t, "Кредиты империи", cmds[3].Args["name"])
+}
+
+// TestExtractContextCommands_UpdateCharacterRejected:
+// the legacy `update_character:` directive is GONE.
+// A model that still writes it gets one unknown-kind
+// miss in the slowlog; we do NOT silently route it
+// to update_soul (a) because the args shape is
+// different (file=...), and (b) because the file
+// discriminator is exactly what the h5 refactor
+// removed.
+func TestExtractContextCommands_UpdateCharacterRejected(t *testing.T) {
+	body := `**КОНТЕКСТ И ИЗМЕНЕНИЯ**
+⦁ update_character: file=SOUL, section=Легенда, append=...`
+	cmds := extractContextCommands(body)
+	assert.Empty(t, cmds, "legacy update_character must NOT be parsed as update_soul etc.")
 }
 
 func TestExtractContextCommands_RawPreserved(t *testing.T) {

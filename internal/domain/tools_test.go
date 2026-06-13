@@ -77,12 +77,65 @@ func TestRotatePlanTool_HasBounds(t *testing.T) {
 	assert.Equal(t, float64(5), events["maxItems"])
 }
 
-func TestCharacterUpdateTool_EnumMatchesFiles(t *testing.T) {
-	tool := findTool(t, "update_character")
+func TestUpdateSoulTool_SectionIsFreeString(t *testing.T) {
+	// SOUL.yaml is free-form: the section arg is a
+	// plain String (not an enum), so the model can
+	// invent new section names.
+	tool := findTool(t, "update_soul")
 	probe := paramsJSON(t, tool.Function.Parameters)
-	file := probe["properties"].(map[string]any)["file"].(map[string]any)
-	enum := file["enum"].([]any)
-	assert.ElementsMatch(t, []any{"SOUL", "SKILL", "memory"}, enum)
+	section := probe["properties"].(map[string]any)["section"].(map[string]any)
+	assert.Equal(t, "string", section["type"])
+	_, hasEnum := section["enum"]
+	assert.False(t, hasEnum, "SOUL section must NOT be an enum")
+}
+
+func TestUpdateSkillTool_SectionIsEnum(t *testing.T) {
+	// skill.yaml is strict: section must be on the
+	// canonical list.
+	tool := findTool(t, "update_skill")
+	probe := paramsJSON(t, tool.Function.Parameters)
+	section := probe["properties"].(map[string]any)["section"].(map[string]any)
+	enum := section["enum"].([]any)
+	// 9 fixed sections (Ранг, Оружие, Базовые способности,
+	// Фундаментальные стихии, Особые проявления,
+	// Универсальные навыки, Ограничения, Глаза, Доспех).
+	assert.Len(t, enum, 9)
+}
+
+func TestUpdateMemoryTool_SectionIsEnum(t *testing.T) {
+	// memory.yaml: 4 canonical sections only.
+	tool := findTool(t, "update_memory")
+	probe := paramsJSON(t, tool.Function.Parameters)
+	section := probe["properties"].(map[string]any)["section"].(map[string]any)
+	enum := section["enum"].([]any)
+	assert.ElementsMatch(t, []any{
+		"Яркие моменты", "Факты о мире", "Обещания и цели", "Важные люди",
+	}, enum)
+}
+
+func TestUpdateInventoryTool_TypeIsEnum(t *testing.T) {
+	tool := findTool(t, "update_inventory")
+	probe := paramsJSON(t, tool.Function.Parameters)
+	typ := probe["properties"].(map[string]any)["type"].(map[string]any)
+	enum := typ["enum"].([]any)
+	assert.ElementsMatch(t, []any{
+		"weapon", "armor", "accessory", "consumable",
+		"tool", "quest", "document", "material", "other",
+	}, enum)
+}
+
+func TestRemoveInventoryItemTool_HasName(t *testing.T) {
+	tool := findTool(t, "remove_inventory_item")
+	probe := paramsJSON(t, tool.Function.Parameters)
+	required := probe["required"].([]any)
+	assert.Contains(t, required, "name")
+}
+
+func TestSetCurrencyTool_ClampNoteInDescription(t *testing.T) {
+	tool := findTool(t, "set_currency")
+	assert.Contains(t, tool.Function.Description, "Clamp",
+		"set_currency description must mention the [0, 999_999_999] clamp")
+	assert.Contains(t, tool.Function.Description, "999_999_999")
 }
 
 func TestObject_RequiredIsSorted(t *testing.T) {

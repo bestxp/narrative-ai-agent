@@ -127,11 +127,19 @@ func BuildSystemPrompt(staticRules string, char CharacterContext, disableThinkin
 			b.WriteString(char.CharacterMemory)
 			b.WriteString("\n\n")
 		}
-		if char.CharacterSections != "" {
-			b.WriteString("### Доступные секции для `update_character`\n")
-			b.WriteString(char.CharacterSections)
-			b.WriteString("\n\n")
-		}
+		// CharacterSections is intentionally left
+		// UNUSED. The h5 refactor moved the per-file
+		// data into the YAML bodies themselves
+		// (each file's `data: [{section, values}]`
+		// array is the canonical section list) —
+		// the model sees section names verbatim in
+		// the SOUL/SKILL/memory bodies above. A
+		// separate enumeration block would just
+		// duplicate the YAML keys and add cache
+		// weight to the system prompt. The field
+		// is kept on CharacterContext for backward
+		// compatibility with external callers that
+		// pre-populate it; we just do not render it.
 	}
 
 	return strings.TrimSpace(b.String())

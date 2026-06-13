@@ -495,7 +495,7 @@ func TestGM_EmptyWithToolCallsFinish_StillError(t *testing.T) {
 // critical cache-hit invariant: between explicit invalidations,
 // the BOTH the system snapshot AND the world-state snapshot
 // MUST be byte-equal across turns, even when update_state /
-// update_npc / update_character mutate the underlying files
+// update_npc / update_soul / update_skill / update_memory mutate the underlying files
 // on disk. The split into system (rules+character) and world
 // (world+NPCs) messages means both share the same sceneKey
 // cache and are rebuilt together.

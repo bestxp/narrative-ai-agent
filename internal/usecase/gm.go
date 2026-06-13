@@ -13,6 +13,7 @@ import (
 
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/llm"
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
+	"github.com/bestxp/narrative-ai-agent/internal/charprofile"
 	"github.com/bestxp/narrative-ai-agent/internal/domain"
 	"github.com/bestxp/narrative-ai-agent/internal/slowlog"
 	"github.com/bestxp/narrative-ai-agent/internal/structured"
@@ -847,12 +848,19 @@ func (g *GM) missedToolGuard(_ context.Context, chatID string, calls []llm.ToolC
 		called[tc.Function.Name] = true
 	}
 	lower := strings.ToLower(answer)
-	// Missing update_character: the assistant turn mentions
-	// the player's name, age, or a clear self-disclosure
-	// ("мне N лет", "меня зовут", "я умею"). These are the
-	// triggers the prompt's checklist calls out, so the
-	// absence of the tool is a real signal.
-	if !called["update_character"] {
+	// Missing per-character file tools: the assistant
+	// turn mentions the player's name, age, or a
+	// clear self-disclosure ("мне N лет", "меня зовут",
+	// "я умею"). These are the triggers the prompt's
+	// checklist calls out, so the absence of the
+	// matching tool is a real signal. We check the
+	// union of the four file tools (update_soul /
+	// update_skill / update_memory) — a turn that
+	// mentions player facts and calls NONE of them
+	// is the bug case. The h5 refactor split the
+	// legacy update_character into one tool per
+	// file, but the trigger language is the same.
+	if !called["update_soul"] && !called["update_skill"] && !called["update_memory"] {
 		triggers := []string{
 			"мне ", "лет", "меня зовут", "я умею", "мой навык", "моя цель",
 			"я родился", "я из ", "моё прошлое", "в моём мире", "в моей школе",
@@ -862,10 +870,10 @@ func (g *GM) missedToolGuard(_ context.Context, chatID string, calls []llm.ToolC
 				g.log.Warn().
 					Str("trigger", t).
 					Str("chat", chatID).
-					Msg("narrative mentions player facts but update_character was not called")
+					Msg("narrative mentions player facts but no per-character file tool was called")
 				if g.slow != nil {
 					_ = g.slow.Write("gm.missed_tool", chatID, map[string]any{
-						"tool":    "update_character",
+						"tool":    "update_soul|update_skill|update_memory",
 						"reason":  "player facts mentioned in narrative",
 						"trigger": t,
 					})
@@ -1015,7 +1023,17 @@ func extractPermanentParty(stateMD string) []string {
 // the dispatcher below (executeExtractedCommands) knows
 // how to route them to the right usecase.Tool method.
 type extractedCommand struct {
-	Kind string // "update_npc" | "update_state" | "append_lore" | "update_character" | "create_npc"
+	// Kind is one of the wire-form canonical
+	// command names. After the h5 refactor the
+	// per-character dispatcher is split into
+	// update_soul / update_skill / update_memory /
+	// update_inventory / remove_inventory_item /
+	// set_currency / remove_currency. The legacy
+	// "update_character" kind is GONE — the parser
+	// below rejects it as unknown so old turns that
+	// still write it are surfaced to the slowlog
+	// instead of silently dropped.
+	Kind string
 	Args map[string]string
 	// Raw is the original line for the slowlog so an
 	// operator can see exactly what the model wrote.
@@ -1152,7 +1170,10 @@ func looksLikeDirective(line string) bool {
 	lower := strings.ToLower(line)
 	prefixes := []string{
 		"update_npc", "update_state", "append_lore",
-		"update_character", "create_npc",
+		"create_npc",
+		"update_soul", "update_skill", "update_memory",
+		"update_inventory", "remove_inventory_item",
+		"set_currency", "remove_currency",
 		"lore:", "npc:", "state:",
 	}
 	for _, p := range prefixes {
@@ -1249,19 +1270,53 @@ func parseDirectiveLine(line string) (extractedCommand, bool) {
 			Kind: "update_state",
 			Args: parseSemicolonPairs(body),
 		}, true
-	case strings.HasPrefix(lower, "update_character:"):
-		body := strings.TrimSpace(stripped[len("update_character:"):])
-		// "file=SOUL, section=внешность, append=..." — the
-		// comma form is what the prompt recommends
-		// (short, one fact per directive, three keys).
-		// We also accept the semicolon form for
-		// robustness, since older turns may have used
-		// it. parseMixedPairs tries ";" first, then
-		// "," — whichever gives us all three keys wins.
-		args := parseMixedPairs(body)
+	case strings.HasPrefix(lower, "update_soul:"):
+		// "section=Легенда для прикрытия, append=..." —
+		// two-key form. The file kind is fixed by
+		// the tool name, no `file=` discriminator
+		// anymore.
+		body := strings.TrimSpace(stripped[len("update_soul:"):])
 		return extractedCommand{
-			Kind: "update_character",
-			Args: args,
+			Kind: "update_soul",
+			Args: parseCommaPairs(body),
+		}, true
+	case strings.HasPrefix(lower, "update_skill:"):
+		body := strings.TrimSpace(stripped[len("update_skill:"):])
+		return extractedCommand{
+			Kind: "update_skill",
+			Args: parseCommaPairs(body),
+		}, true
+	case strings.HasPrefix(lower, "update_memory:"):
+		body := strings.TrimSpace(stripped[len("update_memory:"):])
+		return extractedCommand{
+			Kind: "update_memory",
+			Args: parseCommaPairs(body),
+		}, true
+	case strings.HasPrefix(lower, "update_inventory:"):
+		// "name=Кунай, type=weapon, equip=true, description=..., special=..."
+		body := strings.TrimSpace(stripped[len("update_inventory:"):])
+		return extractedCommand{
+			Kind: "update_inventory",
+			Args: parseCommaPairs(body),
+		}, true
+	case strings.HasPrefix(lower, "remove_inventory_item:"):
+		body := strings.TrimSpace(stripped[len("remove_inventory_item:"):])
+		return extractedCommand{
+			Kind: "remove_inventory_item",
+			Args: parseCommaPairs(body),
+		}, true
+	case strings.HasPrefix(lower, "set_currency:"):
+		// "name=Рё, count=4200"
+		body := strings.TrimSpace(stripped[len("set_currency:"):])
+		return extractedCommand{
+			Kind: "set_currency",
+			Args: parseCommaPairs(body),
+		}, true
+	case strings.HasPrefix(lower, "remove_currency:"):
+		body := strings.TrimSpace(stripped[len("remove_currency:"):])
+		return extractedCommand{
+			Kind: "remove_currency",
+			Args: parseCommaPairs(body),
 		}, true
 	case strings.HasPrefix(lower, "create_npc:"):
 		body := strings.TrimSpace(stripped[len("create_npc:"):])
@@ -1500,8 +1555,20 @@ func (g *GM) executeExtractedCommands(ctx context.Context, chatID, world string,
 			err = g.dispatchUpdateStateDirective(ctx, world, c)
 		case "append_lore":
 			err = g.dispatchAppendLoreDirective(ctx, world, c)
-		case "update_character":
-			err = g.dispatchUpdateCharacterDirective(ctx, c)
+		case "update_soul":
+			err = g.dispatchUpdateSoulDirective(ctx, c)
+		case "update_skill":
+			err = g.dispatchUpdateSkillDirective(ctx, c)
+		case "update_memory":
+			err = g.dispatchUpdateMemoryDirective(ctx, c)
+		case "update_inventory":
+			err = g.dispatchUpdateInventoryDirective(ctx, c)
+		case "remove_inventory_item":
+			err = g.dispatchRemoveInventoryItemDirective(ctx, c)
+		case "set_currency":
+			err = g.dispatchSetCurrencyDirective(ctx, c)
+		case "remove_currency":
+			err = g.dispatchRemoveCurrencyDirective(ctx, c)
 		case "create_npc":
 			err = g.dispatchCreateNpcDirective(ctx, world, c)
 		default:
@@ -1581,21 +1648,133 @@ func (g *GM) dispatchAppendLoreDirective(_ context.Context, world string, c extr
 	return g.tools.AppendLore(world, header, bullet)
 }
 
-// dispatchUpdateCharacterDirective is symmetric with
-// update_npc but writes to the active character's
-// SKILL/SOUL/memory.md files.
-func (g *GM) dispatchUpdateCharacterDirective(_ context.Context, c extractedCommand) error {
-	file := strings.TrimSpace(c.Args["file"])
+// dispatchUpdateSoulDirective routes a
+// КОНТЕКСТ-блок "update_soul: section=X, append=Y"
+// to the same AppendSoul path that the native
+// tool call uses. The arg map is what
+// parseDirectiveLine produced.
+func (g *GM) dispatchUpdateSoulDirective(_ context.Context, c extractedCommand) error {
 	section := strings.TrimSpace(c.Args["section"])
 	appendText := c.Args["append"]
-	if file == "" || section == "" || strings.TrimSpace(appendText) == "" {
-		return fmt.Errorf("update_character: file, section, append required")
+	if section == "" {
+		return fmt.Errorf("update_soul: section required")
+	}
+	if strings.TrimSpace(appendText) == "" {
+		return fmt.Errorf("update_soul: append text required (no empty updates)")
 	}
 	sc, err := g.ss.Start()
 	if err != nil {
 		return err
 	}
-	return g.tools.Append(sc.Character, file, section, appendText)
+	_, err = g.tools.AppendSoul(sc.Character, section, appendText)
+	return err
+}
+
+// dispatchUpdateSkillDirective is the strict-enum
+// sibling of dispatchUpdateSoulDirective. The
+// charprofile layer rejects unknown section
+// names; the error surfaces here verbatim.
+func (g *GM) dispatchUpdateSkillDirective(_ context.Context, c extractedCommand) error {
+	section := strings.TrimSpace(c.Args["section"])
+	appendText := c.Args["append"]
+	if section == "" {
+		return fmt.Errorf("update_skill: section required")
+	}
+	if strings.TrimSpace(appendText) == "" {
+		return fmt.Errorf("update_skill: append text required (no empty updates)")
+	}
+	sc, err := g.ss.Start()
+	if err != nil {
+		return err
+	}
+	_, err = g.tools.AppendSkill(sc.Character, section, appendText)
+	return err
+}
+
+// dispatchUpdateMemoryDirective is the third
+// per-file Append* dispatcher. Memory.yaml is
+// the strictest enum (4 names).
+func (g *GM) dispatchUpdateMemoryDirective(_ context.Context, c extractedCommand) error {
+	section := strings.TrimSpace(c.Args["section"])
+	appendText := c.Args["append"]
+	if section == "" {
+		return fmt.Errorf("update_memory: section required")
+	}
+	if strings.TrimSpace(appendText) == "" {
+		return fmt.Errorf("update_memory: append text required (no empty updates)")
+	}
+	sc, err := g.ss.Start()
+	if err != nil {
+		return err
+	}
+	_, err = g.tools.AppendMemorySection(sc.Character, section, appendText)
+	return err
+}
+
+// dispatchUpdateInventoryDirective is the
+// REPLACE-by-name inventory path. The charprofile
+// layer does the lookup; the dispatcher unpacks
+// the args and forwards. equip is optional —
+// false is the safe default for "I just picked
+// this up, not wearing it yet".
+func (g *GM) dispatchUpdateInventoryDirective(_ context.Context, c extractedCommand) error {
+	name := strings.TrimSpace(c.Args["name"])
+	typ := strings.TrimSpace(c.Args["type"])
+	if name == "" {
+		return fmt.Errorf("update_inventory: name required")
+	}
+	if typ == "" {
+		return fmt.Errorf("update_inventory: type required")
+	}
+	sc, err := g.ss.Start()
+	if err != nil {
+		return err
+	}
+	_, err = g.tools.AppendInventoryItem(sc.Character, charprofile.Item{
+		Name:        name,
+		Description: c.Args["description"],
+		Equip:       parseBoolArg(c.Args["equip"]),
+		Special:     c.Args["special"],
+	})
+	return err
+}
+
+func (g *GM) dispatchRemoveInventoryItemDirective(_ context.Context, c extractedCommand) error {
+	name := strings.TrimSpace(c.Args["name"])
+	if name == "" {
+		return fmt.Errorf("remove_inventory_item: name required")
+	}
+	sc, err := g.ss.Start()
+	if err != nil {
+		return err
+	}
+	return g.tools.RemoveInventoryItem(sc.Character, name)
+}
+
+func (g *GM) dispatchSetCurrencyDirective(_ context.Context, c extractedCommand) error {
+	name := strings.TrimSpace(c.Args["name"])
+	if name == "" {
+		return fmt.Errorf("set_currency: name required")
+	}
+	count := toInt(c.Args["count"])
+	sc, err := g.ss.Start()
+	if err != nil {
+		return err
+	}
+	_, err = g.tools.SetCurrency(sc.Character, name, count)
+	return err
+}
+
+func (g *GM) dispatchRemoveCurrencyDirective(_ context.Context, c extractedCommand) error {
+	name := strings.TrimSpace(c.Args["name"])
+	if name == "" {
+		return fmt.Errorf("remove_currency: name required")
+	}
+	sc, err := g.ss.Start()
+	if err != nil {
+		return err
+	}
+	return g.tools.RemoveCurrency(sc.Character, name)
 }
 
 // dispatchCreateNpcDirective is a best-effort fallback
@@ -2591,27 +2770,191 @@ func (g *GM) dispatchOneTool(ctx context.Context, tc llm.ToolCall) (string, stri
 		}
 		g.ResetConversation(sc.Character)
 		return okJSON("world switched"), ""
-	case "update_character":
+	case "update_soul":
+		// h5: 4 per-file Append* tools replace the legacy
+		// single update_character(file=...) dispatcher.
+		// The section name is free-form on SOUL.yaml.
 		if g.tools == nil {
-			return "", "update_character: tool not wired"
+			return "", "update_soul: tool not wired"
 		}
-		file := toString(args["file"])
 		section := toString(args["section"])
 		appendText := toString(args["append"])
+		if section == "" {
+			return "", "update_soul: section required"
+		}
+		if strings.TrimSpace(appendText) == "" {
+			return "", "update_soul: append text required (no empty updates)"
+		}
 		sc, err := g.ss.Start()
 		if err != nil {
 			return "", err.Error()
 		}
-		if err := g.tools.Append(sc.Character, file, section, appendText); err != nil {
+		_, err = g.tools.AppendSoul(sc.Character, section, appendText)
+		if err != nil {
 			return "", err.Error()
 		}
-		// Short ToolResult. The character's section is
-		// on disk; snapshot stays the same.
 		return okJSON(map[string]any{
 			"status":  "appended",
-			"file":    file,
+			"file":    "SOUL.yaml",
 			"section": section,
 			"cache":   "stable",
+		}), ""
+	case "update_skill":
+		// skill.yaml is a fixed-enum file. The dispatcher
+		// itself rejects unknown section names; the error
+		// surfaces back to the model so it can recover
+		// (try a different canonical name).
+		if g.tools == nil {
+			return "", "update_skill: tool not wired"
+		}
+		section := toString(args["section"])
+		appendText := toString(args["append"])
+		if section == "" {
+			return "", "update_skill: section required"
+		}
+		if strings.TrimSpace(appendText) == "" {
+			return "", "update_skill: append text required"
+		}
+		sc, err := g.ss.Start()
+		if err != nil {
+			return "", err.Error()
+		}
+		_, err = g.tools.AppendSkill(sc.Character, section, appendText)
+		if err != nil {
+			return "", err.Error()
+		}
+		return okJSON(map[string]any{
+			"status":  "appended",
+			"file":    "skill.yaml",
+			"section": section,
+			"cache":   "stable",
+		}), ""
+	case "update_memory":
+		// memory.yaml sections are STRICT (4 names). The
+		// charprofile layer rejects unknowns.
+		if g.tools == nil {
+			return "", "update_memory: tool not wired"
+		}
+		section := toString(args["section"])
+		appendText := toString(args["append"])
+		if section == "" {
+			return "", "update_memory: section required"
+		}
+		if strings.TrimSpace(appendText) == "" {
+			return "", "update_memory: append text required"
+		}
+		sc, err := g.ss.Start()
+		if err != nil {
+			return "", err.Error()
+		}
+		_, err = g.tools.AppendMemorySection(sc.Character, section, appendText)
+		if err != nil {
+			return "", err.Error()
+		}
+		return okJSON(map[string]any{
+			"status":  "appended",
+			"file":    "memory.yaml",
+			"section": section,
+			"cache":   "stable",
+		}), ""
+	case "update_inventory":
+		// REPLACE-by-name semantics. The charprofile
+		// layer does the lookup; the dispatcher just
+		// unpacks the args. equip defaults to false
+		// when omitted (the optional Boolean helper
+		// returns false on a missing key).
+		if g.tools == nil {
+			return "", "update_inventory: tool not wired"
+		}
+		name := strings.TrimSpace(toString(args["name"]))
+		if name == "" {
+			return "", "update_inventory: name required"
+		}
+		typ := toString(args["type"])
+		if typ == "" {
+			return "", "update_inventory: type required"
+		}
+		sc, err := g.ss.Start()
+		if err != nil {
+			return "", err.Error()
+		}
+		_, err = g.tools.AppendInventoryItem(sc.Character, charprofile.Item{
+			Name:        name,
+			Description: toString(args["description"]),
+			Equip:       toBool(args["equip"]),
+			Special:     toString(args["special"]),
+		})
+		if err != nil {
+			return "", err.Error()
+		}
+		return okJSON(map[string]any{
+			"status": "recorded",
+			"name":   name,
+			"type":   typ,
+			"cache":  "stable",
+		}), ""
+	case "remove_inventory_item":
+		if g.tools == nil {
+			return "", "remove_inventory_item: tool not wired"
+		}
+		name := strings.TrimSpace(toString(args["name"]))
+		if name == "" {
+			return "", "remove_inventory_item: name required"
+		}
+		sc, err := g.ss.Start()
+		if err != nil {
+			return "", err.Error()
+		}
+		if err := g.tools.RemoveInventoryItem(sc.Character, name); err != nil {
+			return "", err.Error()
+		}
+		return okJSON(map[string]any{
+			"status": "removed",
+			"name":   name,
+			"cache":  "stable",
+		}), ""
+	case "set_currency":
+		if g.tools == nil {
+			return "", "set_currency: tool not wired"
+		}
+		name := strings.TrimSpace(toString(args["name"]))
+		if name == "" {
+			return "", "set_currency: name required"
+		}
+		count := toInt(args["count"])
+		sc, err := g.ss.Start()
+		if err != nil {
+			return "", err.Error()
+		}
+		_, err = g.tools.SetCurrency(sc.Character, name, count)
+		if err != nil {
+			return "", err.Error()
+		}
+		return okJSON(map[string]any{
+			"status": "recorded",
+			"name":   name,
+			"count":  count,
+			"cache":  "stable",
+		}), ""
+	case "remove_currency":
+		if g.tools == nil {
+			return "", "remove_currency: tool not wired"
+		}
+		name := strings.TrimSpace(toString(args["name"]))
+		if name == "" {
+			return "", "remove_currency: name required"
+		}
+		sc, err := g.ss.Start()
+		if err != nil {
+			return "", err.Error()
+		}
+		if err := g.tools.RemoveCurrency(sc.Character, name); err != nil {
+			return "", err.Error()
+		}
+		return okJSON(map[string]any{
+			"status": "removed",
+			"name":   name,
+			"cache":  "stable",
 		}), ""
 	case "update_npc":
 		if g.tools == nil {
@@ -2850,8 +3193,8 @@ func (g *GM) retryEmptyOnce(ctx context.Context, messages []llm.Message, timeout
 			"верни только текстовый ответ: 4-блочный markdown (Режим B) или JSON " +
 			"с полями narration/context/future/validation (Режим A). Если нужно " +
 			"обновить character-файлы — пиши маркеры в поле `context` или в блок " +
-			"**КОНТЕКСТ И ИЗМЕНЕНИЯ**: ⦁ update_character: file=SOUL, section=..., " +
-			"append=..."
+			"**КОНТЕКСТ И ИЗМЕНЕНИЯ**: ⦁ update_soul: section=..., append=... " +
+			"(или update_skill / update_memory — по файлу, к которому относится факт)."
 		outMsgs = append(outMsgs, llm.Message{Role: "user", Content: hint})
 	}
 	streamErr := g.llm.Stream(ctx, llm.ChatRequest{

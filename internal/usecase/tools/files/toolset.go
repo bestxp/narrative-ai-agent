@@ -12,6 +12,7 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
+	"github.com/bestxp/narrative-ai-agent/internal/charprofile"
 	"github.com/bestxp/narrative-ai-agent/internal/slowlog"
 	"github.com/bestxp/narrative-ai-agent/internal/usecase/tools"
 )
@@ -144,6 +145,44 @@ func (t *Toolset) EndScene(world string, permanentParty []string) (*tools.EndSce
 		KeptNPCs:      res.KeptNPCs,
 		PrunedNPCsLen: res.PrunedNPCsLen,
 	}, nil
+}
+
+// --- character file forwarders (h5 refactor) ---
+//
+// The legacy single Append(file=...) dispatcher is
+// gone. Each per-file Append* is a thin pass-through
+// to the embedded *Character. The split mirrors the
+// 7 character tool calls the LLM can make
+// (update_soul / update_skill / update_memory /
+// update_inventory / remove_inventory_item /
+// set_currency / remove_currency).
+
+func (t *Toolset) AppendSoul(characterDir, section, value string) (bool, error) {
+	return t.Character.AppendSoul(characterDir, section, value)
+}
+
+func (t *Toolset) AppendSkill(characterDir, section, value string) (bool, error) {
+	return t.Character.AppendSkill(characterDir, section, value)
+}
+
+func (t *Toolset) AppendMemorySection(characterDir, section, value string) (bool, error) {
+	return t.Character.AppendMemorySection(characterDir, section, value)
+}
+
+func (t *Toolset) AppendInventoryItem(characterDir string, item charprofile.Item) (bool, error) {
+	return t.Character.AppendInventoryItem(characterDir, item)
+}
+
+func (t *Toolset) RemoveInventoryItem(characterDir, name string) error {
+	return t.Character.RemoveInventoryItem(characterDir, name)
+}
+
+func (t *Toolset) SetCurrency(characterDir, name string, count int) (bool, error) {
+	return t.Character.SetCurrency(characterDir, name, count)
+}
+
+func (t *Toolset) RemoveCurrency(characterDir, name string) error {
+	return t.Character.RemoveCurrency(characterDir, name)
 }
 
 // Reload flushes any in-memory caches. The file backend is
