@@ -1059,17 +1059,23 @@ func TestEndScene_NoPruneWhenListMissing(t *testing.T) {
 	assert.Contains(t, cur, "Хината")
 }
 
-// TestEndScene_ReadsPartyFromSKILLMD: the tool can
-// pull permanent_party from SKILL.md when no arg is
-// passed. The dispatch path is the same; only the
-// arg-resolution step differs.
-func TestEndScene_ReadsPartyFromSKILLMD(t *testing.T) {
+// TestEndScene_ReadsPartyFromStateMD: the tool can
+// pull permanent_party from the active world's
+// state.md when no arg is passed. The dispatch path
+// is the same; only the arg-resolution step
+// differs.
+//
+// h5 refactor: permanent party moved out of
+// characters/<dir>/SKILL.md (a per-character file)
+// and into worlds/<w>/state.md (a per-world
+// section). The cast is world-scoped because the
+// same character visits different worlds with
+// different retainers.
+func TestEndScene_ReadsPartyFromStateMD(t *testing.T) {
 	g, fs, _ := newGMTestEnv(t)
-	require.NoError(t, fs.WriteRawAtomic("characters/markus/SKILL.md",
-		"# Skills\n\n## permanent party\nКакаши\n\n## Другое\nfoo\n"))
 	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/state.md",
-		"День 1 (в процессе).\nNPC: Какаши, Хината, Наруто\n"))
-
+		"День 1 (в процессе).\nNPC: Какаши, Хината, Наруто\n\n"+
+			"## permanent party\nКакаши\n\n## Хроника\nx\n"))
 	res, errStr := g.dispatchOneTool(context.Background(), llm.ToolCall{
 		ID:       "t1",
 		Type:     "function",

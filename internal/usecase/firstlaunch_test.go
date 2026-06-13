@@ -19,9 +19,10 @@ func TestFirstLaunch_CreatesSkeleton(t *testing.T) {
 	require.NoError(t, err)
 	for _, rel := range []string{
 		storage.InfoFile,
-		"characters/markus/SOUL.md",
-		"characters/markus/SKILL.md",
-		"characters/markus/memory.md",
+		"characters/markus/SOUL.yaml",
+		"characters/markus/skill.yaml",
+		"characters/markus/memory.yaml",
+		"characters/markus/inventory.yaml",
 		"worlds/naruto/canon.md",
 		"worlds/naruto/state.md",
 		"worlds/naruto/lore.md",

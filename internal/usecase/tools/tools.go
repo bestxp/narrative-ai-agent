@@ -137,15 +137,21 @@ type NPCProfile struct {
 	LastUpdate string
 }
 
-// CharacterSnapshot is the read-only bundle /me renders. It
-// is pre-formatted for plain-text output; markdown sections
-// pass through unchanged.
+// CharacterSnapshot is the read-only bundle /me
+// renders. It is pre-formatted for plain-text
+// output; markdown sections pass through unchanged.
+//
+// The h5 refactor added Inventory — the per-character
+// inventory.yaml is now part of the snapshot, so
+// the operator can see the GG's wallet and pockets
+// in a single /me call.
 type CharacterSnapshot struct {
 	Character string
 	World     string
 	SOUL      string
 	SKILL     string
 	Memory    string
+	Inventory string
 	State     string
 	Day       int
 }

@@ -950,30 +950,37 @@ func extractProperNamesFromDialogue(answer string) []string {
 	return out
 }
 
-// extractPermanentParty scans a character's SKILL.md
-// for a "## permanent party" section and returns the
-// comma-separated names listed under it. The list is
-// the cast that travels with the player across scene
-// changes; end_scene uses it to prune the active
-// roster. A missing or empty section returns nil (no
-// prune — the safe default).
+// extractPermanentParty scans the active world's
+// state.md for a "## permanent party" section and
+// returns the comma-separated names listed under
+// it. The list is the cast that travels with the
+// player across scene changes; end_scene uses it
+// to prune the active roster. A missing or empty
+// section returns nil (no prune — the safe default).
 //
-// Format:
+// State.md format (canonical, set by the operator
+// or by the WorldSeed tool):
 //
 //	## permanent party
 //	Какаши, Хината, Ирука
 //
-// Whitespace around names and trailing commas are
-// tolerated. Names are returned trimmed but otherwise
-// unchanged — the dispatcher passes them straight to
-// state.md's active-roster compare.
-func extractPermanentParty(skillBody string) []string {
+// The h5 charprofile refactor moved permanent
+// party out of the character files (SOUL.md /
+// skill.md) and into the WORLD state — the cast
+// is world-scoped, not character-scoped, because
+// the same character visits different worlds with
+// different retainers. Whitespace around names and
+// trailing commas are tolerated. Names are
+// returned trimmed but otherwise unchanged — the
+// dispatcher passes them straight to state.md's
+// active-roster compare.
+func extractPermanentParty(stateMD string) []string {
 	const marker = "## permanent party"
-	idx := strings.Index(skillBody, marker)
+	idx := strings.Index(stateMD, marker)
 	if idx < 0 {
 		return nil
 	}
-	rest := skillBody[idx+len(marker):]
+	rest := stateMD[idx+len(marker):]
 	// Up to the next "## " sibling header or end of body.
 	end := strings.Index(rest, "\n## ")
 	if end < 0 {
@@ -1760,22 +1767,16 @@ func (g *GM) buildContext() (systemMsg, worldMsg string, err error) {
 
 	charCtx := domain.CharacterContext{
 		Character:       sc.Character,
-		CharacterSOUL:   safeRead(g.fs, "characters/"+sc.Character+"/SOUL.md"),
-		CharacterSKILL:  safeRead(g.fs, "characters/"+sc.Character+"/SKILL.md"),
-		CharacterMemory: safeRead(g.fs, "characters/"+sc.Character+"/memory.md"),
-		// Inject the operator's actual section
-		// vocabulary into the prompt so the model
-		// picks an existing `## <name>` rather
-		// than inventing one. Without this block
-		// the model guesses ("внешность",
-		// "ресурсы") and Append happily creates a
-		// new header next to the existing
-		// "Истинная сущность" / "Философия" one.
-		CharacterSections: files.FormatSectionList(
-			safeRead(g.fs, "characters/"+sc.Character+"/SOUL.md"),
-			safeRead(g.fs, "characters/"+sc.Character+"/SKILL.md"),
-			safeRead(g.fs, "characters/"+sc.Character+"/memory.md"),
-		),
+		CharacterSOUL:   safeRead(g.fs, "characters/"+sc.Character+"/SOUL.yaml"),
+		CharacterSKILL:  safeRead(g.fs, "characters/"+sc.Character+"/skill.yaml"),
+		CharacterMemory: safeRead(g.fs, "characters/"+sc.Character+"/memory.yaml"),
+		// CharacterSections is intentionally empty
+		// in the YAML era: the section list is
+		// already in the file (the data: array).
+		// The prompt gets the full body, so the
+		// model sees the section names verbatim.
+		// A separate enumeration block would just
+		// duplicate the YAML keys.
 	}
 	worldCtx := domain.WorldContext{
 		World:         sc.World,
@@ -2458,9 +2459,14 @@ func (g *GM) dispatchOneTool(ctx context.Context, tc llm.ToolCall) (string, stri
 			}
 		} else if g.ss != nil {
 			sc, err := g.ss.Start()
-			if err == nil && sc.Character != "" {
-				if skill, _ := g.fs.ReadRaw("characters/" + sc.Character + "/SKILL.md"); skill != "" {
-					pp = extractPermanentParty(skill)
+			if err == nil && sc.World != "" {
+				// h5 refactor: permanent party is
+				// world-scoped, not character-scoped.
+				// Read it from the active world's
+				// state.md, not from the character
+				// files.
+				if state, _ := g.fs.ReadRaw("worlds/" + sc.World + "/state.md"); state != "" {
+					pp = extractPermanentParty(state)
 				}
 			}
 		}

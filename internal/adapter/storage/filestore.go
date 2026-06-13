@@ -19,7 +19,7 @@ import (
 // the methods exposed here.
 type FileStore struct {
 	root string
-	log zerolog.Logger
+	log  zerolog.Logger
 }
 
 // NewFileStore is the production constructor. Pass logging.Discard()
@@ -50,24 +50,70 @@ func (f *FileStore) Root() string { return f.root }
 // it's a freeform human checklist for the GM).
 const InfoFile = "info.yaml"
 
-func (f *FileStore) InfoYAMLPath() string             { return filepath.Join(f.root, InfoFile) }
-func (f *FileStore) CharacterDir(name string) string  { return filepath.Join(f.root, "characters", name) }
-func (f *FileStore) WorldDir(name string) string       { return filepath.Join(f.root, "worlds", name) }
-func (f *FileStore) WorldState(name string) string     { return f.WorldDir(name) + string(filepath.Separator) + "state.md" }
-func (f *FileStore) WorldPlan(name string) string      { return f.WorldDir(name) + string(filepath.Separator) + "plan.md" }
-func (f *FileStore) WorldMemorise(name string) string  { return f.WorldDir(name) + string(filepath.Separator) + "memorise.md" }
-func (f *FileStore) WorldLore(name string) string      { return f.WorldDir(name) + string(filepath.Separator) + "lore.md" }
-func (f *FileStore) WorldCanon(name string) string     { return f.WorldDir(name) + string(filepath.Separator) + "canon.md" }
-func (f *FileStore) WorldNPCsDir(name string) string   { return f.WorldDir(name) + string(filepath.Separator) + "characters" }
+func (f *FileStore) InfoYAMLPath() string { return filepath.Join(f.root, InfoFile) }
+func (f *FileStore) CharacterDir(name string) string {
+	return filepath.Join(f.root, "characters", name)
+}
+func (f *FileStore) WorldDir(name string) string { return filepath.Join(f.root, "worlds", name) }
+func (f *FileStore) WorldState(name string) string {
+	return f.WorldDir(name) + string(filepath.Separator) + "state.md"
+}
+func (f *FileStore) WorldPlan(name string) string {
+	return f.WorldDir(name) + string(filepath.Separator) + "plan.md"
+}
+func (f *FileStore) WorldMemorise(name string) string {
+	return f.WorldDir(name) + string(filepath.Separator) + "memorise.md"
+}
+func (f *FileStore) WorldLore(name string) string {
+	return f.WorldDir(name) + string(filepath.Separator) + "lore.md"
+}
+func (f *FileStore) WorldCanon(name string) string {
+	return f.WorldDir(name) + string(filepath.Separator) + "canon.md"
+}
+func (f *FileStore) WorldNPCsDir(name string) string {
+	return f.WorldDir(name) + string(filepath.Separator) + "characters"
+}
 func (f *FileStore) WorldNPCRegistry(name string) string {
 	return f.WorldDir(name) + string(filepath.Separator) + "characters.md"
 }
 func (f *FileStore) WorldNPCFile(world, npc string) string {
 	return f.WorldNPCsDir(world) + string(filepath.Separator) + npc + ".md"
 }
-func (f *FileStore) CharacterSOUL(name string) string  { return f.CharacterDir(name) + string(filepath.Separator) + "SOUL.md" }
-func (f *FileStore) CharacterSKILL(name string) string { return f.CharacterDir(name) + string(filepath.Separator) + "SKILL.md" }
+
+// CharacterSOUL/SKILL/Memory/Inventory return the
+// canonical on-disk paths for the player-character
+// files. All four are now YAML (the markdown era
+// ended with the h5 charprofile refactor — see
+// planning/char_format.md). Legacy `.md` paths are
+// not exposed: the migration path lives in the
+// firstlaunch/character packages and renames them
+// to `.bak` after a successful conversion.
+func (f *FileStore) CharacterSOUL(name string) string {
+	return f.CharacterDir(name) + string(filepath.Separator) + "SOUL.yaml"
+}
+func (f *FileStore) CharacterSKILL(name string) string {
+	return f.CharacterDir(name) + string(filepath.Separator) + "skill.yaml"
+}
 func (f *FileStore) CharacterMemory(name string) string {
+	return f.CharacterDir(name) + string(filepath.Separator) + "memory.yaml"
+}
+func (f *FileStore) CharacterInventory(name string) string {
+	return f.CharacterDir(name) + string(filepath.Separator) + "inventory.yaml"
+}
+
+// LegacyCharacterSOUL/SKILL/Memory return the
+// pre-refactor .md paths. The migration code in
+// usecase.firstlaunch uses them on first launch to
+// detect and convert legacy files. After a
+// successful migration the new YAML is canonical
+// and the .md is renamed to .bak.
+func (f *FileStore) LegacyCharacterSOUL(name string) string {
+	return f.CharacterDir(name) + string(filepath.Separator) + "SOUL.md"
+}
+func (f *FileStore) LegacyCharacterSKILL(name string) string {
+	return f.CharacterDir(name) + string(filepath.Separator) + "SKILL.md"
+}
+func (f *FileStore) LegacyCharacterMemory(name string) string {
 	return f.CharacterDir(name) + string(filepath.Separator) + "memory.md"
 }
 

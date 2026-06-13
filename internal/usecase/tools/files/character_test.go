@@ -1,230 +1,269 @@
 package files
 
 import (
+	"errors"
 	"strings"
 	"testing"
+
+	"github.com/rs/zerolog"
+
+	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
+	"github.com/bestxp/narrative-ai-agent/internal/charprofile"
+	"github.com/bestxp/narrative-ai-agent/internal/slowlog"
+	"github.com/bestxp/narrative-ai-agent/internal/usecase/tools"
 )
 
-func TestUpsertSection_NewSection(t *testing.T) {
-	body := "# Title\n## Existing\nold text\n"
-	got := upsertSection(body, "New", "new text")
-	if c := strings.Count(got, "## New"); c != 1 {
-		t.Fatalf("expected 1 '## New' header, got %d\nfull:\n%s", c, got)
+// newTestCharacter builds a Character with an
+// ephemeral FileStore rooted in t.TempDir(). The
+// caller is responsible for any further dir/file
+// seeding.
+func newTestCharacter(t *testing.T) (*Character, *storage.FileStore) {
+	t.Helper()
+	fs, _ := storage.NewFileStore(t.TempDir())
+	c := newCharacter(fs, zerolog.Nop(), slowlog.Discard())
+	return c, fs
+}
+
+// --- Append routing ---
+
+func TestCharacter_Append_DispatchesByKind(t *testing.T) {
+	c, _ := newTestCharacter(t)
+	if err := c.fs.EnsureDir("characters/markus"); err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(got, "new text") {
-		t.Fatalf("missing new text: %s", got)
+	// Soul.
+	if err := c.Append("markus", "SOUL", "Предпочтения", "любит кошек"); err != nil {
+		t.Fatalf("Append SOUL: %v", err)
 	}
-	// Old section must remain intact.
-	if !strings.Contains(got, "old text") {
-		t.Fatalf("old text dropped: %s", got)
+	// Skill — section must be on the enum.
+	if err := c.Append("markus", "skill", "Оружие", "Кунай — 3 шт."); err != nil {
+		t.Fatalf("Append skill: %v", err)
+	}
+	// Memory — section must be on the enum.
+	if err := c.Append("markus", "memory", "Яркие моменты", "первый поцелуй с Ино"); err != nil {
+		t.Fatalf("Append memory: %v", err)
+	}
+	// Unknown file kind.
+	if err := c.Append("markus", "garbage", "x", "y"); !errors.Is(err, ErrUnknownCharacterFile) {
+		t.Fatalf("want ErrUnknownCharacterFile, got %v", err)
 	}
 }
 
-func TestUpsertSection_AppendsInPlace(t *testing.T) {
-	// "Действия дня 7" is a log section — APPEND
-	// keeps the journal history. We use it here
-	// (not "Оружие" which is a state section and
-	// would REPLACE) so the test exercises the
-	// append branch of upsertSection.
-	body := "# Title\n## Действия дня 7\nпобег из подземелья\n## Философия\nold\n"
-	got := upsertSection(body, "Действия дня 7", "разговор с Хокаге")
-	// Exactly one "## Действия дня 7" header.
-	if c := strings.Count(got, "## Действия дня 7"); c != 1 {
-		t.Fatalf("expected 1 '## Действия дня 7' header, got %d\nfull:\n%s", c, got)
+func TestCharacter_AppendSkill_RejectsUnknownSection(t *testing.T) {
+	c, _ := newTestCharacter(t)
+	if err := c.Append("markus", "skill", "Оружие", "v"); err != nil {
+		t.Fatal(err)
 	}
-	// Both old and new lines live between the header
-	// and the next section.
-	if !strings.Contains(got, "побег из подземелья") || !strings.Contains(got, "разговор с Хокаге") {
-		t.Fatalf("expected both old and new content: %s", got)
-	}
-	if !strings.Contains(got, "## Философия") {
-		t.Fatalf("next section dropped: %s", got)
+	// "Misc" is not on charprofile.SkillFixedSections.
+	if err := c.Append("markus", "skill", "Misc", "v"); !errors.Is(err, charprofile.ErrSectionNotFound) {
+		t.Fatalf("want ErrSectionNotFound, got %v", err)
 	}
 }
 
-func TestUpsertSection_Dedup(t *testing.T) {
-	body := "# T\n## X\nhello\n"
-	got := upsertSection(body, "X", "hello")
-	if got != body {
-		t.Fatalf("expected idempotent no-op, got:\n%s", got)
+func TestCharacter_AppendMemorySection_RejectsUnknownSection(t *testing.T) {
+	c, _ := newTestCharacter(t)
+	if err := c.Append("markus", "memory", "Яркие моменты", "v"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Append("markus", "memory", "Бред", "v"); !errors.Is(err, charprofile.ErrSectionNotFound) {
+		t.Fatalf("want ErrSectionNotFound, got %v", err)
 	}
 }
 
-func TestUpsertSection_PreExistingDuplicates(t *testing.T) {
-	// The legacy markus/SOUL.md shipped with two
-	// "## Истинная сущность" headers (an old manual
-	// edit). The old upsertSection turned one
-	// Append into FOUR headers. The fix must not
-	// regress: even with pre-existing duplicates,
-	// the new stitching adds exactly ONE new line
-	// to the FIRST occurrence and leaves the
-	// duplicates alone (we are not a markdown
-	// normaliser — that is the operator's job).
-	body := "# T\n## Истинная сущность\n(опишите позже)\n\n## Истинная сущность\n(опишите позже)\n## Философия\n"
-	got := upsertSection(body, "Истинная сущность", "одет в форму шиноби")
-	// Still two headers — the pre-existing duplicate
-	// is not removed.
-	if c := strings.Count(got, "## Истинная сущность"); c != 2 {
-		t.Fatalf("expected 2 '## Истинная сущность' headers (preserved), got %d\nfull:\n%s", c, got)
+func TestCharacter_Append_EmptyArgs(t *testing.T) {
+	c, _ := newTestCharacter(t)
+	if err := c.Append("markus", "SOUL", "", "v"); !errors.Is(err, ErrEmptySection) {
+		t.Fatalf("empty section, got %v", err)
 	}
-	// The new text lands between the first header
-	// and the second header.
-	if !strings.Contains(got, "одет в форму шиноби") {
-		t.Fatalf("new text missing: %s", got)
+	if err := c.Append("markus", "SOUL", "X", ""); !errors.Is(err, ErrEmptyAppend) {
+		t.Fatalf("empty append, got %v", err)
 	}
-	// The "## Философия" tail is preserved.
-	if !strings.Contains(got, "## Философия") {
-		t.Fatalf("tail section dropped: %s", got)
-	}
-	// Critical: the Append must NOT create a
-	// duplicate HEADER. The legacy file already
-	// had two `## Истинная сущность` lines, and
-	// those are preserved (operator's job to
-	// normalise). The Append only adds a line in
-	// the first section's body; it must not emit
-	// a third `## Истинная сущность` of its own.
-	if strings.Contains(got, "## Истинная сущность\n## Истинная сущность") {
-		t.Fatalf("Append created a duplicate header: %s", got)
+	if err := c.Append("", "SOUL", "X", "v"); !errors.Is(err, ErrNoActiveCharacter) {
+		t.Fatalf("empty dir, got %v", err)
 	}
 }
 
-func TestUpsertSection_EmptyBody(t *testing.T) {
-	got := upsertSection("", "X", "y")
-	if !strings.Contains(got, "## X") || !strings.Contains(got, "y") {
-		t.Fatalf("expected '## X\\ny' on empty body, got %q", got)
+// --- Inventory ---
+
+func TestCharacter_AppendInventoryItem_AddAndReplace(t *testing.T) {
+	c, _ := newTestCharacter(t)
+	if err := c.fs.EnsureDir("characters/markus"); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := c.AppendInventoryItem("markus", charprofile.Item{
+		Name: "Кунай", Description: "Стандартный клинок", Equip: false, Special: "нет",
+	})
+	if err != nil || !changed {
+		t.Fatalf("first append: changed=%v err=%v", changed, err)
+	}
+	// Re-append same name with different equip: REPLACE.
+	changed, err = c.AppendInventoryItem("markus", charprofile.Item{
+		Name: "Кунай", Description: "Стандартный клинок", Equip: true, Special: "нет",
+	})
+	if err != nil || !changed {
+		t.Fatalf("replace: changed=%v err=%v", changed, err)
+	}
+	// Identical payload: no-op.
+	changed, _ = c.AppendInventoryItem("markus", charprofile.Item{
+		Name: "Кунай", Description: "Стандартный клинок", Equip: true, Special: "нет",
+	})
+	if changed {
+		t.Fatal("identical payload should be no-op")
 	}
 }
 
-func TestUpsertSection_AppendAtEndOfFile(t *testing.T) {
-	body := "# T\n## First\ntext\n"
-	got := upsertSection(body, "Last", "tail text")
-	if !strings.HasSuffix(got, "## Last\ntail text\n") {
-		t.Fatalf("expected appended section at end, got %q", got)
+func TestCharacter_RemoveInventoryItem(t *testing.T) {
+	c, _ := newTestCharacter(t)
+	c.fs.EnsureDir("characters/markus")
+	c.AppendInventoryItem("markus", charprofile.Item{Name: "A"})
+	c.AppendInventoryItem("markus", charprofile.Item{Name: "B"})
+	if err := c.RemoveInventoryItem("markus", "A"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.RemoveInventoryItem("markus", "missing"); !errors.Is(err, charprofile.ErrItemNotFound) {
+		t.Fatalf("want ErrItemNotFound, got %v", err)
 	}
 }
 
-func TestSectionMode_ClassifiesStateSections(t *testing.T) {
-	// A representative sample of sections that
-	// describe the player's CURRENT state. Updates
-	// here must REPLACE, not append — otherwise
-	// the character ends up wearing two costumes
-	// at the same time after a wardrobe change.
-	// The list is the canonical stateSectionNames
-	// set — keep this in sync with that list.
-	states := []string{
-		"Истинная сущность",
-		"Внешний вид",
-		"Визуальный возраст",
-		"Философия и принципы",
-		"Оружие",
-		"Базовые способности",
-		"Универсальные навыки",
-		"Ограничения",
-		"Текущий статус",
-		"Эмоции",
+func TestCharacter_SetCurrency(t *testing.T) {
+	c, _ := newTestCharacter(t)
+	c.fs.EnsureDir("characters/markus")
+	if changed, _ := c.SetCurrency("markus", "Рё", 5000); !changed {
+		t.Fatal("first set: expected change")
 	}
-	for _, s := range states {
-		if got := classifySection(s); got != sectionModeState {
-			t.Errorf("section %q: expected ModeState, got %v", s, got)
+	if changed, _ := c.SetCurrency("markus", "Рё", 5000); changed {
+		t.Fatal("identical set: expected no-op")
+	}
+	if changed, _ := c.SetCurrency("markus", "Рё", 4200); !changed {
+		t.Fatal("update: expected change")
+	}
+}
+
+// --- Read / snapshot ---
+
+func TestCharacter_Read_LoadsAllFourFiles(t *testing.T) {
+	c, fs := newTestCharacter(t)
+	if err := fs.EnsureDir("characters/markus"); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.WriteRawAtomic("characters/markus/SOUL.yaml", "name: M\ndata: []\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.WriteRawAtomic("characters/markus/skill.yaml", "name: M\ndata: []\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.WriteRawAtomic("characters/markus/memory.yaml", "name: M\ndata: []\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.WriteRawAtomic("characters/markus/inventory.yaml", "name: M\nitems: []\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.WriteRawAtomic("worlds/naruto/state.md", "День 3\nNPC: Какаши\n"); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := c.Read("markus", "naruto")
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if snap.Character != "markus" || snap.World != "naruto" || snap.Day != 3 {
+		t.Errorf("snap = %+v", snap)
+	}
+	if !strings.Contains(snap.SOUL, "name: M") {
+		t.Errorf("SOUL not loaded: %q", snap.SOUL)
+	}
+	if !strings.Contains(snap.Inventory, "items: []") {
+		t.Errorf("Inventory not loaded: %q", snap.Inventory)
+	}
+}
+
+// --- Migration ---
+
+func TestCharacter_MigrateLegacy_NoLegacyFiles(t *testing.T) {
+	c, _ := newTestCharacter(t)
+	c.fs.EnsureDir("characters/markus")
+	conv, err := c.MigrateLegacy(nil, "markus", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(conv) != 0 {
+		t.Errorf("expected no conversions, got %v", conv)
+	}
+}
+
+func TestCharacter_MigrateLegacy_SoulOnly(t *testing.T) {
+	c, fs := newTestCharacter(t)
+	if err := fs.EnsureDir("characters/markus"); err != nil {
+		t.Fatal(err)
+	}
+	// Legacy .md.
+	if err := fs.WriteRawAtomic("characters/markus/SOUL.md",
+		"# Маркус\n\n## Истинная сущность\n- Ребёнок\n- Сирота\n\n## Предпочтения\n- Любит кошек\n"); err != nil {
+		t.Fatal(err)
+	}
+	conv, err := c.MigrateLegacy(nil, "markus", "naruto")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(conv) != 1 || conv[0] != "SOUL" {
+		t.Fatalf("conv = %v", conv)
+	}
+	// YAML written.
+	body, _ := fs.ReadRaw("characters/markus/SOUL.yaml")
+	if !strings.Contains(body, "Ребёнок") {
+		t.Errorf("YAML missing value: %q", body)
+	}
+	// Legacy renamed to .bak.
+	body, _ = fs.ReadRaw("characters/markus/SOUL.md.bak")
+	if !strings.Contains(body, "Истинная сущность") {
+		t.Errorf("bak missing: %q", body)
+	}
+}
+
+func TestCharacter_MigrateLegacy_AllThree(t *testing.T) {
+	c, fs := newTestCharacter(t)
+	if err := fs.EnsureDir("characters/markus"); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{"SOUL", "SKILL", "memory"} {
+		_ = fs.WriteRawAtomic("characters/markus/"+k+".md",
+			"# M\n\n## Истинная сущность\n- v\n")
+	}
+	conv, _ := c.MigrateLegacy(nil, "markus", "naruto")
+	if len(conv) != 3 {
+		t.Errorf("expected 3 conversions, got %v", conv)
+	}
+}
+
+func TestCharacter_MigrateLegacy_SkipsWhenYAMLPreexists(t *testing.T) {
+	c, fs := newTestCharacter(t)
+	if err := fs.EnsureDir("characters/markus"); err != nil {
+		t.Fatal(err)
+	}
+	_ = fs.WriteRawAtomic("characters/markus/SOUL.md", "old legacy\n")
+	_ = fs.WriteRawAtomic("characters/markus/SOUL.yaml", "name: M\ndata: []\n")
+	conv, _ := c.MigrateLegacy(nil, "markus", "")
+	if len(conv) != 0 {
+		t.Errorf("expected no-op when YAML preexists, got %v", conv)
+	}
+}
+
+// --- FormatSnapshot ---
+
+func TestFormatSnapshot_RendersAllSections(t *testing.T) {
+	snap := &tools.CharacterSnapshot{
+		Character: "M",
+		World:     "W",
+		SOUL:      "soul body",
+		SKILL:     "skill body",
+		Memory:    "memory body",
+		Inventory: "inv body",
+		State:     "state body",
+		Day:       5,
+	}
+	out := FormatSnapshot(snap, 40)
+	for _, want := range []string{"SOUL.yaml", "skill.yaml", "memory.yaml", "inventory.yaml", "state.md", "день 5"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
 		}
-	}
-}
-
-func TestSectionMode_ClassifiesLogSections(t *testing.T) {
-	logs := []string{
-		"Яркие воспоминания",
-		"Эволюция",
-		"Команда и компаньоны",
-		"Действия дня 7",
-		"Предпочтения",
-		"Команда",   // arbitrary unknown, defaults to log
-		"Алфавит",  // arbitrary unknown, defaults to log
-		// The dropped casual aliases used to be on
-		// the state list; they should now fall
-		// through to the log default. The model is
-		// expected to use the canonical header
-		// ("внешний вид", "философия и принципы",
-		// "оружие") instead — these are operator-
-		// facing names, not aliases we silently
-		// accept.
-		"Внешность",
-		"Философия",
-		"Меч",
-		"Особое свойство хранителя",
-	}
-	for _, s := range logs {
-		if got := classifySection(s); got != sectionModeLog {
-			t.Errorf("section %q: expected ModeLog, got %v", s, got)
-		}
-	}
-}
-
-func TestUpsertSection_StateSectionReplaces(t *testing.T) {
-	// The character has worn a tracksuit. They
-	// change into a shinobi uniform. The section
-	// "Истинная сущность" is classified as a
-	// state section — the Append that lands on
-	// it must REPLACE the old body, not stack
-	// the new text underneath.
-	body := "# T\n## Истинная сущность\nодет в чёрный спортивный костюм\n## Философия\nпросто\n"
-	got := upsertSection(body, "Истинная сущность", "одел форму шиноби")
-	// Old text must be gone.
-	if strings.Contains(got, "спортивный костюм") {
-		t.Fatalf("old costume still present: %s", got)
-	}
-	// New text must be present.
-	if !strings.Contains(got, "одел форму шиноби") {
-		t.Fatalf("new costume missing: %s", got)
-	}
-	// Header count for Истинная сущность: exactly 1.
-	if c := strings.Count(got, "## Истинная сущность"); c != 1 {
-		t.Fatalf("expected 1 header, got %d\n%s", c, got)
-	}
-	// Tail section preserved.
-	if !strings.Contains(got, "## Философия") {
-		t.Fatalf("tail section dropped: %s", got)
-	}
-}
-
-func TestUpsertSection_LogSectionAppends(t *testing.T) {
-	body := "# T\n## Яркие воспоминания\nвидение с Кагуей\n## Философия\nпросто\n"
-	got := upsertSection(body, "Яркие воспоминания", "контакт с Кагуей во сне")
-	// Both old and new memory lines must be present.
-	if !strings.Contains(got, "видение с Кагуей") {
-		t.Fatalf("old memory dropped: %s", got)
-	}
-	if !strings.Contains(got, "контакт с Кагуей") {
-		t.Fatalf("new memory missing: %s", got)
-	}
-	// Exactly one header.
-	if c := strings.Count(got, "## Яркие воспоминания"); c != 1 {
-		t.Fatalf("expected 1 header, got %d\n%s", c, got)
-	}
-}
-
-func TestUpsertSection_StateReplacesEvenWithDuplicates(t *testing.T) {
-	// The legacy markus/SOUL.md shipped with two
-	// `## Истинная сущность` headers. The state
-	// REPLACE path picks the FIRST occurrence and
-	// replaces its body with the new text. The
-	// second duplicate header stays put — the
-	// operator is responsible for normalising
-	// legacy files. The bot is not a markdown
-	// cleaner; it is a section-update tool.
-	body := "# T\n## Истинная сущность\nстарый костюм\n\n## Истинная сущность\n(опишите позже)\n## Философия\nпросто\n"
-	got := upsertSection(body, "Истинная сущность", "новая одежда")
-	// Old "старый костюм" must be gone.
-	if strings.Contains(got, "старый костюм") {
-		t.Fatalf("old state still present: %s", got)
-	}
-	// New text must be present.
-	if !strings.Contains(got, "новая одежда") {
-		t.Fatalf("new state missing: %s", got)
-	}
-	// The replacement lands in the first section
-	// position; the (опишите позже) duplicate is
-	// still there for the operator to clean up.
-	if !strings.Contains(got, "(опишите позже)") {
-		t.Fatalf("legacy duplicate should be preserved (operator's job to normalise), got: %s", got)
 	}
 }

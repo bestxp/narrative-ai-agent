@@ -9,6 +9,7 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
+	"github.com/bestxp/narrative-ai-agent/internal/charprofile"
 	"github.com/bestxp/narrative-ai-agent/internal/domain"
 )
 
@@ -72,24 +73,106 @@ func (f *FirstLaunch) Launch(char CharacterSpec, world WorldSpec) error {
 	return nil
 }
 
+// writeCharacter seeds the four YAML files for a
+// new character:
+//
+//	SOUL.yaml      — who the GG is
+//	skill.yaml     — what the GG can do (fixed enum)
+//	memory.yaml    — what the GG remembers (fixed enum)
+//	inventory.yaml — what the GG has on them
+//
+// Legacy .md files are detected on first launch and
+// migrated through the LLM-driven path (with
+// charprofile.MigrateFromMarkdown as fallback).
+// Today the firstlaunch seed is plain YAML; the
+// migration is wired in tools/files/character.go.
 func (f *FirstLaunch) writeCharacter(dir string, c CharacterSpec) error {
 	root := "characters/" + dir
 	if err := f.fs.EnsureDir(root); err != nil {
 		return err
 	}
-	soul := "# " + strings.TrimSpace(c.DisplayName) + " — Ядро персонажа\n" +
-		"## Истинная сущность\n" + strings.TrimSpace(c.TrueNature) + "\n\n" +
-		"## Философия и принципы\n" + strings.TrimSpace(c.Philosophy) + "\n"
-	if err := f.fs.WriteRawAtomic(root+"/SOUL.md", soul); err != nil {
+	if err := f.fs.WriteRawAtomic(root+"/SOUL.yaml", buildSeedSoul(c)); err != nil {
 		return err
 	}
-	skill := "# Способности " + strings.TrimSpace(c.DisplayName) + "\n" +
-		"## Оружие\n\n## Базовые способности\n\n## Фундаментальные стихии\n\n## Особые проявления\n\n## Универсальные навыки\n\n## Ограничения\n"
-	if err := f.fs.WriteRawAtomic(root+"/SKILL.md", skill); err != nil {
+	if err := f.fs.WriteRawAtomic(root+"/skill.yaml", buildSeedSkill(c)); err != nil {
 		return err
 	}
-	mem := "# Яркие воспоминания " + strings.TrimSpace(c.DisplayName) + "\n> Субъективные моменты. От первого лица.\n"
-	return f.fs.WriteRawAtomic(root+"/memory.md", mem)
+	if err := f.fs.WriteRawAtomic(root+"/memory.yaml", buildSeedMemory(c)); err != nil {
+		return err
+	}
+	return f.fs.WriteRawAtomic(root+"/inventory.yaml", buildSeedInventory(c))
+}
+
+// buildSeedSoul renders the canonical SOUL.yaml
+// seed. The "soul" line is a one-sentence summary;
+// the body is a single "Истинная сущность" value
+// derived from the operator's TrueNature. Other
+// sections (Предпочтения / Философия и принципы /
+// Прочее) start empty and the LLM fills them as
+// the character develops.
+func buildSeedSoul(c CharacterSpec) string {
+	s := charprofile.Soul{
+		Soul: strings.TrimSpace(c.TrueNature),
+	}
+	s.Name = strings.TrimSpace(c.DisplayName)
+	if s.Soul == "" {
+		s.Soul = "—"
+	}
+	if strings.TrimSpace(c.Philosophy) != "" {
+		s.Data = []charprofile.Section{
+			{Name: "Истинная сущность", Values: []string{strings.TrimSpace(c.TrueNature)}},
+			{Name: "Философия и принципы", Values: []string{strings.TrimSpace(c.Philosophy)}},
+		}
+	} else if strings.TrimSpace(c.TrueNature) != "" {
+		s.Data = []charprofile.Section{
+			{Name: "Истинная сущность", Values: []string{strings.TrimSpace(c.TrueNature)}},
+		}
+	}
+	out, _ := s.Save()
+	return out
+}
+
+// buildSeedSkill renders the canonical skill.yaml
+// seed: every fixed-enum section present and empty,
+// so the LLM has the full template to append into.
+// No values are pre-filled — the operator's spec
+// does not include "weapons at launch" today, and
+// seeding sample values would just be noise the
+// LLM would later have to delete.
+func buildSeedSkill(c CharacterSpec) string {
+	s := charprofile.Skill{}
+	s.Name = strings.TrimSpace(c.DisplayName)
+	for _, name := range charprofile.SkillFixedSections {
+		s.Data = append(s.Data, charprofile.Section{Name: name})
+	}
+	out, _ := s.Save()
+	return out
+}
+
+// buildSeedMemory renders the canonical memory.yaml
+// seed: every fixed-enum section present and
+// empty. The header comment in the markdown era
+// ("Субъективные моменты. От первого лица.")
+// does not survive in YAML — the file's name and
+// section headers are self-describing.
+func buildSeedMemory(c CharacterSpec) string {
+	m := charprofile.Memory{}
+	m.Name = strings.TrimSpace(c.DisplayName)
+	for _, name := range charprofile.MemoryFixedSections {
+		m.Data = append(m.Data, charprofile.Section{Name: name})
+	}
+	out, _ := m.Save()
+	return out
+}
+
+// buildSeedInventory renders the canonical
+// inventory.yaml seed: an empty file with name +
+// empty currency and items arrays. The model will
+// start adding items on the first scene.
+func buildSeedInventory(c CharacterSpec) string {
+	inv := charprofile.Inventory{Name: strings.TrimSpace(c.DisplayName)}
+	out, _ := inv.Save()
+	return out
 }
 
 func (f *FirstLaunch) writeWorld(dir string, w WorldSpec) error {
