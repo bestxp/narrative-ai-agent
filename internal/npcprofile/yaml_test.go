@@ -119,28 +119,28 @@ func TestBuildMarkdown_EmptySectionsOmitted(t *testing.T) {
 
 func TestMatchSection(t *testing.T) {
 	cases := map[string]SectionKind{
-		"темперамент":         SectionTemperament,
-		"Темперамент":         SectionTemperament,
-		"temperament":         SectionTemperament,
-		"RelationsGG":         SectionRelationsGG,
-		"отношения с гг":      SectionRelationsGG,
-		"Relations_npcs":      SectionRelationsNPCs,
-		"npc_relations":       SectionRelationsNPCs,
-		"abilities":           SectionAbilities,
-		"Способности":         SectionAbilities,
-		"personal_memory":     SectionPersonalMemory,
-		"Личная память":       SectionPersonalMemory,
-		"личная память/факты": SectionPersonalMemory,
-		"status":              SectionCurrentStatus,
-		"текущий статус":      SectionCurrentStatus,
-		"critical_knowledge":  SectionCriticalKnowledge,
-		"критические знания":  SectionCriticalKnowledge,
-		"nicknames":           SectionNicknames,
-		"Никнеймы":            SectionNicknames,
-		"last_update":         SectionLastUpdate,
+		"темперамент":          SectionTemperament,
+		"Темперамент":          SectionTemperament,
+		"temperament":          SectionTemperament,
+		"RelationsGG":          SectionRelationsGG,
+		"отношения с гг":       SectionRelationsGG,
+		"Relations_npcs":       SectionRelationsNPCs,
+		"npc_relations":        SectionRelationsNPCs,
+		"abilities":            SectionAbilities,
+		"Способности":          SectionAbilities,
+		"personal_memory":      SectionPersonalMemory,
+		"Личная память":        SectionPersonalMemory,
+		"личная память/факты":  SectionPersonalMemory,
+		"status":               SectionCurrentStatus,
+		"текущий статус":       SectionCurrentStatus,
+		"critical_knowledge":   SectionCriticalKnowledge,
+		"критические знания":   SectionCriticalKnowledge,
+		"nicknames":            SectionNicknames,
+		"Никнеймы":             SectionNicknames,
+		"last_update":          SectionLastUpdate,
 		"последнее обновление": SectionLastUpdate,
-		"unknown_section":     SectionUnknown,
-		"":                    SectionUnknown,
+		"unknown_section":      SectionUnknown,
+		"":                     SectionUnknown,
 	}
 	for in, want := range cases {
 		assert.Equal(t, want, MatchSection(in), "input=%q", in)
@@ -354,4 +354,120 @@ func TestNPCPersonalMemoryLimit(t *testing.T) {
 	// it we need to update both call sites in
 	// sync, so we assert the value here.
 	assert.Equal(t, 40, NPCPersonalMemoryLimit)
+}
+
+// TestProfile_BuildCompact: the compact LOD drops the
+// big arrays (abilities / personal_memory /
+// critical_knowledge / relations_npcs) and keeps the
+// "what is this NPC" essentials. Operators rely on
+// this to keep the world block under the cache budget
+// when the cast grows past 4-5 NPCs.
+func TestProfile_BuildCompact(t *testing.T) {
+	p, err := Load(`display_name: "Какаши"
+file_slug: "kakashi"
+temperament: "хладнокровный, методичный"
+relations_gg: "наставник ГГ, уважает"
+current_status: "на тренировочной площадке"
+abilities:
+  - Катон
+  - Шаринган
+personal_memory:
+  - 1
+  - 2
+  - 3
+critical_knowledge:
+  - знает о тайне ГГ
+relations_npcs:
+  - target: Наруто
+    note: ученик
+last_update: "тренировал ГГ"
+`)
+	require.NoError(t, err)
+
+	compact := p.BuildCompact()
+	assert.Contains(t, compact, "## Какаши")
+	assert.Contains(t, compact, "Темперамент: хладнокровный, методичный")
+	assert.Contains(t, compact, "К ГГ: наставник ГГ, уважает")
+	assert.Contains(t, compact, "Текущий статус: на тренировочной площадке")
+	assert.Contains(t, compact, "Свежее: тренировал ГГ")
+	// Big arrays are dropped.
+	assert.NotContains(t, compact, "abilities", "compact LOD drops abilities")
+	assert.NotContains(t, compact, "personal_memory", "compact LOD drops personal_memory")
+	assert.NotContains(t, compact, "critical_knowledge", "compact LOD drops critical_knowledge")
+	// relations_npcs note is dropped; only the target
+	// name is listed ("Связи: Наруто"). The full
+	// "note: ученик" is in the YAML and accessible
+	// through search_npc.
+	assert.NotContains(t, compact, "ученик",
+		"compact LOD drops relations_npcs note, keeps only the target name")
+}
+
+// TestProfile_BuildOneLine: the one-line LOD is a
+// single short paragraph — used for background NPCs
+// in 10+ scenes where even the compact form is too
+// expensive.
+func TestProfile_BuildOneLine(t *testing.T) {
+	p, err := Load(`display_name: "Хината"
+file_slug: "hinata"
+temperament: "застенчивая, добрая"
+current_status: "тренируется у Какаши"
+personal_memory:
+  - a
+  - b
+`)
+	require.NoError(t, err)
+
+	one := p.BuildOneLine()
+	assert.Contains(t, one, "Хината")
+	assert.Contains(t, one, "застенчивая, добрая")
+	assert.Contains(t, one, "Сейчас: тренируется у Какаши")
+	// Compact details are dropped.
+	assert.NotContains(t, one, "personal_memory")
+	// No markdown ## headers (the whole point is
+	// minimum render cost).
+	assert.NotContains(t, one, "##")
+}
+
+// TestProfile_BuildCompact_EmptyFieldsDropped: missing
+// fields are silently dropped (no "Темперамент:" line
+// when temperament is empty). The model never sees
+// empty placeholders.
+func TestProfile_BuildCompact_EmptyFieldsDropped(t *testing.T) {
+	p, err := Load(`display_name: "Безликий"
+file_slug: "x"
+`)
+	require.NoError(t, err)
+
+	compact := p.BuildCompact()
+	assert.Contains(t, compact, "## Безликий")
+	assert.NotContains(t, compact, "Темперамент:")
+	assert.NotContains(t, compact, "К ГГ:")
+	assert.NotContains(t, compact, "Текущий статус:")
+}
+
+// TestProfile_BuildOneLine_TruncatesLongFields: a 200-rune
+// status is cut at 120 runes with an ellipsis so
+// the one-line LOD stays bounded regardless of how
+// much prose the operator or model crammed into
+// the field.
+func TestProfile_BuildOneLine_TruncatesLongFields(t *testing.T) {
+	long := strings.Repeat("X", 200)
+	p, err := Load("display_name: \"Long\"\nfile_slug: \"x\"\ntemperament: \"" + long + "\"\ncurrent_status: \"" + long + "\"\n")
+	require.NoError(t, err)
+
+	one := p.BuildOneLine()
+	// Each field is at most 120 runes + ellipsis suffix.
+	// We assert "less than 200 runes per field" — the
+	// truncation must be in effect.
+	temperamentSection := strings.Split(one, "Сейчас:")[0]
+	assert.Less(t, utf8RuneCount(temperamentSection), 200,
+		"temperament section must be truncated")
+	assert.Contains(t, one, "…", "ellipsis suffix present when truncated")
+}
+
+// utf8RuneCount is a stdlib-free rune counter — the
+// test asserts on logical characters, not bytes,
+// because truncateRune cuts at rune boundaries.
+func utf8RuneCount(s string) int {
+	return len([]rune(s))
 }

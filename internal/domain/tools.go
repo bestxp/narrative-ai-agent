@@ -186,10 +186,12 @@ func Tools() []Tool {
 func ProdTools() []Tool {
 	return []Tool{
 		endDayTool(),
+		endSceneTool(),
 		updateStateTool(),
 		createNpcTool(),
 		updateNpcTool(),
 		updateCharacterTool(),
+		searchNpcTool(),
 		maintainNpcsTool(),
 		maintainLoreTool(),
 		rotatePlanTool(),
@@ -205,6 +207,19 @@ func endDayTool() Tool {
 			Parameters: Object(
 				Required("day", Integer("Номер завершённого дня")),
 				Required("summary", String("1-2 предложения сухой выжимки, без диалогов и эмоций")),
+			),
+		},
+	}
+}
+
+func endSceneTool() Tool {
+	return Tool{
+		Type: "function",
+		Function: ToolFunctionSchema{
+			Name:        "end_scene",
+			Description: "Зафиксировать конец текущей сцены: сжать диалог в state.md («## Хроника сцены Д<N>»), очистить список активных NPC (оставить только тех, кто в permanent party), сбросить историю диалога. Используй когда сцена исчерпана (игрок уходит из локации / переключается на новый сюжет), но день ещё не закончен. Не вызывай в конце дня — для этого есть end_day.",
+			Parameters: Object(
+				Optional("permanent_party", String("Список имён NPC, которые остаются в активном ростере (через запятую). Если пусто — берётся из «## permanent party» в characters/<active>/SKILL.md. Если нигде не указано — ростер не меняется.")),
 			),
 		},
 	}
@@ -347,6 +362,19 @@ func updateNpcTool() Tool {
 				Required("npc", String("Display name NPC (как в world). Например: 'Хокаге', 'Ирука-сенсей', 'Наруто'.")),
 				Required("section", StringEnum("В какую секцию профиля писать (одна из канонических)", canonical...)),
 				Required("append", String("Короткий факт для дописи. 1 предложение, БЕЗ markdown, БЕЗ маркеров.")),
+			),
+		},
+	}
+}
+
+func searchNpcTool() Tool {
+	return Tool{
+		Type: "function",
+		Function: ToolFunctionSchema{
+			Name:        "search_npc",
+			Description: "Найти NPC по имени / слагу / прозвищу. Используй ТОЛЬКО когда игрок упоминает персонажа, которого НЕТ в активной сцене (его нет в «## Активные NPC» в текущем system message). Возвращает compact-описание (1-2 строки), не полный YAML. Не злоупотребляй — для активных NPC данные уже в контексте.",
+			Parameters: Object(
+				Required("query", String("Имя, слаg или прозвище NPC. Поиск: точное совпадение по display_name, slug или nickname; substring-фоллбэк если кандидат один.")),
 			),
 		},
 	}

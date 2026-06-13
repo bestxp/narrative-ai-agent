@@ -331,6 +331,89 @@ func (s *State) AppendHistoryToState(world, summary string, at time.Time) error 
 	return s.fs.WriteRawAtomic(rel, next)
 }
 
+// EndSceneResult describes the state after end_scene
+// has been applied: how many NPCs were pruned from the
+// active roster and what permanent_party stays. The
+// dispatcher surfaces a one-line summary to the player.
+type EndSceneResult struct {
+	KeptNPCs      []string
+	PrunedNPCsLen int
+}
+
+// EndScene closes the current scene. It is the manual
+// "scene change" handle the player can pull when they
+// leave a location / switch sub-plot, but the day is
+// not over. EndScene:
+//
+//   - rewrites state.md with the active roster pruned
+//     to the permanent_party subset (the people who
+//     travel with the player across scenes). A
+//     missing permanent_party line is treated as
+//     "keep the existing roster as-is" — operators
+//     who want a forced prune must add the line by
+//     hand.
+//   - does NOT touch memorise.md, does NOT call
+//     ArchiveDay. The day's conversations stay in
+//     memory until end_day (or /reload).
+//   - does NOT compress the current scene's dialogue
+//     to state.md — that path is owned by the
+//     in-place compaction (and end_day for the
+//     "before / after" protocol). The end_scene
+//     tool's job is to reset the active roster, not
+//     to summarise.
+//
+// The caller (gm.dispatchOneTool) is responsible for
+// also dropping the per-chat conversation history so
+// the player re-starts with a clean dialogue, and for
+// invalidating the world snapshot so the next turn
+// rebuilds user[0] with the pruned roster.
+func (s *State) EndScene(world string, permanentParty []string) (*EndSceneResult, error) {
+	if world == "" {
+		return nil, errors.New("end_scene: world is empty")
+	}
+	rel := "worlds/" + world + "/state.md"
+	cur, _ := s.fs.ReadRaw(rel)
+	if cur == "" {
+		// No state file yet — nothing to prune. The
+		// tool still returns a result so the caller can
+		// proceed with conversation reset + snapshot
+		// invalidation.
+		return &EndSceneResult{}, nil
+	}
+	parsed := ParseStateMD(cur)
+	// If permanentParty is nil (the tool was called
+	// without a config) we keep the existing roster
+	// unchanged. This is the safe default — it lets
+	// the operator/player move to a new location
+	// without losing background NPC context.
+	if permanentParty == nil {
+		return &EndSceneResult{KeptNPCs: parsed.NPCs, PrunedNPCsLen: 0}, nil
+	}
+	// Build the keep-set. Members of the permanent
+	// party stay in the active roster; everything else
+	// is dropped.
+	keep := make(map[string]struct{}, len(permanentParty))
+	for _, n := range permanentParty {
+		keep[strings.ToLower(strings.TrimSpace(n))] = struct{}{}
+	}
+	var newRoster []string
+	for _, n := range parsed.NPCs {
+		if _, ok := keep[strings.ToLower(strings.TrimSpace(n))]; ok {
+			newRoster = append(newRoster, n)
+		}
+	}
+	pruned := len(parsed.NPCs) - len(newRoster)
+	parsed.NPCs = newRoster
+	// Re-render. The existing moment/location/chronicle
+	// are preserved — end_scene is a roster edit, not
+	// a state reset.
+	body := domain.BuildStateMarkdown(parsed)
+	if err := s.fs.WriteRawAtomic(rel, body); err != nil {
+		return nil, err
+	}
+	return &EndSceneResult{KeptNPCs: newRoster, PrunedNPCsLen: pruned}, nil
+}
+
 // normaliseEventKey collapses an event string to a
 // dedupe-friendly key by lowercasing and trimming
 // surrounding whitespace. We do not strip inner

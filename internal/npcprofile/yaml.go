@@ -280,6 +280,96 @@ func (p Profile) BuildMarkdown() string {
 	return b.String()
 }
 
+// BuildCompact renders a medium-detail view of the
+// profile: header (display name), temperament, relations
+// to ГГ, current status, and the most recent
+// last_update. The big arrays (abilities, personal
+// memory, critical knowledge, relations to other
+// NPCs) are dropped — they are summarised, not lost,
+// and the model can call search_npc / load the full
+// YAML through the same read paths if a detail is
+// needed.
+//
+// Used as the second LOD tier (LOD 1). The full
+// BuildMarkdown is LOD 0 (Full).
+//
+// Empty fields are dropped. The output is plain
+// markdown (## for the header, prose for the body),
+// consistent with the LOD 0 renderer's block
+// layout.
+func (p Profile) BuildCompact() string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "## %s\n", strings.TrimSpace(p.DisplayName))
+	if s := strings.TrimSpace(p.Temperament); s != "" {
+		fmt.Fprintf(&b, "Темперамент: %s\n", s)
+	}
+	if s := strings.TrimSpace(p.RelationsGG); s != "" {
+		fmt.Fprintf(&b, "К ГГ: %s\n", s)
+	}
+	if s := strings.TrimSpace(p.CurrentStatus); s != "" {
+		fmt.Fprintf(&b, "Текущий статус: %s\n", s)
+	}
+	if len(p.RelationsNPCs) > 0 {
+		// Compact: just the target, no per-target note.
+		// The full relations list is in the YAML.
+		var rels []string
+		for _, r := range p.RelationsNPCs {
+			if t := strings.TrimSpace(r.Target); t != "" {
+				rels = append(rels, t)
+			}
+		}
+		if len(rels) > 0 {
+			fmt.Fprintf(&b, "Связи: %s\n", strings.Join(rels, ", "))
+		}
+	}
+	if s := strings.TrimSpace(p.LastUpdate); s != "" {
+		fmt.Fprintf(&b, "Свежее: %s\n", s)
+	}
+	return strings.TrimSpace(b.String())
+}
+
+// BuildOneLine renders the most-compressed view:
+// display name + a 1-sentence temperament + a
+// 1-sentence current status. Everything else is
+// dropped. Used as LOD 2 — the third tier, applied
+// to background NPCs in scenes with 10+ active
+// characters where the full compact view of every
+// NPC would still exceed the cache budget.
+//
+// Empty fields are dropped silently. The output is
+// a single line with newlines between the three
+// short fields so the markdown render is still
+// scannable when the LLM reads user[0] back.
+func (p Profile) BuildOneLine() string {
+	var b strings.Builder
+	name := strings.TrimSpace(p.DisplayName)
+	if name != "" {
+		b.WriteString(name)
+	}
+	if s := strings.TrimSpace(p.Temperament); s != "" {
+		fmt.Fprintf(&b, "\n%s.", truncateRune(s, 120))
+	}
+	if s := strings.TrimSpace(p.CurrentStatus); s != "" {
+		fmt.Fprintf(&b, "\nСейчас: %s", truncateRune(s, 120))
+	}
+	return strings.TrimSpace(b.String())
+}
+
+// truncateRune cuts s at max runes (not bytes) and
+// appends an ellipsis if the cut happened. The LLM
+// reads these strings as UTF-8; slicing by byte
+// would risk splitting a multi-byte codepoint.
+func truncateRune(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	return string(runes[:max]) + "…"
+}
+
 // SectionKind enumerates the section names the
 // model can address via update_npc. The constants
 // are used by UpdateSection and the parser in

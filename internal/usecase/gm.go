@@ -16,6 +16,7 @@ import (
 	"github.com/bestxp/narrative-ai-agent/internal/domain"
 	"github.com/bestxp/narrative-ai-agent/internal/slowlog"
 	"github.com/bestxp/narrative-ai-agent/internal/structured"
+	"github.com/bestxp/narrative-ai-agent/internal/usecase/tools"
 	"github.com/bestxp/narrative-ai-agent/internal/usecase/tools/files"
 )
 
@@ -133,6 +134,16 @@ type GM struct {
 	// toolSpecs cached on construction; immutable.
 	toolSpecs []llm.ToolSchema
 
+	// search_npc rate-limit. The same query string is
+	// only allowed once per rateWindow turns. A
+	// different query is always allowed — the limit
+	// guards against "re-asking the same NPC over and
+	// over", not against broad exploration. Counter
+	// is the turn when the query was last asked.
+	rateWindow    int            // default 5
+	npcSearchRate map[string]int // query → last turn
+	turnCounter   int            // increments per Reply
+
 	// System prompt and world-state user message are snapshotted
 	// separately. The system prompt is rules + character (static
 	// for the entire conversation); the world-state user message
@@ -223,6 +234,8 @@ func NewGM(cfg GMConfig, fs *storage.FileStore, llmCli LLMClient, ss *SessionSta
 		// the constants live in gm.go).
 		protocolWindowDays: DefaultProtocolWindowDays,
 		protocolMaxChars:   DefaultProtocolMaxChars,
+		npcSearchRate:      make(map[string]int),
+		rateWindow:         5,
 	}
 }
 
@@ -278,6 +291,11 @@ func (g *GM) Reply(ctx context.Context, chatID, userText string, cb Callbacks) (
 	if g.tracking == "" || g.tracking == "off" {
 		totals.Source = "off"
 	}
+
+	// Bump the per-Reply turn counter (used by
+	// search_npc rate-limit). The counter starts at
+	// 0, so the first Reply sees turnCounter=1.
+	g.turnCounter++
 
 	conv := g.getConversation(chatID)
 	conv.mu.Lock()
@@ -930,6 +948,56 @@ func extractProperNamesFromDialogue(answer string) []string {
 		}
 	}
 	return out
+}
+
+// extractPermanentParty scans a character's SKILL.md
+// for a "## permanent party" section and returns the
+// comma-separated names listed under it. The list is
+// the cast that travels with the player across scene
+// changes; end_scene uses it to prune the active
+// roster. A missing or empty section returns nil (no
+// prune — the safe default).
+//
+// Format:
+//
+//	## permanent party
+//	Какаши, Хината, Ирука
+//
+// Whitespace around names and trailing commas are
+// tolerated. Names are returned trimmed but otherwise
+// unchanged — the dispatcher passes them straight to
+// state.md's active-roster compare.
+func extractPermanentParty(skillBody string) []string {
+	const marker = "## permanent party"
+	idx := strings.Index(skillBody, marker)
+	if idx < 0 {
+		return nil
+	}
+	rest := skillBody[idx+len(marker):]
+	// Up to the next "## " sibling header or end of body.
+	end := strings.Index(rest, "\n## ")
+	if end < 0 {
+		end = len(rest)
+	}
+	body := rest[:end]
+	// Only the first non-empty line carries the list
+	// (subsequent lines are prose, ignored).
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var out []string
+		for _, n := range strings.Split(line, ",") {
+			if t := strings.TrimSpace(n); t != "" {
+				out = append(out, t)
+			}
+		}
+		if len(out) > 0 {
+			return out
+		}
+	}
+	return nil
 }
 
 // extractedCommand is one actionable directive recovered
@@ -2175,12 +2243,40 @@ func safeRead(fs *storage.FileStore, rel string) string {
 	return s
 }
 
-// loadActiveNPCs reads the world state, extracts the comma-separated
-// list from the "Активные NPC прямо сейчас" line, and loads each
-// NPC's profile file. Info-isolation is enforced upstream by the
-// state.md editor: NPCs that should not appear simply aren't
-// mentioned.
+// loadActiveNPCs reads the world state, parses the
+// active NPC roster, and loads each profile at an LOD
+// that depends on the cast size.
+//
+// Roster resolution: the canonical modern format
+// (BuildStateMarkdown) emits "NPC: <comma list>" on a
+// single line. The legacy format emitted
+// "Активные NPC прямо сейчас: <list>". We accept
+// either, preferring the modern parser (state.go's
+// ParseStateMD handles both) so a hand-edited state.md
+// or a pre-migration world keeps working.
+//
+// LOD policy (the cache budget is the constraint):
+//
+//	≤ 4 NPCs   → all Full (BuildMarkdown)
+//	5 – 9      → first 4 Full, rest Compact
+//	≥ 10      → first 3 Full, next 5 Compact, rest OneLine
+//
+// The tiers are chosen so the worst-case world block
+// stays under roughly 7k tokens even with 20 active
+// NPCs (3 Full ~ 4.5k + 5 Compact ~ 1.5k + 12 OneLine
+// ~ 1k). The model always sees the names; only the
+// depth of detail per NPC varies. The operator can
+// still call search_npc for a deeper view of any
+// background NPC.
 func (g *GM) loadActiveNPCs(world, state string) []domain.NPCSnapshot {
+	// First try the modern parser (state.md produced by
+	// BuildStateMarkdown). It reads "NPC: ..." and
+	// returns the roster on parsed.NPCs.
+	if parsed := files.ParseStateMD(state); len(parsed.NPCs) > 0 {
+		return g.loadRosterAtLOD(world, parsed.NPCs)
+	}
+	// Fallback: legacy "Активные NPC прямо сейчас:"
+	// line, used by hand-edited or pre-migration files.
 	marker := "Активные NPC прямо сейчас:"
 	idx := strings.Index(state, marker)
 	if idx < 0 {
@@ -2192,20 +2288,60 @@ func (g *GM) loadActiveNPCs(world, state string) []domain.NPCSnapshot {
 		end = len(rest)
 	}
 	names := strings.Split(rest[:end], ",")
+	return g.loadRosterAtLOD(world, names)
+}
+
+// loadRosterAtLOD walks a roster (already split into
+// names) and renders each NPC at the policy-determined
+// LOD. Pure helper — split out so the modern and
+// legacy roster parsers share the same downstream
+// pagination.
+func (g *GM) loadRosterAtLOD(world string, names []string) []domain.NPCSnapshot {
 	var out []domain.NPCSnapshot
-	for _, raw := range names {
+	for i, raw := range names {
 		name := strings.TrimSpace(raw)
 		if name == "" {
 			continue
 		}
-		body, err := g.tools.Load(world, name)
+		lod := lodForIndex(i)
+		body, err := g.tools.LoadLOD(world, name, lod)
 		if err != nil {
-			g.log.Warn().Err(err).Str("npc", name).Msg("skip npc load")
+			g.log.Warn().Err(err).Str("npc", name).Str("lod", lodName(lod)).Msg("skip npc load")
 			continue
 		}
 		out = append(out, domain.NPCSnapshot{DisplayName: name, Profile: body})
 	}
 	return out
+}
+
+// lodForIndex maps a position in the active roster to
+// an LOD tier. The 0-indexed cutoffs (3/8) match the
+// 3/5/4 tier sizes — see loadActiveNPCs's comment.
+func lodForIndex(i int) tools.NPCLOD {
+	switch {
+	case i < 3:
+		return tools.LODFull
+	case i < 8:
+		return tools.LODCompact
+	default:
+		return tools.LODOneLine
+	}
+}
+
+// lodName is the wire-friendly string for a level —
+// used in slowlog and log lines, never on the model
+// wire (the model gets the body, not the LOD tag).
+func lodName(lod tools.NPCLOD) string {
+	switch lod {
+	case tools.LODFull:
+		return "full"
+	case tools.LODCompact:
+		return "compact"
+	case tools.LODOneLine:
+		return "one_line"
+	default:
+		return "unknown"
+	}
 }
 
 // executeTools dispatches every requested tool call and returns the
@@ -2284,6 +2420,74 @@ func (g *GM) dispatchOneTool(ctx context.Context, tc llm.ToolCall) (string, stri
 			return "", err.Error()
 		}
 		return okJSON("archived"), ""
+	case "end_scene":
+		// end_scene closes the current scene without
+		// closing the day. The player has moved to a
+		// new location / sub-plot. We:
+		//   1. prune the active roster to the
+		//      permanent_party subset (which the player
+		//      may pass as a list of names — for now we
+		//      accept it as a comma-separated string in
+		//      `permanent_party` or read it from
+		//      characters/<active>/SKILL.md as a
+		//      `## permanent_party` section);
+		//   2. reset the per-chat conversation so the
+		//      next turn starts with a clean dialogue;
+		//   3. drop the world snapshot so the next turn
+		//      rebuilds user[0] with the pruned roster.
+		// Step (1) is the only file change; (2) and (3)
+		// are pure in-memory.
+		if g.tools == nil {
+			return "", "end_scene: tool not wired"
+		}
+		world := currentWorldName(g.fs)
+		// Resolve permanent_party. Two sources are
+		// accepted (in order of precedence):
+		//   1. explicit tool arg: permanent_party (comma-
+		//      separated list of display names).
+		//   2. implicit: a "## permanent_party" section in
+		//      characters/<active>/SKILL.md. This lets the
+		//      operator pin a default cast without the
+		//      model having to repeat it on every call.
+		var pp []string
+		if raw := toString(args["permanent_party"]); raw != "" {
+			for _, p := range strings.Split(raw, ",") {
+				if t := strings.TrimSpace(p); t != "" {
+					pp = append(pp, t)
+				}
+			}
+		} else if g.ss != nil {
+			sc, err := g.ss.Start()
+			if err == nil && sc.Character != "" {
+				if skill, _ := g.fs.ReadRaw("characters/" + sc.Character + "/SKILL.md"); skill != "" {
+					pp = extractPermanentParty(skill)
+				}
+			}
+		}
+		res, err := g.tools.EndScene(world, pp)
+		if err != nil {
+			return "", err.Error()
+		}
+		// Reset the per-chat conversation so the next
+		// turn rebuilds a clean dialogue. The chatID is
+		// not in scope here (dispatchOneTool is
+		// tool-call-level, not turn-level), so we reset
+		// ALL conversations. This is acceptable: end_scene
+		// is a rare, player-driven event, and a stale
+		// conversation in a different chat is harmless.
+		conversations.Range(func(k, _ any) bool {
+			conversations.Delete(k)
+			return true
+		})
+		// Drop the world snapshot so the next turn
+		// rebuilds user[0] with the pruned roster.
+		g.invalidateWorldSnapshot("end_scene")
+		return okJSON(map[string]any{
+			"status":          "scene_closed",
+			"kept_npcs":       res.KeptNPCs,
+			"pruned_npcs_len": res.PrunedNPCsLen,
+			"hint":            "next turn rebuilds the scene around the kept roster",
+		}), ""
 	case "run_maintenance":
 		// Alias for the renamed maintain_npcs tool.
 		// The legacy name is kept so existing prompts
@@ -2429,6 +2633,41 @@ func (g *GM) dispatchOneTool(ctx context.Context, tc llm.ToolCall) (string, stri
 			"npc":     npcName,
 			"section": section,
 			"cache":   "stable",
+		}), ""
+	case "search_npc":
+		// search_npc returns a compact description (not the
+		// full YAML) so the messages cache stays tight.
+		// Rate-limit (in-memory): at most one search per
+		// query string per 5 turns — prevents the model
+		// from re-asking the same NPC over and over.
+		if g.tools == nil {
+			return "", "search_npc: tool not wired"
+		}
+		query := strings.TrimSpace(toString(args["query"]))
+		if query == "" {
+			return "", "search_npc: query required"
+		}
+		if rate, ok := g.npcSearchRate[query]; ok && g.turnCounter-rate < g.rateWindow {
+			return "", "search_npc: rate-limited (same query recently)"
+		}
+		world := currentWorldName(g.fs)
+		res, err := g.tools.SearchNPC(world, query)
+		if err != nil {
+			// Compact error so the messages cache stays
+			// small and the model can recover (try a
+			// different query, or call create_npc).
+			return "", "search_npc: " + err.Error()
+		}
+		g.npcSearchRate[query] = g.turnCounter
+		return okJSON(map[string]any{
+			"status":         "found",
+			"display_name":   res.DisplayName,
+			"slug":           res.Slug,
+			"temperament":    res.Temperament,
+			"current_status": res.CurrentStatus,
+			"source":         res.Source,
+			"cache":          "stable",
+			"hint":           "if you need this NPC in the current scene, follow up with update_state",
 		}), ""
 	}
 	return "", "unknown tool: " + tc.Function.Name

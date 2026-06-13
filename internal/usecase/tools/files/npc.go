@@ -486,6 +486,137 @@ func (n *NPC) Load(world, npc string) (string, error) {
 	return profile.BuildMarkdown(), nil
 }
 
+// LoadLOD returns the NPC profile rendered at the
+// requested level of detail. The caller is the LOD
+// policy (loadActiveNPCs in gm.go); the file backend
+// just reads once and re-renders.
+//
+// The three LODs map to the three renderers in
+// internal/npcprofile:
+//
+//   - tools.LODFull    → BuildMarkdown (everything)
+//   - tools.LODCompact → BuildCompact (no big arrays)
+//   - tools.LODOneLine → BuildOneLine (one line)
+//
+// An unknown LOD (e.g. an out-of-range int from a
+// future caller) falls back to Full — safer than
+// dropping the NPC from the world block silently.
+func (n *NPC) LoadLOD(world, npc string, lod tools.NPCLOD) (string, error) {
+	rel, _, ok := n.findNPCFile(world, npc)
+	if !ok {
+		return "", ErrNPCNotFound
+	}
+	profile, err := n.loadProfile(rel, npc)
+	if err != nil {
+		return "", err
+	}
+	switch lod {
+	case tools.LODCompact:
+		return profile.BuildCompact(), nil
+	case tools.LODOneLine:
+		return profile.BuildOneLine(), nil
+	case tools.LODFull:
+		return profile.BuildMarkdown(), nil
+	default:
+		return profile.BuildMarkdown(), nil
+	}
+}
+
+// SearchResult is the compact view the model sees for
+// a search_npc hit. It is intentionally short (1-3
+// lines) so the tool result does not blow the messages
+// cache — the model only needs enough to confirm "yes
+// this is who I was thinking of" and decide whether
+// to add the NPC to the active roster via update_state.
+type SearchResult struct {
+	DisplayName string `json:"display_name"`
+	Slug        string `json:"slug"`
+	// Temperament is a one-sentence description of the
+	// NPC's baseline personality.
+	Temperament string `json:"temperament,omitempty"`
+	// CurrentStatus is a one-sentence "where they are /
+	// what they're doing right now" snapshot.
+	CurrentStatus string `json:"current_status,omitempty"`
+	// Source tells the model which registry field matched
+	// ("display_name", "slug", "nickname", "substring")
+	// — useful for the operator in slowlog, less so for
+	// the model.
+	Source string `json:"source"`
+}
+
+// Search resolves a free-form query against the world's
+// NPC registry. The result is a compact description —
+// not the full YAML. The model should only call this
+// when it needs an NPC that is not already in the active
+// roster (i.e. search_npc is a fallback, not a
+// replacement for the always-on roster).
+//
+// Match priority follows worldregistry.Lookup: exact
+// (slug / display_name / nickname), then unambiguous
+// substring. Ambiguous substring matches return an
+// error so the model can disambiguate before
+// retrieving any profile.
+//
+// Lookup path: try the registry (characters.yaml)
+// first — it carries slug + display + nicknames in one
+// map and resolves substring matches. If the registry
+// is empty / missing, fall through to the directory-scan
+// fallback (findNPCFileFallback) which inspects each
+// profile on disk. This mirrors the resolution path
+// used by Load / UpdateNPC, so an operator without
+// characters.yaml still gets correct results.
+func (n *NPC) Search(world, query string) (*SearchResult, error) {
+	// Step 1: try the registry. Cheap map lookup;
+	// handles the common case (operator maintains
+	// characters.yaml).
+	if reg, err := n.loadRegistry(world); err == nil {
+		if entry, ok := reg.Lookup(query); ok {
+			rel := "worlds/" + world + "/characters/" + entry.Slug + ".yaml"
+			profile, err := n.loadProfile(rel, entry.Slug)
+			if err != nil {
+				return nil, fmt.Errorf("search_npc: registry hit %q but file load failed: %w", entry.Slug, err)
+			}
+			return n.searchResultFromProfile(profile, query), nil
+		}
+	}
+	// Step 2: registry miss — directory scan. Resolves
+	// a display_name match when the registry is empty
+	// or stale. findNPCFile is the same helper Load and
+	// UpdateNPC use, so all three paths agree on
+	// resolution rules.
+	rel, slug, ok := n.findNPCFile(world, query)
+	if !ok {
+		return nil, ErrNPCNotFound
+	}
+	profile, err := n.loadProfile(rel, slug)
+	if err != nil {
+		return nil, fmt.Errorf("search_npc: directory hit %q but file load failed: %w", slug, err)
+	}
+	return n.searchResultFromProfile(profile, query), nil
+}
+
+// searchResultFromProfile is the common path that
+// turns a parsed npcprofile.Profile into the compact
+// SearchResult. Source is best-effort — the registry
+// path would tell us "matched on nickname" etc., but
+// the directory-scan fallback only knows "matched
+// somewhere on display_name". Operators can still get
+// the full story from the slowlog event.
+func (n *NPC) searchResultFromProfile(profile npcprofile.Profile, query string) *SearchResult {
+	res := &SearchResult{
+		DisplayName:   profile.DisplayName,
+		Slug:          profile.FileSlug,
+		Temperament:   profile.Temperament,
+		CurrentStatus: profile.CurrentStatus,
+	}
+	if strings.EqualFold(strings.TrimSpace(query), profile.FileSlug) {
+		res.Source = "slug"
+	} else {
+		res.Source = "display_name_or_nickname"
+	}
+	return res
+}
+
 // CompactNPCBody is the legacy strip implementation. It
 // remains in the file because the run_maintenance tool
 // path still calls it; the new summarizer path (LLM-

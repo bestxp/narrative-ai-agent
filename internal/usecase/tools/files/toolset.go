@@ -104,6 +104,48 @@ func (t *Toolset) MaintainLore(ctx context.Context, world string) (bool, error) 
 	return t.Memory.MaintainLore(ctx, world)
 }
 
+// SearchNPC resolves a free-form query against the
+// world's NPC registry and returns a compact
+// description. The Tool interface returns a
+// *tools.NPCSearchResult (decoupled from the file
+// backend); this forwarder adapts the file package's
+// *SearchResult to the interface type at the boundary.
+func (t *Toolset) SearchNPC(world, query string) (*tools.NPCSearchResult, error) {
+	res, err := t.NPC.Search(world, query)
+	if err != nil {
+		return nil, err
+	}
+	return &tools.NPCSearchResult{
+		DisplayName:   res.DisplayName,
+		Slug:          res.Slug,
+		Temperament:   res.Temperament,
+		CurrentStatus: res.CurrentStatus,
+		Source:        res.Source,
+	}, nil
+}
+
+// LoadLOD is the LOD-aware counterpart to Load. The
+// file package renders at the requested detail;
+// callers (loadActiveNPCs) apply the LOD policy.
+func (t *Toolset) LoadLOD(world, npc string, lod tools.NPCLOD) (string, error) {
+	return t.NPC.LoadLOD(world, npc, lod)
+}
+
+// EndScene forwards to state.EndScene. The interface
+// returns *tools.EndSceneResult; the file package's
+// *EndSceneResult has the same shape (KeptNPCs +
+// PrunedNPCsLen), so the conversion is a field-copy.
+func (t *Toolset) EndScene(world string, permanentParty []string) (*tools.EndSceneResult, error) {
+	res, err := t.State.EndScene(world, permanentParty)
+	if err != nil {
+		return nil, err
+	}
+	return &tools.EndSceneResult{
+		KeptNPCs:      res.KeptNPCs,
+		PrunedNPCsLen: res.PrunedNPCsLen,
+	}, nil
+}
+
 // Reload flushes any in-memory caches. The file backend is
 // stateless today (every read goes to disk) so the method
 // is a no-op kept for interface compatibility — but having

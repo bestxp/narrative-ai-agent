@@ -869,3 +869,367 @@ func TestGM_InvalidateWorldState_AfterReload(t *testing.T) {
 	assert.Contains(t, secondWorld, "Хината",
 		"operator's hand edit must be picked up after reload (in world block, not system)")
 }
+
+// --- search_npc tool ---
+
+// TestExtractPermanentParty: the helper scans SKILL.md
+// for "## permanent party" and returns the comma-
+// separated list under it. Tolerates trailing commas,
+// whitespace, and ignores prose after the first list
+// line.
+func TestExtractPermanentParty(t *testing.T) {
+	assert.Equal(t, []string{"Какаши", "Хината", "Ирука"},
+		extractPermanentParty(`# Skills
+
+## Боевые приёмы
+Катон и др.
+
+## permanent party
+Какаши, Хината, Ирука
+
+## Другое
+не нужно
+`))
+	// Empty section → no prune (safe default).
+	assert.Nil(t, extractPermanentParty("# Skills\n## Other\nfoo"))
+	// Missing section → nil.
+	assert.Nil(t, extractPermanentParty(""))
+}
+
+// TestSearchNPC_ResolvesDisplayName: search_npc maps a
+// free-form query to the registry entry, loads the
+// profile, and returns the compact view (display_name
+// + temperament + current_status).
+func TestSearchNPC_ResolvesDisplayName(t *testing.T) {
+	g, _, _ := newGMTestEnv(t)
+	// Mark his world as a known NPC with extra data.
+	// First, write a longer profile for kakashi via
+	// the tools (so the registry can find him).
+	require.NoError(t, g.fs.WriteRawAtomic("worlds/naruto/characters/kakashi.yaml",
+		"display_name: Какаши-сенсей\nfile_slug: kakashi\ntemperament: хладнокровный, методичный\ncurrent_status: на тренировочной площадке\n"))
+
+	res, errStr := g.dispatchOneTool(context.Background(), llm.ToolCall{
+		ID:   "t1",
+		Type: "function",
+		Function: llm.FunctionCall{
+			Name:      "search_npc",
+			Arguments: `{"query":"Какаши-сенсей"}`,
+		},
+	})
+	require.Empty(t, errStr)
+	assert.Contains(t, res, `"status":"found"`)
+	assert.Contains(t, res, `"display_name":"Какаши-сенсей"`)
+	assert.Contains(t, res, `"temperament":"хладнокровный, методичный"`)
+	assert.Contains(t, res, `"current_status":"на тренировочной площадке"`)
+}
+
+// TestSearchNPC_NotFound: missing query returns a
+// short, recoverable error — the model should try a
+// different query or call create_npc, not invent a
+// profile.
+func TestSearchNPC_NotFound(t *testing.T) {
+	g, _, _ := newGMTestEnv(t)
+	_, errStr := g.dispatchOneTool(context.Background(), llm.ToolCall{
+		ID:   "t1",
+		Type: "function",
+		Function: llm.FunctionCall{
+			Name:      "search_npc",
+			Arguments: `{"query":"Неизвестный Персонаж"}`,
+		},
+	})
+	assert.Contains(t, errStr, "search_npc")
+	assert.Contains(t, errStr, "not found",
+		"err text must include the underlying reason for the model to recover")
+}
+
+// TestSearchNPC_RateLimit: the same query twice in a
+// short window is rejected. A different query is
+// always allowed (the limit is per-query, not global).
+func TestSearchNPC_RateLimit(t *testing.T) {
+	g, _, _ := newGMTestEnv(t)
+	g.rateWindow = 5
+	g.turnCounter = 1
+
+	// Write a profile for kakashi so search hits.
+	require.NoError(t, g.fs.WriteRawAtomic("worlds/naruto/characters/kakashi.yaml",
+		"display_name: Какаши\nfile_slug: kakashi\ntemperament: t\ncurrent_status: s\n"))
+
+	// First call: success.
+	_, errStr := g.dispatchOneTool(context.Background(), llm.ToolCall{
+		ID:       "t1",
+		Type:     "function",
+		Function: llm.FunctionCall{Name: "search_npc", Arguments: `{"query":"Какаши"}`},
+	})
+	assert.Empty(t, errStr)
+
+	// Second call with the same query, no turn advance:
+	// rate-limited.
+	_, errStr = g.dispatchOneTool(context.Background(), llm.ToolCall{
+		ID:       "t2",
+		Type:     "function",
+		Function: llm.FunctionCall{Name: "search_npc", Arguments: `{"query":"Какаши"}`},
+	})
+	assert.Contains(t, errStr, "rate-limited",
+		"second identical query must be rejected within rateWindow")
+
+	// A different query is allowed even within the window.
+	_, errStr = g.dispatchOneTool(context.Background(), llm.ToolCall{
+		ID:       "t3",
+		Type:     "function",
+		Function: llm.FunctionCall{Name: "search_npc", Arguments: `{"query":"Какаши-сенсей"}`},
+	})
+	// This query is not in the registry — that error
+	// is "not found", not "rate-limited".
+	assert.NotContains(t, errStr, "rate-limited")
+	assert.Contains(t, errStr, "not found")
+
+	// Advance the turn counter past the rate window
+	// and re-issue the original query: allowed.
+	g.turnCounter = 100
+	_, errStr = g.dispatchOneTool(context.Background(), llm.ToolCall{
+		ID:       "t4",
+		Type:     "function",
+		Function: llm.FunctionCall{Name: "search_npc", Arguments: `{"query":"Какаши"}`},
+	})
+	assert.Empty(t, errStr, "after rateWindow turns, the same query is allowed again")
+}
+
+// --- end_scene tool ---
+
+// TestEndScene_PrunesRosterByExplicitList: when the
+// tool is called with a permanent_party arg, the
+// active roster is pruned to that list. NPCs not in
+// the list are dropped from state.md.
+func TestEndScene_PrunesRunesByExplicitList(t *testing.T) {
+	g, fs, _ := newGMTestEnv(t)
+	// Seed state with a 4-NPC roster. The parser
+	// reads lines starting with "NPC: " — see
+	// state.go:ParseStateMD.
+	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/state.md",
+		"День 1 (в процессе).\nNPC: Какаши, Хината, Ирука, Наруто\nЛокация: Полигон\n"))
+
+	res, errStr := g.dispatchOneTool(context.Background(), llm.ToolCall{
+		ID:   "t1",
+		Type: "function",
+		Function: llm.FunctionCall{
+			Name:      "end_scene",
+			Arguments: `{"permanent_party":"Какаши, Хината"}`,
+		},
+	})
+	require.Empty(t, errStr)
+	assert.Contains(t, res, `"status":"scene_closed"`)
+	assert.Contains(t, res, `"pruned_npcs_len":2`)
+
+	// On disk: roster is now "Какаши, Хината".
+	cur, _ := fs.ReadRaw("worlds/naruto/state.md")
+	assert.Contains(t, cur, "Какаши")
+	assert.Contains(t, cur, "Хината")
+	assert.NotContains(t, cur, "Ирука", "non-party NPC must be pruned from state.md")
+	assert.NotContains(t, cur, "Наруто", "non-party NPC must be pruned from state.md")
+
+	// Snapshot dropped so the next turn rebuilds.
+	g.contextMu.Lock()
+	world := g.worldSnapshot
+	g.contextMu.Unlock()
+	assert.Empty(t, world, "end_scene must invalidate the world snapshot")
+}
+
+// TestEndScene_NoPruneWhenListMissing: if the tool
+// is called with no permanent_party arg AND the
+// character's SKILL.md has no "## permanent party"
+// section, the roster is left as-is (safe default).
+func TestEndScene_NoPruneWhenListMissing(t *testing.T) {
+	g, fs, _ := newGMTestEnv(t)
+	// SKILL.md in newGMTestEnv has no "## permanent
+	// party" section (see helper). Empty arg, no
+	// skill section → no prune.
+	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/state.md",
+		"День 1 (в процессе).\nNPC: Какаши, Хината\n"))
+
+	res, errStr := g.dispatchOneTool(context.Background(), llm.ToolCall{
+		ID:       "t1",
+		Type:     "function",
+		Function: llm.FunctionCall{Name: "end_scene", Arguments: `{}`},
+	})
+	require.Empty(t, errStr)
+	assert.Contains(t, res, `"pruned_npcs_len":0`)
+
+	cur, _ := fs.ReadRaw("worlds/naruto/state.md")
+	assert.Contains(t, cur, "Какаши")
+	assert.Contains(t, cur, "Хината")
+}
+
+// TestEndScene_ReadsPartyFromSKILLMD: the tool can
+// pull permanent_party from SKILL.md when no arg is
+// passed. The dispatch path is the same; only the
+// arg-resolution step differs.
+func TestEndScene_ReadsPartyFromSKILLMD(t *testing.T) {
+	g, fs, _ := newGMTestEnv(t)
+	require.NoError(t, fs.WriteRawAtomic("characters/markus/SKILL.md",
+		"# Skills\n\n## permanent party\nКакаши\n\n## Другое\nfoo\n"))
+	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/state.md",
+		"День 1 (в процессе).\nNPC: Какаши, Хината, Наруто\n"))
+
+	res, errStr := g.dispatchOneTool(context.Background(), llm.ToolCall{
+		ID:       "t1",
+		Type:     "function",
+		Function: llm.FunctionCall{Name: "end_scene", Arguments: `{}`},
+	})
+	require.Empty(t, errStr)
+	// 2 NPCs pruned (Хината, Наруто), 1 kept (Какаши).
+	assert.Contains(t, res, `"pruned_npcs_len":2`)
+
+	cur, _ := fs.ReadRaw("worlds/naruto/state.md")
+	assert.Contains(t, cur, "Какаши")
+	assert.NotContains(t, cur, "Хината")
+}
+
+// --- LOD для NPC ---
+
+// TestLoadActiveNPCs_LODTiers: loadActiveNPCs applies
+// the documented LOD policy based on the position in
+// the active roster:
+//
+//	positions 0-2 → LODFull (BuildMarkdown — full body)
+//	positions 3-7 → LODCompact (no big arrays)
+//	position  8+  → LODOneLine (1-line summary)
+//
+// The test seeds an 11-NPC roster and inspects the
+// rendered body of each slot. Display names are
+// Russian; fixture slugs are explicit ASCII pairs so
+// we can drive the file backend without depending on
+// the project transliteration (which is exercised in
+// domain tests).
+func TestLoadActiveNPCs_LODTiers(t *testing.T) {
+	g, fs, _ := newGMTestEnv(t)
+	type n struct {
+		display, slug string
+	}
+	roster := []n{
+		{"Какаши", "kakashi"}, {"Хината", "hinata"}, {"Ирука", "iruka"},
+		{"Наруто", "naruto"}, {"Саске", "sasuke"}, {"Сакура", "sakura"},
+		{"Шикамару", "shikamaru"}, {"Ино", "ino"}, {"Чоуджи", "chouji"},
+		{"Шино", "shino"}, {"Хиаши", "hiashi"},
+	}
+	var sb strings.Builder
+	sb.WriteString("День 1 (в процессе).\nNPC: ")
+	for i, r := range roster {
+		if i > 0 {
+			sb.WriteString(", ")
+		}
+		sb.WriteString(r.display)
+	}
+	sb.WriteString("\n")
+	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/state.md", sb.String()))
+	for _, r := range roster {
+		require.NoError(t, fs.WriteRawAtomic(
+			"worlds/naruto/characters/"+r.slug+".yaml",
+			"display_name: "+r.display+"\nfile_slug: "+r.slug+
+				"\ntemperament: спокойный\ncurrent_status: здесь\n"+
+				"personal_memory:\n  - факт1\n  - факт2\n  - факт3\n  - факт4\n  - факт5\n  - факт6\n  - факт7\n  - факт8\n  - факт9\n  - факт10\n",
+		))
+	}
+	// Force a world rebuild.
+	g.invalidateWorldSnapshot("test")
+	_, worldMsg, err := g.buildContext()
+	require.NoError(t, err)
+
+	// First 3 NPCs (0, 1, 2) → Full. Their sections
+	// contain "Личная память/факты" (only the full
+	// BuildMarkdown render emits this section).
+	for _, r := range roster[:3] {
+		body := findNPCSection(t, worldMsg, r.display)
+		assert.Contains(t, body, "Личная память/факты",
+			"position 0-2 must be LOD Full; %q body: %s", r.display, body)
+	}
+	// Positions 3-7 (5 NPCs) → Compact. No "Личная
+	// память/факты" header, but has "Темперамент:".
+	for _, r := range roster[3:8] {
+		body := findNPCSection(t, worldMsg, r.display)
+		assert.NotContains(t, body, "Личная память/факты",
+			"position 3-7 must be LOD Compact (no personal_memory); %q body: %s", r.display, body)
+		assert.Contains(t, body, "Темперамент:",
+			"position 3-7 must be LOD Compact (temperament line present); %q body: %s", r.display, body)
+	}
+	// Position 8+ (3 NPCs) → OneLine. Single-line,
+	// no markdown header, no "Темперамент:".
+	for _, r := range roster[8:] {
+		body := findNPCSection(t, worldMsg, r.display)
+		assert.NotContains(t, body, "Личная память/факты",
+			"position 8+ must be LOD OneLine; %q body: %s", r.display, body)
+		assert.NotContains(t, body, "Темперамент:",
+			"LOD OneLine does not have a temperament line; %q body: %s", r.display, body)
+	}
+}
+
+// TestLoadActiveNPCs_SmallCastAllFull: a 3-NPC roster
+// is small enough to render all NPCs at LOD Full
+// regardless of cast size.
+func TestLoadActiveNPCs_SmallCastAllFull(t *testing.T) {
+	g, fs, _ := newGMTestEnv(t)
+	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/state.md",
+		"День 1 (в процессе).\nNPC: Какаши, Хината, Ирука\n"))
+	type n struct {
+		display, slug string
+	}
+	npcs := []n{
+		{"Какаши", "kakashi"}, {"Хината", "hinata"}, {"Ирука", "iruka"},
+	}
+	for _, r := range npcs {
+		require.NoError(t, fs.WriteRawAtomic(
+			"worlds/naruto/characters/"+r.slug+".yaml",
+			"display_name: "+r.display+"\nfile_slug: "+r.slug+
+				"\ntemperament: t\ncurrent_status: s\npersonal_memory:\n  - a\n  - b\n",
+		))
+	}
+	g.invalidateWorldSnapshot("test")
+	_, worldMsg, err := g.buildContext()
+	require.NoError(t, err)
+	for _, r := range npcs {
+		body := findNPCSection(t, worldMsg, r.display)
+		assert.Contains(t, body, "Личная память/факты",
+			"3-NPC cast must all be LOD Full; %q body: %s", r.display, body)
+	}
+}
+
+// findNPCSection returns the rendered body of the NPC
+// with the given display_name, looking at the world
+// block as assembled by buildContext. The "body" is
+// the text between the "### <name>" header (BuildWorldStateMessage
+// renders NPC sections at h3 level) and the next "### "
+// sibling header.
+func findNPCSection(t *testing.T, worldMsg, displayName string) string {
+	t.Helper()
+	header := "### " + displayName
+	idx := strings.Index(worldMsg, header)
+	if idx < 0 {
+		t.Fatalf("NPC %q not found in world block:\n%s", displayName, worldMsg)
+	}
+	rest := worldMsg[idx+len(header):]
+	// End at the next "### " sibling.
+	end := strings.Index(rest, "\n### ")
+	if end < 0 {
+		end = len(rest)
+	}
+	return rest[:end]
+}
+
+// translitASCII was used in earlier fixture drafts
+// where display names drove the slug. The current
+// fixtures use explicit display/slug pairs, so this
+// helper is no longer referenced; the implementation
+// is kept commented-out in case a future test wants
+// a bare ASCII-slug generator.
+//
+// func translitASCII(s string) string {
+// 	var b strings.Builder
+// 	for _, r := range s {
+// 		if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+// 			b.WriteRune(r)
+// 		}
+// 	}
+// 	if b.Len() == 0 {
+// 		return "x"
+// 	}
+// 	return b.String()
+// }

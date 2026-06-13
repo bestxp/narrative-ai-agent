@@ -47,6 +47,55 @@ type StateSnapshot struct {
 	AppendEvents []string
 }
 
+// NPCSearchResult is the compact view returned by
+// SearchNPC: a display_name + slug + a 1-2 sentence
+// temperament + current_status. The Tool interface
+// keeps the type in the tools package (rather than
+// aliasing files.SearchResult) so the interface stays
+// decoupled from the filesystem backend; the file
+// implementation converts at the boundary.
+type NPCSearchResult struct {
+	DisplayName   string `json:"display_name"`
+	Slug          string `json:"slug"`
+	Temperament   string `json:"temperament,omitempty"`
+	CurrentStatus string `json:"current_status,omitempty"`
+	Source        string `json:"source"`
+}
+
+// EndSceneResult mirrors files.EndSceneResult in the
+// tools package. Kept as a separate type so the
+// interface stays decoupled from the filesystem
+// backend (same rationale as NPCSearchResult above).
+type EndSceneResult struct {
+	KeptNPCs      []string
+	PrunedNPCsLen int
+}
+
+// NPCLOD is the level-of-detail knob for LoadLOD. The
+// numeric values are stable: callers and tests may
+// compare them directly. The values are the same as
+// the canonical "small / medium / large" tiers in
+// the prompt-cache budget (loadActiveNPCs applies the
+// mapping in gm.go — this enum is the wire surface
+// only).
+type NPCLOD int
+
+const (
+	// LODFull is the markdown render with every section
+	// (BuildMarkdown). Default for the model's main
+	// interlocutor + a small cast of sidekicks.
+	LODFull NPCLOD = iota
+	// LODCompact drops the big arrays (abilities,
+	// personal_memory, critical_knowledge) and keeps
+	// temperament + relations + current_status. Used
+	// for side characters in mid-size casts.
+	LODCompact
+	// LODOneLine is a single line per NPC: name +
+	// 1-sentence temperament + 1-sentence status. Used
+	// for background characters in 10+ NPC scenes.
+	LODOneLine
+)
+
 // LeaveResult is the outcome of a Leave call. FromWorld /
 // FromDay are the world we left, NewWorldInit is true when the
 // destination had to be created from scratch.
@@ -127,6 +176,15 @@ type Tool interface {
 	// (see tools.MemoriseSummarizer); nil summarizers are
 	// tolerated and the call is logged + skipped.
 	ArchiveDay(ctx context.Context, world string, day int, summary string) error
+	// EndScene closes the current scene without closing
+	// the day. It prunes the active roster to the
+	// permanent_party subset (nil = no prune) so the
+	// next turn rebuilds the scene around a smaller
+	// cast. The GM resets the per-chat conversation
+	// history and invalidates the world snapshot after
+	// the call returns; the file backend only touches
+	// the roster.
+	EndScene(world string, permanentParty []string) (*EndSceneResult, error)
 	RotatePlan(world string, events []string) error
 
 	// --- memory.md / lore.md / NPC condensation ---
@@ -164,7 +222,29 @@ type Tool interface {
 
 	// --- NPC profiles ---
 	Create(world string, p NPCProfile) error
+	// Load returns the full markdown render of an NPC
+	// profile. For multi-NPC scenes where the cache
+	// budget is tight, prefer LoadLOD with
+	// LODCompact / LODOneLine so the world block stays
+	// under the prompt-cache threshold.
 	Load(world, npc string) (string, error)
+	// LoadLOD is the same as Load but with an explicit
+	// level-of-detail knob. The file backend reads the
+	// profile once and renders it at the requested
+	// detail; future loads of the same NPC at the same
+	// LOD still pay the read cost (the LOD layer is in
+	// the caller, not the backend — see the
+	// loadActiveNPCs comment for the rationale).
+	LoadLOD(world, npc string, lod NPCLOD) (string, error)
+	// SearchNPC resolves a free-form query against the
+	// world's NPC registry and returns a compact
+	// description (display_name + temperament +
+	// current_status). Used by the search_npc tool when
+	// the model needs an NPC that is not already in the
+	// active roster. Implementations may rate-limit or
+	// re-use a registry cache; the dispatcher still
+	// applies its own in-memory dedupe on top.
+	SearchNPC(world, query string) (*NPCSearchResult, error)
 	// UpdateNPC appends fresh facts to an existing NPC
 	// profile. The section is one of the canonical NPC
 	// section names (case-insensitive match); the
