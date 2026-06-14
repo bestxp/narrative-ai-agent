@@ -353,7 +353,7 @@ func TestNPCPersonalMemoryLimit(t *testing.T) {
 	// summarizer will compare against. If we change
 	// it we need to update both call sites in
 	// sync, so we assert the value here.
-	assert.Equal(t, 40, NPCPersonalMemoryLimit)
+	assert.Equal(t, 25, NPCPersonalMemoryLimit)
 }
 
 // TestProfile_BuildCompact: the compact LOD drops the

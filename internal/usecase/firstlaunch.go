@@ -203,8 +203,27 @@ func (f *FirstLaunch) writeWorld(dir string, w WorldSpec) error {
 	if err := f.fs.WriteRawAtomic(root+"/memorise.md", ""); err != nil {
 		return err
 	}
+	if err := f.fs.WriteRawAtomic(root+"/staging.yaml", defaultStaging(dir)); err != nil {
+		return err
+	}
 	reg := "# NPC: " + strings.TrimSpace(w.DisplayName) + "\n| Имя | Файл | Прозвища |\n|-----|------|----------|\n"
 	return f.fs.WriteRawAtomic(root+"/characters.md", reg)
+}
+
+// defaultStaging returns the canonical sandbox staging.yaml
+// for a brand-new world: enabled=false, empty graph. The
+// operator edits this file to switch the world into a
+// staged story arc; until then the staging system is silent
+// and the WorldState user message omits the stage block.
+func defaultStaging(dir string) string {
+	var b strings.Builder
+	b.WriteString("# Staging for world: ")
+	b.WriteString(dir)
+	b.WriteString("\n# Set `enabled: true` and fill `init` + `stages` to switch this world to a staged story arc.\n")
+	b.WriteString("enabled: false\n")
+	b.WriteString("init: []\n")
+	b.WriteString("stages: []\n")
+	return b.String()
 }
 
 // defaultPlan returns the canonical 3-event starter plan for

@@ -111,10 +111,12 @@ type Relation struct {
 
 // NPCPersonalMemoryLimit is the threshold above which
 // the summarizer kicks in to compress personal_memory.
-// The number is intentionally identical to the legacy
-// CompactNPCs threshold so the operator's intuition
-// ("40 lines = needs maintenance") carries over.
-const NPCPersonalMemoryLimit = 40
+// 25 is the operator's "помогите, профиль раздулся" mark —
+// at this size a single NPC profile reaches ~5KB, which
+// is the budget we want to keep for the world block of
+// a multi-NPC scene. The dispatcher fires
+// maintain_npcs at end_day when this threshold is crossed.
+const NPCPersonalMemoryLimit = 25
 
 // ErrNotFound is returned by Load when the file does
 // not exist or exists but is empty. The dispatcher

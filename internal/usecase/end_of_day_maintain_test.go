@@ -500,3 +500,102 @@ temperament: "спокойный"
 	// scripting.idx should be at most 2 (eod + npc).
 	assert.LessOrEqual(t, scripting.idx, 2, "character memory summariser must not be called for under-threshold memory")
 }
+
+// TestEndOfDay_AppliesPendingStage: when staging has a
+// pending transition (staging.next set), end_day applies
+// it BEFORE MaintainNPCs and BEFORE MaintainCharacterMemory
+// so the new stage is visible on the next turn.
+func TestEndOfDay_AppliesPendingStage(t *testing.T) {
+	g, fs, scripting := newEndOfDayTestEnv(t)
+
+	// Configure staging: enabled, init=beginning, 1 transition to "accepted".
+	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/staging.yaml", `enabled: true
+init: [beginning]
+stages:
+  - id: beginning
+    name: Появление
+    description: Герой появляется.
+    timeline:
+      - info: Старт
+        description: Начало пути.
+    next:
+      - id: accepted
+        requirements:
+          - Герой доказал невиновность
+  - id: accepted
+    name: Принятие
+    description: Герой принят.
+    timeline:
+      - info: Адаптация
+        description: Знакомство с городом.
+    next:
+      - id: beginning
+        requirements:
+          - откат
+`))
+	// Schedule a pending transition.
+	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/stage.md", `staging:
+  current: beginning
+  timeline_index: 0
+  next: accepted
+`))
+
+	// Push end-of-day protocol response.
+	scripting.push("[События прошедшего дня Д0001] Утром ГГ встретил Какаши.", nil)
+	// NPC summariser: small profile, no maintenance fired.
+	npc, _ := npcprofile.Load(`display_name: "Какаши"
+file_slug: "kakashi"
+temperament: "спокойный"
+`)
+	npcBody, _ := npc.Save()
+	scripting.push(string(npcBody), nil)
+	// Character memory summariser should not be called (under threshold).
+
+	require.NoError(t, g.EndOfDay(context.Background(), "naruto", 1))
+
+	// After EndOfDay: current=accepted, next="" (pending applied).
+	stateBody, err := fs.ReadRaw("worlds/naruto/stage.md")
+	require.NoError(t, err)
+	assert.True(t, strings.Contains(stateBody, "current: accepted"),
+		"expected current=accepted after end_day; got: %s", stateBody)
+	assert.True(t, strings.Contains(stateBody, `next: ""`),
+		"expected next cleared; got: %s", stateBody)
+}
+
+// TestEndOfDay_NoOpWhenNoPending: when staging.next is empty,
+// end_day leaves the stage untouched.
+func TestEndOfDay_NoOpWhenNoPending(t *testing.T) {
+	g, fs, scripting := newEndOfDayTestEnv(t)
+
+	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/staging.yaml", `enabled: true
+init: [beginning]
+stages:
+  - id: beginning
+    name: Появление
+    description: x
+    timeline: []
+    next:
+      - id: beginning
+        requirements:
+          - nothing
+`))
+	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/stage.md", `staging:
+  current: beginning
+  timeline_index: 0
+  next: ""
+`))
+
+	scripting.push("[События прошедшего дня Д0001] Утром ГГ встретил Какаши.", nil)
+	npc, _ := npcprofile.Load(`display_name: "Какаши"
+file_slug: "kakashi"
+temperament: "спокойный"
+`)
+	npcBody, _ := npc.Save()
+	scripting.push(string(npcBody), nil)
+
+	require.NoError(t, g.EndOfDay(context.Background(), "naruto", 1))
+
+	stateBody, _ := fs.ReadRaw("worlds/naruto/stage.md")
+	assert.True(t, strings.Contains(stateBody, "current: beginning"),
+		"expected current=beginning unchanged; got: %s", stateBody)
+}

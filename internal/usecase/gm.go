@@ -10,12 +10,14 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
+	"gopkg.in/yaml.v3"
 
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/llm"
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
 	"github.com/bestxp/narrative-ai-agent/internal/charprofile"
 	"github.com/bestxp/narrative-ai-agent/internal/domain"
 	"github.com/bestxp/narrative-ai-agent/internal/slowlog"
+	"github.com/bestxp/narrative-ai-agent/internal/staging"
 	"github.com/bestxp/narrative-ai-agent/internal/structured"
 	"github.com/bestxp/narrative-ai-agent/internal/usecase/tools"
 	"github.com/bestxp/narrative-ai-agent/internal/usecase/tools/files"
@@ -1964,6 +1966,7 @@ func (g *GM) buildContext() (systemMsg, worldMsg string, err error) {
 		WorldLore:     safeRead(g.fs, "worlds/"+sc.World+"/lore.md"),
 		WorldPlan:     safeRead(g.fs, "worlds/"+sc.World+"/plan.md"),
 		WorldMemorise: safeRead(g.fs, "worlds/"+sc.World+"/memorise.md"),
+		WorldStage:    g.loadWorldStage(sc.World, sc.Character),
 		NPCs:          g.loadActiveNPCs(sc.World, sc.State),
 	}
 	builtSystem := domain.BuildSystemPrompt(g.staticPrompt, charCtx, g.role.DisableThinking)
@@ -2230,6 +2233,19 @@ func (g *GM) EndOfDay(ctx context.Context, world string, day int) error {
 	if err := g.enforceProtocolWindow(world); err != nil {
 		g.log.Warn().Err(err).Str("world", world).Msg("end-of-day: enforce window failed (non-fatal)")
 	}
+	// Apply pending stage transition. The model calls
+	// update_stage during the day; the transition lives in
+	// stage.md as staging.next until end_day applies it.
+	// We do this BEFORE MaintainNPCs/MaintainCharacterMemory
+	// so the new stage is visible to the model on the next
+	// turn's WorldState rebuild. No LLM call — the file is
+	// rewritten in-place. Failure here is non-fatal: the
+	// pending stage survives to the next end_day attempt.
+	if err := g.tools.ApplyPendingStage(world); err != nil {
+		g.log.Warn().Err(err).Str("world", world).Msg("end-of-day: apply_pending_stage failed; continuing")
+	} else {
+		g.invalidateWorldSnapshot("end_day_stage_transition")
+	}
 	// Auto-maintain NPC profiles that overflowed their
 	// personal_memory list during the day. Synchronous
 	// call — the player is reading the day's summary, a
@@ -2452,6 +2468,38 @@ func (g *GM) evictProtocolToMemorise(world string, oldest struct {
 func safeRead(fs *storage.FileStore, rel string) string {
 	s, _ := fs.ReadRaw(rel)
 	return s
+}
+
+// loadWorldStage loads the active stage for the world and renders it
+// into the WorldState user message. Returns an empty string when
+// staging is disabled (sandbox) or no staging.yaml is configured.
+//
+// The character's display name is read from SOUL.yaml when available
+// so the `$(name)` placeholder in stage descriptions expands to the
+// human name rather than the directory slug. Fallback to the slug.
+func (g *GM) loadWorldStage(world, characterSlug string) string {
+	s, err := staging.Load(g.fs, world)
+	if err != nil {
+		g.log.Warn().Err(err).Str("world", world).Msg("load_world_stage failed; rendering without stage")
+		return ""
+	}
+	if !s.Enabled {
+		return ""
+	}
+	displayName := characterSlug
+	if characterSlug != "" {
+		if body, _ := g.fs.ReadRaw("characters/" + characterSlug + "/SOUL.yaml"); body != "" {
+			var soul struct {
+				Name string `yaml:"name"`
+			}
+			if err := yaml.Unmarshal([]byte(body), &soul); err == nil {
+				if t := strings.TrimSpace(soul.Name); t != "" {
+					displayName = t
+				}
+			}
+		}
+	}
+	return s.Render(displayName)
 }
 
 // loadActiveNPCs reads the world state, parses the
@@ -2704,24 +2752,6 @@ func (g *GM) dispatchOneTool(ctx context.Context, tc llm.ToolCall) (string, stri
 			"pruned_npcs_len": res.PrunedNPCsLen,
 			"hint":            "next turn rebuilds the scene around the kept roster",
 		}), ""
-	case "run_maintenance":
-		// Alias for the renamed maintain_npcs tool.
-		// The legacy name is kept so existing prompts
-		// that call run_maintenance still work; the
-		// canonical name in narrative.md is
-		// maintain_npcs (new behaviour: LLM-driven
-		// compaction, was naive strip).
-		touched, err := g.tools.MaintainNPCs(currentWorldName(g.fs))
-		if err != nil {
-			return "", err.Error()
-		}
-		return okJSON(map[string]any{"compacted": touched}), ""
-	case "maintain_npcs":
-		touched, err := g.tools.MaintainNPCs(currentWorldName(g.fs))
-		if err != nil {
-			return "", err.Error()
-		}
-		return okJSON(map[string]any{"compacted": touched}), ""
 	case "maintain_lore":
 		rewritten, err := g.tools.MaintainLore(ctx, currentWorldName(g.fs))
 		if err != nil {

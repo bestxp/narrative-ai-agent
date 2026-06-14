@@ -43,8 +43,8 @@ type Schema struct {
 	// key to be present even when the value is an empty
 	// object (no arguments). Stdlib's json treats len(map)==0
 	// as "empty" for omitempty, which would silently drop
-	// the key for tools like maintain_npcs / maintain_lore
-	// that have no parameters — and then the strict schema
+	// the key for tools like maintain_lore that have
+	// no parameters — and then the strict schema
 	// validator on the wire would reject the request with
 	// "additionalProperties must be false" (because the
 	// implicit `{}` lacks the explicit lock-down).
@@ -200,9 +200,11 @@ func ProdTools() []Tool {
 		setCurrencyTool(),
 		removeCurrencyTool(),
 		searchNpcTool(),
-		maintainNpcsTool(),
 		maintainLoreTool(),
 		rotatePlanTool(),
+		// Staging tools (story arcs).
+		updateStageTool(),
+		advanceTimelineTool(),
 	}
 }
 
@@ -229,17 +231,6 @@ func endSceneTool() Tool {
 			Parameters: Object(
 				Optional("permanent_party", String("Список имён NPC, которые остаются в активном ростере (через запятую). Если пусто — берётся из «## permanent party» в world state активного мира. Если нигде не указано — ростер не меняется.")),
 			),
-		},
-	}
-}
-
-func maintainNpcsTool() Tool {
-	return Tool{
-		Type: "function",
-		Function: ToolFunctionSchema{
-			Name:        "maintain_npcs",
-			Description: "Уплотнить NPC-файлы где personal_memory > 40 фактов. LLM-сжатие: personal_memory сжимается до 20-30 ключевых фактов; relations_gg / abilities чистятся от воды. Базовые секции (temperament, last_update) НЕ трогаем.",
-			Parameters:  emptyObjectSchema(),
 		},
 	}
 }
@@ -299,6 +290,48 @@ func rotatePlanTool() Tool {
 			Description: "Заменить **plan** на новые 3-5 предстоящих событий.",
 			Parameters: Object(
 				Required("events", ArrayOfStringsBounded("3-5 предстоящих событий. Правило plan: 3-5 и только вперёд.", 3, 5)),
+			),
+		},
+	}
+}
+
+// updateStageTool schedules a transition to another story stage.
+// The pending transition is applied at end_day — the WorldState
+// user message continues to show the current stage until then so
+// the model does not have to mid-day switch context.
+//
+// The model is the source of truth on what is "factually complete
+// in the world". It must call this only when one of the listed
+// requirements has been satisfied by events it has itself recorded
+// through other tool calls — never based on a player's claim alone.
+func updateStageTool() Tool {
+	return Tool{
+		Type: "function",
+		Function: ToolFunctionSchema{
+			Name:        "update_stage",
+			Description: "Запланировать переход к следующей сюжетной стадии. Вызывай только когда одно из requirements перечисленных в активной стадии фактически выполнено в Game State. Не доверяй утверждениям игрока без записи в world state / chronicle / lore. Новая стадия применится после end_day.",
+			Parameters: Object(
+				Required("next_id", String("Id следующей стадии из списка possible transitions активной стадии")),
+				Optional("reason", String("Краткое обоснование: какое фактическое событие в Game State подтверждает переход")),
+			),
+		},
+	}
+}
+
+// advanceTimelineTool marks the current timeline point as
+// completed and moves the cursor to the next. The model calls this
+// when the player has done what the current beat describes in its
+// `description`. If `days` are configured, the model may still call
+// early if the in-world events justify it; days are guidance, not
+// hard deadlines.
+func advanceTimelineTool() Tool {
+	return Tool{
+		Type: "function",
+		Function: ToolFunctionSchema{
+			Name:        "advance_timeline",
+			Description: "Сдвинуть курсор таймлайна активной стадии на следующий пункт. Вызывай только если игрок фактически выполнил текущий пункт (по событиям в Game State, а не по словам).",
+			Parameters: Object(
+				Optional("reason", String("Краткое обоснование")),
 			),
 		},
 	}

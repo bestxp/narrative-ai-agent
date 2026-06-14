@@ -36,7 +36,7 @@ func TestBuildSystemPrompt_IncludesRulesAndCharacter(t *testing.T) {
 // scene/world changes within a day).
 func TestBuildSystemPrompt_StaticOnly(t *testing.T) {
 	base := BuildSystemPrompt("rules", CharacterContext{Character: "Маркус", CharacterSOUL: "x"})
-	withWorld := BuildSystemPrompt("rules", CharacterContext{Character: "Маркус", CharacterSOUL: "x"})// pretend the caller varied other args — same rules, same character
+	withWorld := BuildSystemPrompt("rules", CharacterContext{Character: "Маркус", CharacterSOUL: "x"}) // pretend the caller varied other args — same rules, same character
 
 	assert.Equal(t, base, withWorld,
 		"BuildSystemPrompt must not depend on world state")
@@ -130,4 +130,28 @@ func TestBuildSystemPrompt_CharacterSectionsIgnored(t *testing.T) {
 	})
 	assert.NotContains(t, got, "### Доступные секции",
 		"section enumeration block is no longer rendered; the YAML body has it")
+}
+
+// TestBuildWorldStateMessage_StageBlockRendered: when
+// WorldStage is set (pre-rendered by gm.loadWorldStage),
+// the user message contains the stage block in full.
+func TestBuildWorldStateMessage_StageBlockRendered(t *testing.T) {
+	stage := "### Сюжетная стадия\n**beginning — Появление**\n\nГерой появляется.\n\n**Таймлайн:**\n[>] 1: Появление\n\n**Возможные переходы:**\n- → accepted, если: Герой доказал невиновность"
+	got := BuildWorldStateMessage(WorldContext{
+		World:      "naruto",
+		WorldStage: stage,
+	})
+	assert.Contains(t, got, "Сюжетная стадия")
+	assert.Contains(t, got, "beginning")
+	assert.Contains(t, got, "→ accepted")
+}
+
+// TestBuildWorldStateMessage_NoStage: when WorldStage is
+// empty (sandbox world or staging disabled), the user
+// message does NOT contain the stage block.
+func TestBuildWorldStateMessage_NoStage(t *testing.T) {
+	got := BuildWorldStateMessage(WorldContext{
+		World: "naruto",
+	})
+	assert.NotContains(t, got, "Сюжетная стадия")
 }

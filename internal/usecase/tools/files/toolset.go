@@ -34,6 +34,7 @@ type Toolset struct {
 	*World
 	*Character
 	*NPC
+	*StageTool
 }
 
 // New constructs the file-backed toolset. fs is shared
@@ -65,6 +66,7 @@ func New(fs *storage.FileStore, log zerolog.Logger, slow *slowlog.Logger, summar
 		World:     newWorld(fs, log),
 		Character: newCharacter(fs, log, slow),
 		NPC:       newNPC(fs, log),
+		StageTool: newStage(fs, log),
 	}
 }
 

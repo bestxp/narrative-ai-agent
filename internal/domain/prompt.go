@@ -70,6 +70,29 @@ type WorldContext struct {
 	// profiles. The active roster is the slice of characters
 	// the LLM needs to know about right now.
 	NPCs []NPCSnapshot
+	// WorldStage is the rendered active stage of the world's
+	// staged story graph. Empty when the world is a sandbox
+	// (staging.yaml enabled=false) or no staging is configured.
+	WorldStage string
+	// NPCRegistry is the compact list of every NPC known to
+	// the world (slug + display_name + nicknames). Embedded
+	// at the top of user[0] so the LLM can resolve names to
+	// slugs without calling search_npc on every new turn.
+	// Empty when the world has no characters.yaml yet
+	// (firstlaunch path) or when staging is disabled.
+	NPCRegistry string
+}
+
+// NPCEntry is a single row of the NPC registry summary
+// embedded in the WorldState user message. The LLM uses
+// this to map names it sees in `state.md` (e.g. "Какаши
+// Хатаке" in the `NPC:` line) to slugs the file system
+// expects ("hatake_kakashi.yaml"). The model never has to
+// guess — the slug is right there.
+type NPCEntry struct {
+	Slug        string
+	DisplayName string
+	Nicknames   []string
 }
 
 // NPCSnapshot is a per-NPC mini-card the GM sees for any NPC active
@@ -179,6 +202,15 @@ func BuildWorldStateMessage(world WorldContext) string {
 			b.WriteString(world.WorldState)
 			b.WriteString("\n\n")
 		}
+		// Реестр NPC — встроен в самом верху, чтобы LLM
+		// видел «display_name → slug» без необходимости
+		// дёргать search_npc на каждом ходу. Помогает при
+		// create_npc/update_npc — LLM берёт slug прямо
+		// из реестра, а не выдумывает транслитерацию.
+		if world.NPCRegistry != "" {
+			b.WriteString(world.NPCRegistry)
+			b.WriteString("\n\n")
+		}
 		if world.WorldCanon != "" {
 			b.WriteString("### Канон\n")
 			b.WriteString(world.WorldCanon)
@@ -199,6 +231,10 @@ func BuildWorldStateMessage(world WorldContext) string {
 			b.WriteString(world.WorldMemorise)
 			b.WriteString("\n\n")
 		}
+		if world.WorldStage != "" {
+			b.WriteString(world.WorldStage)
+			b.WriteString("\n\n")
+		}
 	}
 
 	if len(world.NPCs) > 0 {
@@ -211,4 +247,56 @@ func BuildWorldStateMessage(world WorldContext) string {
 	}
 
 	return strings.TrimSpace(b.String())
+}
+
+// FormatNPCRegistry renders the world's NPC registry as
+// a compact map the LLM can read in one glance. The slug
+// is the first thing printed so the model can copy it
+// verbatim into a tool call (create_npc, update_npc,
+// search_npc) without re-deriving it from a Russian
+// display_name. Nicknames follow in parentheses so the
+// model can also recognise short forms the operator may
+// have used in state.md ("Саске" → "sasuke_uchiha").
+//
+// When the registry is empty (first launch, sandbox
+// world, fresh characters.yaml that has not been
+// populated yet) the helper returns "" so the
+// WorldState block does not gain an empty header.
+//
+// Format (markdown list, one line per NPC):
+//
+//	## Ниже информация по известным NPC <world>
+//	* <display_name> (<nick1>, <nick2>, ...): <slug>
+//	* <display_name> (...): <slug>
+func FormatNPCRegistry(worldName string, entries []NPCEntry) string {
+	if len(entries) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	if worldName == "" {
+		b.WriteString("## Ниже информация по известным NPC\n")
+	} else {
+		fmt.Fprintf(&b, "## Ниже информация по известным NPC (%s)\n", worldName)
+	}
+	for _, e := range entries {
+		// Drop the empty/blank nicknames to avoid
+		// "<display_name> (): <slug>".
+		parts := make([]string, 0, len(e.Nicknames))
+		for _, n := range e.Nicknames {
+			if t := strings.TrimSpace(n); t != "" {
+				parts = append(parts, t)
+			}
+		}
+		display := strings.TrimSpace(e.DisplayName)
+		slug := strings.TrimSpace(e.Slug)
+		if display == "" {
+			display = slug
+		}
+		if len(parts) > 0 {
+			fmt.Fprintf(&b, "* %s (%s): %s\n", display, strings.Join(parts, ", "), slug)
+		} else {
+			fmt.Fprintf(&b, "* %s: %s\n", display, slug)
+		}
+	}
+	return strings.TrimRight(b.String(), "\n")
 }

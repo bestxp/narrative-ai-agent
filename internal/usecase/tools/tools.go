@@ -207,6 +207,10 @@ type Tool interface {
 	// files.Memory takes a Summarizer dependency (see
 	// NPCSummarizer interface) which is wired at
 	// construction time in cmd/bot/main.go.
+	//
+	// Not exposed as an LLM tool — invoked automatically
+	// at end_day by the GM. The model does not need to
+	// (and should not) call it directly.
 	MaintainNPCs(world string) ([]string, error)
 	// MaintainLore compacts the active world's lore.md
 	// when it grows past tools.LoreMaintainThreshold
@@ -306,6 +310,22 @@ type Tool interface {
 	// when the NPC has no profile yet — the model must
 	// call Create first.
 	UpdateNPC(world, npc, section, appendText string) error
+
+	// --- staging (story arcs) ---
+	//
+	// UpdateStage schedules a transition to a new stage.
+	// The new stage is not visible in the WorldState user
+	// message until end_day applies the pending
+	// transition. Returns true on a successful write.
+	UpdateStage(ctx context.Context, world, nextID string) (bool, error)
+	// AdvanceTimeline moves the cursor within the active
+	// stage's timeline. Returns false when already at the
+	// last point or when staging is disabled for the world.
+	AdvanceTimeline(ctx context.Context, world string) (bool, error)
+	// ApplyPendingStage is the end-of-day hook that
+	// activates a previously-scheduled stage transition.
+	// No-op when nothing is pending.
+	ApplyPendingStage(world string) error
 }
 
 // Reloadable is an optional capability a backend can
