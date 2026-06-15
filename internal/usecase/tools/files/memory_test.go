@@ -966,7 +966,7 @@ func TestStateArchiveDay_TriggersCompression(t *testing.T) {
 	writeMemoriseDays(t, fs, "naruto", days)
 	stub := &stubMemoriseSummarizer{returnedBody: "сводка"}
 	mem := newMemory(fs, zerolog.Nop(), nil, nil, stub, nil)
-	st := newState(fs, zerolog.Nop())
+	st := newState(fs, zerolog.Nop(), slowlog.Discard())
 	st.SetMemoriseCompress(mem.memoriseCompressAfterArchive)
 	require.NoError(t, st.ArchiveDay(context.Background(), "naruto", 30, "итог"))
 	assert.Equal(t, 1, stub.calls)
@@ -992,7 +992,7 @@ func TestStateArchiveDay_NotMultipleOf30(t *testing.T) {
 	writeMemoriseDays(t, fs, "naruto", days)
 	stub := &stubMemoriseSummarizer{returnedBody: "no"}
 	mem := newMemory(fs, zerolog.Nop(), nil, nil, stub, nil)
-	st := newState(fs, zerolog.Nop())
+	st := newState(fs, zerolog.Nop(), slowlog.Discard())
 	st.SetMemoriseCompress(mem.memoriseCompressAfterArchive)
 	require.NoError(t, st.ArchiveDay(context.Background(), "naruto", 25, "x"))
 	assert.Equal(t, 0, stub.calls, "day 25 is not a window boundary")

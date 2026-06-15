@@ -1,6 +1,8 @@
 package files
 
 import (
+	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 
@@ -12,6 +14,12 @@ import (
 	"github.com/bestxp/narrative-ai-agent/internal/slowlog"
 	"github.com/bestxp/narrative-ai-agent/internal/usecase/tools"
 )
+
+// readFile is a tiny shim around os.ReadFile kept here so
+// captureSlowlog doesn't need to import "os" itself.
+func readFile(path string) ([]byte, error) {
+	return os.ReadFile(path)
+}
 
 // newTestToolset is the canonical fixture for state-level tests.
 // It writes the registry (info.yaml) and the world directory
@@ -25,6 +33,39 @@ func newTestToolset(t *testing.T) *Toolset {
 	require.NoError(t, fs.WriteRawAtomic("info.yaml",
 		"active_character: markus\nactive_world: naruto\n"))
 	return New(fs, zerolog.Nop(), slowlog.Discard(), nil, nil, nil, nil)
+}
+
+// captureSlowlog returns a *slowlog.Logger that writes JSON
+// lines into a temp file. The returned read-back func parses
+// the file and returns all entries that match a given kind.
+// Used by tests that assert on structured slowlog events
+// (tool.update_state, tool.update_npc, etc.).
+func captureSlowlog(t *testing.T) (*slowlog.Logger, func(kind string) []slowlog.Entry) {
+	t.Helper()
+	dir := t.TempDir()
+	logger, err := slowlog.File(dir + "/slow.log")
+	require.NoError(t, err)
+	read := func(kind string) []slowlog.Entry {
+		data, err := readFile(dir + "/slow.log")
+		if err != nil {
+			return nil
+		}
+		var out []slowlog.Entry
+		for _, line := range strings.Split(strings.TrimRight(string(data), "\n"), "\n") {
+			if line == "" {
+				continue
+			}
+			var e slowlog.Entry
+			if err := json.Unmarshal([]byte(line), &e); err != nil {
+				continue
+			}
+			if e.Kind == kind {
+				out = append(out, e)
+			}
+		}
+		return out
+	}
+	return logger, read
 }
 
 // TestUpdateState_DedupesAppendEvents is the regression
@@ -146,4 +187,106 @@ func TestUpdateState_ReplacesNPCList(t *testing.T) {
 	assert.Contains(t, body, "NPC: Ирука")
 	assert.NotContains(t, body, "Хокаге", "Хокаге should have been removed when he left the scene")
 	// sanity: file path joined correctly
+}
+
+// newStateWithSlowlog is a state-only fixture for slowlog
+// assertions. It mirrors newTestToolset but wires a real
+// slowlog file so the test can read back the
+// `tool.update_state` entries. Keeping this separate from
+// newTestToolset means existing tests that rely on
+// `slowlog.Discard()` aren't affected.
+func newStateWithSlowlog(t *testing.T) (*State, func(kind string) []slowlog.Entry) {
+	t.Helper()
+	fs, err := storage.NewFileStore(t.TempDir())
+	require.NoError(t, err)
+	require.NoError(t, fs.EnsureDir("worlds/naruto/characters"))
+	require.NoError(t, fs.WriteRawAtomic("info.yaml",
+		"active_character: markus\nactive_world: naruto\n"))
+	logger, read := captureSlowlog(t)
+	st := newState(fs, zerolog.Nop(), logger)
+	return st, read
+}
+
+// TestUpdateState_SlowlogDeltaNPCAddedRemoved verifies that
+// every UpdateState call writes a structured slowlog
+// entry with the per-element diff (npcs_added, npcs_removed,
+// events_added). This is the regression coverage for the
+// "what did update_state actually write?" diagnostic —
+// without these fields, an operator looking at slow.log
+// after a session only sees "npcs: 5→7" but cannot tell
+// which 2 joined the roster.
+func TestUpdateState_SlowlogDeltaNPCAddedRemoved(t *testing.T) {
+	st, read := newStateWithSlowlog(t)
+	require.NoError(t, st.UpdateState(tools.StateSnapshot{
+		Day: 1, InFlight: true, Moment: "утро",
+		NPCs: []string{"Ирука", "Какаши"},
+	}))
+	require.NoError(t, st.UpdateState(tools.StateSnapshot{
+		Day: 1, InFlight: true, Moment: "день",
+		NPCs:         []string{"Ирука", "Хината"}, // -Какаши, +Хината
+		AppendEvents: []string{"встретил Хинату"},
+	}))
+
+	entries := read("tool.update_state")
+	require.Len(t, entries, 2, "one tool.update_state per UpdateState call")
+
+	// First call: cold roster.
+	first := entries[0].Fields
+	assert.Equal(t, float64(1), first["day"])
+	assert.Equal(t, "утро", first["moment"])
+	added := toStrSlice(t, first["npcs_added"])
+	assert.ElementsMatch(t, []string{"Ирука", "Какаши"}, added)
+	assert.Empty(t, toStrSlice(t, first["npcs_removed"]))
+	assert.Equal(t, float64(0), first["events_added"])
+	assert.Equal(t, "worlds/naruto/state.md", first["path"])
+	assert.Greater(t, first["bytes"], float64(0))
+
+	// Second call: -Какаши, +Хината, +1 event.
+	second := entries[1].Fields
+	assert.Equal(t, "день", second["moment"])
+	assert.ElementsMatch(t, []string{"Хината"}, toStrSlice(t, second["npcs_added"]))
+	assert.ElementsMatch(t, []string{"Какаши"}, toStrSlice(t, second["npcs_removed"]))
+	assert.Equal(t, float64(1), second["events_added"])
+}
+
+// TestUpdateState_SlowlogNilSafe verifies that UpdateState
+// with a nil slowlog (the legacy code path that pre-dates
+// the slowlog wiring) does not panic. This matters for
+// firstlaunch → newWorld.Launch, which constructs a
+// bare-bones State without a logger.
+func TestUpdateState_SlowlogNilSafe(t *testing.T) {
+	fs, err := storage.NewFileStore(t.TempDir())
+	require.NoError(t, err)
+	require.NoError(t, fs.EnsureDir("worlds/naruto/characters"))
+	st := newState(fs, zerolog.Nop(), nil) // <-- nil slow
+	require.NoError(t, st.UpdateState(tools.StateSnapshot{
+		Day: 1, InFlight: true, Moment: "m",
+		NPCs: []string{"Ирука"},
+	}))
+}
+
+// toStrSlice converts a `[]any` (as produced by JSON
+// unmarshal of a `[]string`) into a `[]string` for
+// assert.ElementsMatch. Returns an empty slice (not nil)
+// when the input is missing or not a slice, so
+// ElementsMatch is safe on an absent field.
+func toStrSlice(t *testing.T, v any) []string {
+	t.Helper()
+	if v == nil {
+		return []string{}
+	}
+	switch xs := v.(type) {
+	case []string:
+		return xs
+	case []any:
+		out := make([]string, 0, len(xs))
+		for _, x := range xs {
+			if s, ok := x.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out
+	default:
+		return []string{}
+	}
 }

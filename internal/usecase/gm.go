@@ -2773,6 +2773,26 @@ func (g *GM) dispatchOneTool(ctx context.Context, tc llm.ToolCall) (string, stri
 		}); err != nil {
 			return "", err.Error()
 		}
+		// Emit a `tool.update_state` slowlog event from
+		// the GM layer too. The state.go side already
+		// emits one with the on-disk delta (npcs_added /
+		// npcs_removed / events_added). This GM-level
+		// emission adds the LLM-side intent (the raw
+		// args the model passed) so an operator can
+		// correlate an `update_state` tool call with
+		// the prompt that produced it. The two entries
+		// are intentionally distinct — one tagged with
+		// `dispatch: state` (filesystem delta), the other
+		// with `dispatch: gm` (LLM intent).
+		if g.slow != nil {
+			_ = g.slow.Write("tool.update_state", "", map[string]any{
+				"day":      day,
+				"moment":   moment,
+				"npcs":     npcs,
+				"events":   events,
+				"dispatch": "gm",
+			})
+		}
 		// ToolResult is intentionally SHORT. We do NOT
 		// rebuild the WorldState snapshot here (it would
 		// bust the prompt cache every turn). The model

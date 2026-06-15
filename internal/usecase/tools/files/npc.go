@@ -11,6 +11,7 @@ import (
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
 	"github.com/bestxp/narrative-ai-agent/internal/domain"
 	"github.com/bestxp/narrative-ai-agent/internal/npcprofile"
+	"github.com/bestxp/narrative-ai-agent/internal/slowlog"
 	"github.com/bestxp/narrative-ai-agent/internal/usecase/tools"
 	"github.com/bestxp/narrative-ai-agent/internal/worldregistry"
 )
@@ -32,10 +33,24 @@ import (
 type NPC struct {
 	fs  *storage.FileStore
 	log zerolog.Logger
+	// slow is the audit log; nil-safe (Write checks nil).
+	// Wired at construction in NewFileToolset; tests pass
+	// slowlog.Discard(). Emits `tool.update_npc` events so
+	// the operator can correlate an LLM-driven `update_npc`
+	// call with the on-disk change. Without this, the
+	// only trace is the `npc_updated` zerolog Info line —
+	// which is fine for human eyeballs but useless for
+	// the regression suite (no structured `kind=...`
+	// prefix to grep against).
+	slow *slowlog.Logger
 }
 
-func newNPC(fs *storage.FileStore, log zerolog.Logger) *NPC {
-	return &NPC{fs: fs, log: log.With().Str("component", "npc").Logger()}
+func newNPC(fs *storage.FileStore, log zerolog.Logger, slow *slowlog.Logger) *NPC {
+	return &NPC{
+		fs:   fs,
+		log:  log.With().Str("component", "npc").Logger(),
+		slow: slow,
+	}
 }
 
 // ErrNPCExists is returned when Create is called for an NPC
@@ -335,6 +350,21 @@ func (n *NPC) UpdateNPC(world, npc, section, appendText string) error {
 		// warning; the slowlog already shows
 		// how many turns produced an effective
 		// change.
+		// Still emit a `tool.update_npc` slowlog
+		// event with `changed: false` so an
+		// operator reading the trace can see the
+		// LLM *attempted* an update, even if the
+		// summarizer-side dedupe rejected it.
+		if n.slow != nil {
+			_ = n.slow.Write("tool.update_npc", "", map[string]any{
+				"world":    world,
+				"npc":      slug,
+				"section":  kind.CanonicalSectionName(),
+				"changed":  false,
+				"bytes_in": len(appendText),
+				"path":     rel,
+			})
+		}
 		return nil
 	}
 	if err := n.saveProfile(rel, profile); err != nil {
@@ -346,6 +376,16 @@ func (n *NPC) UpdateNPC(world, npc, section, appendText string) error {
 		Str("section", kind.CanonicalSectionName()).
 		Int("bytes_added", len(appendText)).
 		Msg("npc_updated")
+	if n.slow != nil {
+		_ = n.slow.Write("tool.update_npc", "", map[string]any{
+			"world":       world,
+			"npc":         slug,
+			"section":     kind.CanonicalSectionName(),
+			"changed":     true,
+			"bytes_added": len(appendText),
+			"path":        rel,
+		})
+	}
 	return nil
 }
 

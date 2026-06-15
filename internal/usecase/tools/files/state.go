@@ -11,6 +11,7 @@ import (
 
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
 	"github.com/bestxp/narrative-ai-agent/internal/domain"
+	"github.com/bestxp/narrative-ai-agent/internal/slowlog"
 	"github.com/bestxp/narrative-ai-agent/internal/usecase/tools"
 )
 
@@ -19,6 +20,17 @@ import (
 type State struct {
 	fs  *storage.FileStore
 	log zerolog.Logger
+	// slow is the audit log; nil-safe (Write checks nil).
+	// Wired at construction in NewFileToolset from the
+	// process-level slowlog; tests pass slowlog.Discard().
+	// Used to emit `tool.update_state` events with
+	// npcs_added / npcs_removed / events_added deltas
+	// so the operator (and the regression tests) can see
+	// what an `update_state` tool call actually wrote
+	// to state.md — the regular `c.log.Info` only emits
+	// the day/in_flight/npcs/events counters, not the
+	// per-element diff.
+	slow *slowlog.Logger
 	// memoriseCompress is invoked after a successful
 	// memorise.md append. The implementation lives on
 	// *Memory (MemoriseCompressWindow). It is wired by
@@ -36,8 +48,12 @@ type State struct {
 	worldStateInvalidate func(reason string)
 }
 
-func newState(fs *storage.FileStore, log zerolog.Logger) *State {
-	return &State{fs: fs, log: log.With().Str("component", "state").Logger()}
+func newState(fs *storage.FileStore, log zerolog.Logger, slow *slowlog.Logger) *State {
+	return &State{
+		fs:   fs,
+		log:  log.With().Str("component", "state").Logger(),
+		slow: slow,
+	}
 }
 
 // SetMemoriseCompress wires the post-ArchiveDay hook.
@@ -80,6 +96,16 @@ func (s *State) UpdateState(snap tools.StateSnapshot) error {
 	rel := "worlds/" + snap.World + "/state.md"
 	cur, _ := s.fs.ReadRaw(rel)
 	existing := ParseStateMD(cur)
+	// Snapshot the BEFORE picture for the slowlog diff.
+	// We compute npcs_added / npcs_removed / events_added
+	// against the on-disk state, not against snap.NPCs /
+	// snap.AppendEvents in isolation, so an `update_state`
+	// call that doesn't change the roster (e.g. only updates
+	// moment) is visible as npcs_added=[], npcs_removed=[],
+	// rather than confusingly showing the entire roster
+	// as "added".
+	prevNPCs := append([]string(nil), existing.NPCs...)
+	prevEventCount := len(existing.Events)
 	existing.World = snap.World
 	existing.Day = snap.Day
 	existing.InFlight = snap.InFlight
@@ -122,7 +148,57 @@ func (s *State) UpdateState(snap tools.StateSnapshot) error {
 		Int("npcs", len(snap.NPCs)).
 		Int("events", len(existing.Events)).
 		Msg("update_state")
+	// Emit a structured `tool.update_state` slowlog event
+	// with the per-element delta. The regular Info() above
+	// tells the operator "this turn called update_state" —
+	// this entry tells them WHAT it changed (which NPCs
+	// joined or left the active roster, how many new
+	// events were appended to the day's chronology).
+	// Slowlog is nil-safe (Write guards against nil).
+	//
+	// npcs_added = elements in the new roster that
+	// were NOT in the old roster (e.g. "Цунами",
+	// "Инари" when the scene widens).
+	//
+	// npcs_removed = elements in the old roster that
+	// are NOT in the new roster (e.g. "Какаши"
+	// when he walks off-stage). Compute the diff as
+	// `new \ old` (added) and `old \ new` (removed).
+	if s.slow != nil {
+		_ = s.slow.Write("tool.update_state", "", map[string]any{
+			"day":          snap.Day,
+			"in_flight":    snap.InFlight,
+			"moment":       snap.Moment,
+			"npcs_added":   diffStrings(existing.NPCs, prevNPCs),
+			"npcs_removed": diffStrings(prevNPCs, existing.NPCs),
+			"npcs_now":     existing.NPCs,
+			"events_added": len(existing.Events) - prevEventCount,
+			"path":         rel,
+			"bytes":        len(body),
+		})
+	}
 	return s.fs.WriteRawAtomic(rel, body)
+}
+
+// diffStrings returns elements present in `a` but not in `b`,
+// preserving order. Used to compute npcs_added / npcs_removed
+// for the `tool.update_state` slowlog event. Both inputs are
+// treated as sets (case-sensitive, whitespace-trimmed).
+func diffStrings(a, b []string) []string {
+	bs := make(map[string]struct{}, len(b))
+	for _, s := range b {
+		bs[strings.TrimSpace(s)] = struct{}{}
+	}
+	var out []string
+	for _, s := range a {
+		if _, ok := bs[strings.TrimSpace(s)]; !ok {
+			out = append(out, strings.TrimSpace(s))
+		}
+	}
+	if out == nil {
+		return []string{}
+	}
+	return out
 }
 
 // ParseStateMD is the inverse of BuildStateMarkdown — it

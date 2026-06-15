@@ -157,7 +157,7 @@ func (w *World) initialiseBlankWorld(dir string) error {
 			return err
 		}
 	}
-	return newState(w.fs, w.log).RotatePlan(dir, []string{
+	return newState(w.fs, w.log, nil).RotatePlan(dir, []string{
 		"вводная сцена: знакомство с миром",
 		"первая зацепка / конфликт",
 		"первая развилка",
