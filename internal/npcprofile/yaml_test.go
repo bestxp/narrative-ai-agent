@@ -80,7 +80,8 @@ func TestSave_RoundTrip(t *testing.T) {
 func TestBuildMarkdown_AllSections(t *testing.T) {
 	p, err := Load(fullYAML)
 	require.NoError(t, err)
-	md := p.BuildMarkdown()
+	md, err := p.BuildMarkdown()
+	require.NoError(t, err)
 	for _, header := range []string{
 		"# Хината Хьюга",
 		"## Темперамент",
@@ -109,7 +110,8 @@ func TestBuildMarkdown_EmptySectionsOmitted(t *testing.T) {
 		FileSlug:    "iruka",
 		Temperament: "Добрый учитель",
 	}
-	md := p.BuildMarkdown()
+	md, err := p.BuildMarkdown()
+	require.NoError(t, err)
 	assert.Contains(t, md, "# Ирука")
 	assert.Contains(t, md, "## Темперамент")
 	assert.NotContains(t, md, "## Отношения с ГГ")

@@ -404,55 +404,6 @@ func npcAllowedSections() []string {
 	}
 }
 
-// BuildNPCMarkdown renders a fresh NPC profile from the
-// legacy NPCProfile struct. The canonical render path
-// for files on disk is npcprofile.Profile (YAML); this
-// function is the legacy markdown renderer kept
-// verbatim for backward compatibility with tests and
-// external callers that still hand us a tools.NPCProfile.
-// The block layout — nicknames at the top, the
-// "## Отношения с другими NPC" placeholder, and the
-// "## Последнее обновление" footer at the bottom —
-// matches the pre-YAML shape exactly so the model and
-// the operator see the same file layout.
-func BuildNPCMarkdown(p tools.NPCProfile) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "# %s\n", strings.TrimSpace(p.DisplayName))
-	if len(p.Nicknames) > 0 {
-		fmt.Fprintf(&b, "_Прозвища: %s_\n", strings.Join(p.Nicknames, ", "))
-	}
-	sections := []struct {
-		name    string
-		content string
-	}{
-		{"Темперамент", p.Temperament},
-		{"Отношения с ГГ", p.Relations},
-		{"Отношения с другими NPC", ""}, // placeholder, model fills via update_npc
-		{"Способности", strings.Join(p.Abilities, "\n")},
-		{"Личная память/факты", p.PersonalMemory},
-		{"Текущий статус", p.CurrentStatus},
-		{"Критические знания", p.CriticalKnowledge},
-	}
-	for _, s := range sections {
-		if strings.TrimSpace(s.content) == "" {
-			continue
-		}
-		fmt.Fprintf(&b, "\n## %s\n%s\n", s.name, strings.TrimSpace(s.content))
-	}
-	// "Отношения с другими NPC" placeholder when there are
-	// no other sections — gives the model a place to start
-	// writing on the first update_npc call.
-	b.WriteString("\n## Отношения с другими NPC\n_(допиши через update_npc)_\n")
-	// Last update — always rendered so future UpdateNPC
-	// calls have a stable landing pad.
-	if strings.TrimSpace(p.LastUpdate) != "" {
-		fmt.Fprintf(&b, "\n## Последнее обновление\n%s\n", strings.TrimSpace(p.LastUpdate))
-	} else {
-		b.WriteString("\n## Последнее обновление\n_(пусто)_\n")
-	}
-	return b.String()
-}
-
 // appendRegistry adds a freshly-created NPC to
 // worlds/<w>/characters.yaml. The entry's slug is
 // the on-disk file name; the registry is the
@@ -523,7 +474,7 @@ func (n *NPC) Load(world, npc string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return profile.BuildMarkdown(), nil
+	return profile.BuildMarkdown()
 }
 
 // LoadLOD returns the NPC profile rendered at the
@@ -556,9 +507,9 @@ func (n *NPC) LoadLOD(world, npc string, lod tools.NPCLOD) (string, error) {
 	case tools.LODOneLine:
 		return profile.BuildOneLine(), nil
 	case tools.LODFull:
-		return profile.BuildMarkdown(), nil
+		return profile.BuildMarkdown()
 	default:
-		return profile.BuildMarkdown(), nil
+		return profile.BuildMarkdown()
 	}
 }
 

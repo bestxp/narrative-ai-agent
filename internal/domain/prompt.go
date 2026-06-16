@@ -1,8 +1,9 @@
 package domain
 
 import (
-	"fmt"
 	"strings"
+
+	"github.com/bestxp/narrative-ai-agent/internal/prompts"
 )
 
 // CharacterContext is the per-turn bundle of player-character
@@ -83,6 +84,21 @@ type WorldContext struct {
 	NPCRegistry string
 }
 
+// StateSnapshot is the in-memory representation of
+// state.md. The writer-tool layer (usecase/tools/files)
+// reads/writes this struct; the data-bag for the
+// state.md.tmpl template (prompts.StateData) is
+// projected from it in renderStateBody.
+type StateSnapshot struct {
+	World    string
+	Day      int
+	InFlight bool
+	Location string
+	NPCs     []string
+	Moment   string
+	Events   []string
+}
+
 // NPCEntry is a single row of the NPC registry summary
 // embedded in the WorldState user message. The LLM uses
 // this to map names it sees in `state.md` (e.g. "Какаши
@@ -105,15 +121,14 @@ type NPCSnapshot struct {
 }
 
 // BuildSystemPrompt renders the system message (Индекс 0) for the
-// narrative role. It embeds the static skill text (passed in by
-// the caller from prompts/narrative.md) and the player-character
-// data (SOUL/SKILL/memory + the section list for update_character).
-// NOTHING world-related lives here — the world state goes into a
-// separate user message (see BuildWorldStateMessage).
-//
-// Format is intentionally human-readable: the LLM re-reads this
-// every turn, and a markdown layout is easier to navigate than a
-// JSON blob.
+// narrative role. The static skill text is passed in by the caller
+// from prompts/narrative.md (or rendered from
+// prompts/narrative.md.tmpl) — this function only handles the
+// technical prefix (/no_think). The character-block (SOUL/SKILL/
+// memory) used to live here, but as of the templates refactor it
+// moved into world_state.md.tmpl (user[0]) — see
+// BuildWorldStateMessage and the project-wide rule "system and
+// world state are two different messages in []completions".
 //
 // disableThinking prepends a "/no_think" directive to the system
 // prompt. The primary switch for Ollama v0.5.11+ thinking-capable
@@ -125,47 +140,14 @@ type NPCSnapshot struct {
 // It costs ~5 extra tokens per turn; the operator can disable
 // the role-level flag if they want zero overhead.
 func BuildSystemPrompt(staticRules string, char CharacterContext, disableThinking ...bool) string {
+	_ = char // kept for callers that pre-populate CharacterContext;
+	// character-block is rendered in user[0] via
+	// BuildWorldStateMessage, not here.
 	noThink := len(disableThinking) > 0 && disableThinking[0]
-	var b strings.Builder
-	if noThink {
-		b.WriteString("/no_think\n")
+	if !noThink {
+		return strings.TrimSpace(staticRules)
 	}
-	b.WriteString(strings.TrimSpace(staticRules))
-	b.WriteString("\n\n---\n\n")
-
-	if char.Character != "" {
-		fmt.Fprintf(&b, "## Персонаж игрока: %s\n\n", char.Character)
-		if char.CharacterSOUL != "" {
-			b.WriteString("### SOUL\n")
-			b.WriteString(char.CharacterSOUL)
-			b.WriteString("\n\n")
-		}
-		if char.CharacterSKILL != "" {
-			b.WriteString("### SKILL\n")
-			b.WriteString(char.CharacterSKILL)
-			b.WriteString("\n\n")
-		}
-		if char.CharacterMemory != "" {
-			b.WriteString("### Межмировые воспоминания\n")
-			b.WriteString(char.CharacterMemory)
-			b.WriteString("\n\n")
-		}
-		// CharacterSections is intentionally left
-		// UNUSED. The h5 refactor moved the per-file
-		// data into the YAML bodies themselves
-		// (each file's `data: [{section, values}]`
-		// array is the canonical section list) —
-		// the model sees section names verbatim in
-		// the SOUL/SKILL/memory bodies above. A
-		// separate enumeration block would just
-		// duplicate the YAML keys and add cache
-		// weight to the system prompt. The field
-		// is kept on CharacterContext for backward
-		// compatibility with external callers that
-		// pre-populate it; we just do not render it.
-	}
-
-	return strings.TrimSpace(b.String())
+	return "/no_think\n\n" + strings.TrimSpace(staticRules)
 }
 
 // BuildWorldStateMessage renders the WorldState user message
@@ -175,10 +157,18 @@ func BuildSystemPrompt(staticRules string, char CharacterContext, disableThinkin
 //
 // The block opens with a `[WORLD_STATE]` marker so the LLM
 // recognises it on re-read. After the marker come the world's
-// world state (here-and-now), canon (external, read-only), lore
-// (deviations), plan (3-5 upcoming events), chronicle (full
-// history including compressed windows), and finally the
-// active NPC profiles.
+// world state (here-and-now), the active character block
+// (SOUL/SKILL/memory), the NPC registry, canon (external,
+// read-only), lore (deviations), plan (3-5 upcoming events),
+// chronicle (full history including compressed windows), the
+// staged story (sюжетная стадия) and finally the active NPC
+// profiles.
+//
+// All formatting lives in prompts/world_state.md.tmpl — this
+// function is a thin wrapper that builds the data-bag and
+// delegates to prompts.Render. Order of blocks, conditional
+// rendering, and bullet formatting are template decisions, not
+// Go decisions.
 //
 // The block is regenerated on:
 //   - end_day (after the protocol is appended)
@@ -191,112 +181,54 @@ func BuildSystemPrompt(staticRules string, char CharacterContext, disableThinkin
 // `create_npc`, `update_npc`, ...) is reflected to the LLM
 // through a short ToolResult delta instead of invalidating
 // this block.
-func BuildWorldStateMessage(world WorldContext) string {
-	var b strings.Builder
-	b.WriteString("[WORLD_STATE]\n")
-
-	if world.World != "" {
-		fmt.Fprintf(&b, "\n## Активный мир: %s\n\n", world.World)
-		if world.WorldState != "" {
-			b.WriteString("### world state (здесь и сейчас)\n")
-			b.WriteString(world.WorldState)
-			b.WriteString("\n\n")
-		}
-		// Реестр NPC — встроен в самом верху, чтобы LLM
-		// видел «display_name → slug» без необходимости
-		// дёргать search_npc на каждом ходу. Помогает при
-		// create_npc/update_npc — LLM берёт slug прямо
-		// из реестра, а не выдумывает транслитерацию.
-		if world.NPCRegistry != "" {
-			b.WriteString(world.NPCRegistry)
-			b.WriteString("\n\n")
-		}
-		if world.WorldCanon != "" {
-			b.WriteString("### Канон\n")
-			b.WriteString(world.WorldCanon)
-			b.WriteString("\n\n")
-		}
-		if world.WorldLore != "" {
-			b.WriteString("### Отклонения от канона (lore)\n")
-			b.WriteString(world.WorldLore)
-			b.WriteString("\n\n")
-		}
-		if world.WorldPlan != "" {
-			b.WriteString("### plan (3-5 предстоящих событий)\n")
-			b.WriteString(world.WorldPlan)
-			b.WriteString("\n\n")
-		}
-		if world.WorldMemorise != "" {
-			b.WriteString("### Хронология (chronicle)\n")
-			b.WriteString(world.WorldMemorise)
-			b.WriteString("\n\n")
-		}
-		if world.WorldStage != "" {
-			b.WriteString(world.WorldStage)
-			b.WriteString("\n\n")
-		}
+func BuildWorldStateMessage(world WorldContext, char CharacterContext) (string, error) {
+	charData := prompts.CharacterData{
+		Name:   char.Character,
+		SOUL:   char.CharacterSOUL,
+		SKILL:  char.CharacterSKILL,
+		Memory: char.CharacterMemory,
 	}
-
-	if len(world.NPCs) > 0 {
-		b.WriteString("## Активные NPC\n")
-		for _, npc := range world.NPCs {
-			fmt.Fprintf(&b, "### %s\n", npc.DisplayName)
-			b.WriteString(npc.Profile)
-			b.WriteString("\n\n")
-		}
+	worldData := prompts.WorldData{
+		Name:        world.World,
+		State:       world.WorldState,
+		Canon:       world.WorldCanon,
+		Lore:        world.WorldLore,
+		Plan:        world.WorldPlan,
+		Memorise:    world.WorldMemorise,
+		Stage:       world.WorldStage,
+		NPCRegistry: world.NPCRegistry,
 	}
-
-	return strings.TrimSpace(b.String())
+	if world.NPCs != nil {
+		displayNames := make([]string, len(world.NPCs))
+		profiles := make([]string, len(world.NPCs))
+		for i, n := range world.NPCs {
+			displayNames[i] = n.DisplayName
+			profiles[i] = n.Profile
+		}
+		worldData.ActiveNPCs = prompts.ConvertNPCSnapshots(displayNames, profiles)
+	}
+	return prompts.Render("world_state.md.tmpl", prompts.PromptData{
+		Character: charData,
+		World:     worldData,
+	})
 }
 
-// FormatNPCRegistry renders the world's NPC registry as
-// a compact map the LLM can read in one glance. The slug
-// is the first thing printed so the model can copy it
-// verbatim into a tool call (create_npc, update_npc,
-// search_npc) without re-deriving it from a Russian
-// display_name. Nicknames follow in parentheses so the
-// model can also recognise short forms the operator may
-// have used in state.md ("Саске" → "sasuke_uchiha").
-//
-// When the registry is empty (first launch, sandbox
-// world, fresh characters.yaml that has not been
-// populated yet) the helper returns "" so the
-// WorldState block does not gain an empty header.
-//
-// Format (markdown list, one line per NPC):
-//
-//	## Ниже информация по известным NPC <world>
-//	* <display_name> (<nick1>, <nick2>, ...): <slug>
-//	* <display_name> (...): <slug>
-func FormatNPCRegistry(worldName string, entries []NPCEntry) string {
-	if len(entries) == 0 {
-		return ""
-	}
-	var b strings.Builder
-	if worldName == "" {
-		b.WriteString("## Ниже информация по известным NPC\n")
-	} else {
-		fmt.Fprintf(&b, "## Ниже информация по известным NPC (%s)\n", worldName)
-	}
-	for _, e := range entries {
-		// Drop the empty/blank nicknames to avoid
-		// "<display_name> (): <slug>".
-		parts := make([]string, 0, len(e.Nicknames))
-		for _, n := range e.Nicknames {
-			if t := strings.TrimSpace(n); t != "" {
-				parts = append(parts, t)
-			}
-		}
-		display := strings.TrimSpace(e.DisplayName)
-		slug := strings.TrimSpace(e.Slug)
-		if display == "" {
-			display = slug
-		}
-		if len(parts) > 0 {
-			fmt.Fprintf(&b, "* %s (%s): %s\n", display, strings.Join(parts, ", "), slug)
-		} else {
-			fmt.Fprintf(&b, "* %s: %s\n", display, slug)
-		}
-	}
-	return strings.TrimRight(b.String(), "\n")
-}
+// FormatNPCRegistry was the helper that rendered the
+// world's NPC registry as a compact markdown list. The
+// formatting now lives inline in
+// prompts/world_state.md.tmpl. The function has been
+// removed as part of the templates refactor; this
+// stub is kept as a compile-time marker that the
+// template owns the format. If you are migrating code
+// that still calls FormatNPCRegistry, switch to
+// populating WorldContext.NPCRegistry directly with
+// a pre-rendered string assembled in gm.go (or wire
+// the new structured NPCEntry rendering through the
+// template).
+
+// Note: the formatting rules from the old
+// FormatNPCRegistry implementation have been moved
+// inline into prompts/world_state.md.tmpl. Operators
+// that need to debug a missing-slug issue should look
+// at the world_state template, not the domain
+// package.

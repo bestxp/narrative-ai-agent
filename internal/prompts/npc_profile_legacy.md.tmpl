@@ -1,0 +1,31 @@
+# {{ .DisplayName }}{{ if .Nicknames }}
+_Прозвища: {{ join .Nicknames ", " }}_{{ end }}
+
+{{ if .Temperament }}## Темперамент
+{{ .Temperament }}
+{{ end }}{{ if .Relations }}
+## Отношения с ГГ
+{{ .Relations }}
+{{ end }}{{ if .Abilities }}
+## Способности
+{{ range .Abilities }}{{ . }}
+{{ end }}{{ end }}{{ if .PersonalMemory }}
+## Личная память/факты
+{{ .PersonalMemory }}
+{{ end }}{{ if .CurrentStatus }}
+## Текущий статус
+{{ .CurrentStatus }}
+{{ end }}{{ if .CriticalKnowledge }}
+## Критические знания
+{{ .CriticalKnowledge }}
+{{ end }}
+
+## Отношения с другими NPC
+_(допиши через update_npc)_
+{{ if .LastUpdate }}
+## Последнее обновление
+{{ .LastUpdate }}
+{{ else }}
+## Последнее обновление
+_(пусто)_
+{{ end }}

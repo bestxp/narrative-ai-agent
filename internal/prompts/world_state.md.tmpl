@@ -1,0 +1,56 @@
+[WORLD_STATE]
+
+{{- if .World.Name }}
+
+## Активный мир: {{ .World.Name }}
+
+{{ if .World.State }}### world state (здесь и сейчас)
+{{ .World.State }}
+{{ end }}
+
+{{ if .Character.Name }}## Персонаж игрока: {{ .Character.Name }}
+
+{{ if .Character.SOUL }}### SOUL
+{{ .Character.SOUL }}
+{{ end }}
+
+{{ if .Character.SKILL }}### SKILL
+{{ .Character.SKILL }}
+{{ end }}
+
+{{ if .Character.Memory }}### Межмировые воспоминания
+{{ .Character.Memory }}
+{{ end }}
+{{ end }}
+
+{{ if .World.NPCRegistry }}{{ .World.NPCRegistry }}
+{{ end }}
+
+{{ if .World.Canon }}### Канон
+{{ .World.Canon }}
+{{ end }}
+
+{{ if .World.Lore }}### Отклонения от канона (lore)
+{{ .World.Lore }}
+{{ end }}
+
+{{ if .World.Plan }}### plan (3-5 предстоящих событий)
+{{ .World.Plan }}
+{{ end }}
+
+{{ if .World.Memorise }}### Хронология (chronicle)
+{{ .World.Memorise }}
+{{ end }}
+
+{{ if .World.Stage }}{{ .World.Stage }}
+{{ end }}
+{{ if and .Narrative.IncludeSystemStateInPrompt .Display.SystemStateSummary }}### system state
+{{ .Display.SystemStateSummary }}
+{{ end }}
+{{ end }}
+
+{{ if .World.ActiveNPCs }}## Активные NPC
+{{ range .World.ActiveNPCs }}### {{ .DisplayName }}
+{{ .Profile }}
+
+{{ end }}{{ end }}

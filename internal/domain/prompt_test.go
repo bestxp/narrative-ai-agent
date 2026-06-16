@@ -7,10 +7,12 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// TestBuildSystemPrompt_IncludesRulesAndCharacter covers the
-// contract: system = rules + character only. No world data —
-// world is in the user message now.
-func TestBuildSystemPrompt_IncludesRulesAndCharacter(t *testing.T) {
+// TestBuildSystemPrompt_IncludesRulesOnly covers the
+// post-templates-refactor contract: system = rules
+// only. No character block (character moved to
+// world_state.md.tmpl). No world data — world is in
+// the user message now.
+func TestBuildSystemPrompt_IncludesRulesOnly(t *testing.T) {
 	got := BuildSystemPrompt(
 		"# Rules\nне управляй персонажем игрока",
 		CharacterContext{
@@ -19,8 +21,13 @@ func TestBuildSystemPrompt_IncludesRulesAndCharacter(t *testing.T) {
 		},
 	)
 	assert.Contains(t, got, "не управляй персонажем игрока")
-	assert.Contains(t, got, "## Персонаж игрока: Маркус")
-	assert.Contains(t, got, "### SOUL")
+	// Character block is no longer in system — moved to
+	// world_state.md.tmpl as part of the templates
+	// refactor.
+	assert.NotContains(t, got, "## Персонаж игрока: Маркус",
+		"character block moved to world_state.md.tmpl (user[0])")
+	assert.NotContains(t, got, "### SOUL",
+		"character SOUL moved to world_state.md.tmpl")
 	assert.NotContains(t, got, "## Активный мир",
 		"system prompt must not contain world data")
 	assert.NotContains(t, got, "state.md",
@@ -29,14 +36,14 @@ func TestBuildSystemPrompt_IncludesRulesAndCharacter(t *testing.T) {
 		"system prompt must not contain the [WORLD_STATE] marker — that belongs to user[0]")
 }
 
-// TestBuildSystemPrompt_StaticOnly: the system prompt output must
-// be byte-for-byte identical when only world-context changes
-// (the system prompt is supposed to depend on rules + character
-// ONLY, since cache-pointe on system is meant to be stable across
-// scene/world changes within a day).
+// TestBuildSystemPrompt_StaticOnly: the system prompt
+// output must be byte-for-byte identical when only the
+// CharacterContext is empty. (Same rules in, same
+// string out — the function does not depend on
+// character state any more.)
 func TestBuildSystemPrompt_StaticOnly(t *testing.T) {
 	base := BuildSystemPrompt("rules", CharacterContext{Character: "Маркус", CharacterSOUL: "x"})
-	withWorld := BuildSystemPrompt("rules", CharacterContext{Character: "Маркус", CharacterSOUL: "x"}) // pretend the caller varied other args — same rules, same character
+	withWorld := BuildSystemPrompt("rules", CharacterContext{Character: "Маркус", CharacterSOUL: "x"})
 
 	assert.Equal(t, base, withWorld,
 		"BuildSystemPrompt must not depend on world state")
@@ -46,7 +53,7 @@ func TestBuildSystemPrompt_StaticOnly(t *testing.T) {
 // message (Индекс 1) carries every world-scoped field. The full
 // set has to round-trip byte-for-byte.
 func TestBuildWorldStateMessage_IncludesEverythingElse(t *testing.T) {
-	got := BuildWorldStateMessage(WorldContext{
+	got, err := BuildWorldStateMessage(WorldContext{
 		World:         "naruto",
 		WorldState:    "День 3 (в процессе).\nУтро.",
 		WorldPlan:     "- День +1: встреча с Какаши",
@@ -56,7 +63,8 @@ func TestBuildWorldStateMessage_IncludesEverythingElse(t *testing.T) {
 		NPCs: []NPCSnapshot{
 			{DisplayName: "Какаши", Profile: "Шаринган"},
 		},
-	})
+	}, CharacterContext{Character: "Маркус"})
+	assert.NoError(t, err)
 	assert.Contains(t, got, "[WORLD_STATE]")
 	assert.Contains(t, got, "## Активный мир: naruto")
 	assert.Contains(t, got, "world state (здесь и сейчас)")
@@ -81,7 +89,7 @@ func TestBuildWorldStateMessage_PassesLongFieldsThroughUncut(t *testing.T) {
 	longLore := strings.Repeat("B", 5000)
 	longMemorise := strings.Repeat("M", 10000)
 	longProfile := strings.Repeat("X", 3000)
-	got := BuildWorldStateMessage(WorldContext{
+	got, err := BuildWorldStateMessage(WorldContext{
 		World:         "w",
 		WorldCanon:    longCanon,
 		WorldLore:     longLore,
@@ -89,7 +97,8 @@ func TestBuildWorldStateMessage_PassesLongFieldsThroughUncut(t *testing.T) {
 		NPCs: []NPCSnapshot{
 			{DisplayName: "Какаши", Profile: longProfile},
 		},
-	})
+	}, CharacterContext{})
+	assert.NoError(t, err)
 	assert.NotContains(t, got, "[…truncated…]")
 	assert.Contains(t, got, longCanon)
 	assert.Contains(t, got, longLore)
@@ -102,7 +111,8 @@ func TestBuildWorldStateMessage_PassesLongFieldsThroughUncut(t *testing.T) {
 // still emits the [WORLD_STATE] marker so the LLM knows the
 // cache slot exists. Nothing else is rendered.
 func TestBuildWorldStateMessage_EmptyWorld(t *testing.T) {
-	got := BuildWorldStateMessage(WorldContext{})
+	got, err := BuildWorldStateMessage(WorldContext{}, CharacterContext{})
+	assert.NoError(t, err)
 	assert.Contains(t, got, "[WORLD_STATE]")
 	assert.NotContains(t, got, "## Активный мир")
 	assert.NotContains(t, got, "## Активные NPC")
@@ -137,10 +147,11 @@ func TestBuildSystemPrompt_CharacterSectionsIgnored(t *testing.T) {
 // the user message contains the stage block in full.
 func TestBuildWorldStateMessage_StageBlockRendered(t *testing.T) {
 	stage := "### Сюжетная стадия\n**beginning — Появление**\n\nГерой появляется.\n\n**Таймлайн:**\n[>] 1: Появление\n\n**Возможные переходы:**\n- → accepted, если: Герой доказал невиновность"
-	got := BuildWorldStateMessage(WorldContext{
+	got, err := BuildWorldStateMessage(WorldContext{
 		World:      "naruto",
 		WorldStage: stage,
-	})
+	}, CharacterContext{})
+	assert.NoError(t, err)
 	assert.Contains(t, got, "Сюжетная стадия")
 	assert.Contains(t, got, "beginning")
 	assert.Contains(t, got, "→ accepted")
@@ -150,8 +161,29 @@ func TestBuildWorldStateMessage_StageBlockRendered(t *testing.T) {
 // empty (sandbox world or staging disabled), the user
 // message does NOT contain the stage block.
 func TestBuildWorldStateMessage_NoStage(t *testing.T) {
-	got := BuildWorldStateMessage(WorldContext{
+	got, err := BuildWorldStateMessage(WorldContext{
 		World: "naruto",
-	})
+	}, CharacterContext{})
+	assert.NoError(t, err)
 	assert.NotContains(t, got, "Сюжетная стадия")
+}
+
+// TestBuildWorldStateMessage_CharacterBlockInUser:
+// character-block lives in world_state.md.tmpl, so a
+// non-empty character renders in the user message
+// (user[0]), not the system message. The split is the
+// project-wide rule: system = rules only, world =
+// [character + world + npcs + ...].
+func TestBuildWorldStateMessage_CharacterBlockInUser(t *testing.T) {
+	got, err := BuildWorldStateMessage(WorldContext{World: "naruto"}, CharacterContext{
+		Character:      "Маркус",
+		CharacterSOUL:  "человек",
+		CharacterSKILL: "стрелок",
+	})
+	assert.NoError(t, err)
+	assert.Contains(t, got, "## Персонаж игрока: Маркус")
+	assert.Contains(t, got, "### SOUL")
+	assert.Contains(t, got, "человек")
+	assert.Contains(t, got, "### SKILL")
+	assert.Contains(t, got, "стрелок")
 }

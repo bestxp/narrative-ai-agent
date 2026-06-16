@@ -1,0 +1,33 @@
+# {{ .NPCProfile.DisplayName }}
+
+{{ if .NPCProfile.Temperament }}## Темперамент
+{{ .NPCProfile.Temperament }}
+{{ end }}{{ if .NPCProfile.RelationsGG }}
+## Отношения с ГГ
+{{ .NPCProfile.RelationsGG }}
+{{ end }}{{ if .NPCProfile.RelationsNPCs }}
+## Отношения с другими NPC
+{{ range .NPCProfile.RelationsNPCs }}{{ if and .Target .Note }}- {{ .Target }}: {{ .Note }}
+{{ else if .Target }}- {{ .Target }}
+{{ end }}{{ end }}{{ end }}{{ if .NPCProfile.Abilities }}
+## Способности
+{{ range .NPCProfile.Abilities }}- {{ . }}
+{{ end }}{{ end }}{{ if .NPCProfile.PersonalMemory }}
+## Личная память/факты
+{{ range $i, $f := .NPCProfile.PersonalMemory }}{{ $i | add1 }}. {{ $f }}
+{{ end }}{{ end }}{{ if .NPCProfile.CurrentStatus }}
+## Текущий статус
+{{ .NPCProfile.CurrentStatus }}
+{{ end }}{{ if .NPCProfile.CriticalKnowledge }}
+## Критические знания
+{{ range .NPCProfile.CriticalKnowledge }}- {{ . }}
+{{ end }}{{ end }}{{ if .NPCProfile.Nicknames }}
+## Никнеймы
+{{ range .NPCProfile.Nicknames }}- {{ . }}
+{{ end }}{{ end }}{{ if .NPCProfile.LastUpdate }}
+## Последнее обновление
+{{ .NPCProfile.LastUpdate }}
+{{ else }}
+## Последнее обновление
+_(пусто)_
+{{ end }}

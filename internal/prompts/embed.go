@@ -11,105 +11,109 @@
 //     which version of the prompt is actually in use.
 //   - Single-file deploys: `bot-windows-amd64.exe config.yaml`
 //     is enough. No need to remember to copy the prompts dir.
-//   - The fallback chain is explicit: an override on disk
-//     wins (cfg.SystemPromptPath), else the embedded default
-//     is used. There is no "find prompts/ relative to
-//     executable" path-resolution surprise.
 //
-// If a future role needs its own prompt, add the .md file
-// to this directory and call Bundled("name.md") — go:embed
-// will pick it up automatically thanks to the wildcard.
+// If a future role needs its own prompt, add the .md.tmpl
+// file to this directory and call
+// `prompts.Render("<name>.md.tmpl", data)` — go:embed will
+// pick it up automatically thanks to the wildcard.
+//
+// Templates are *code*, not data — same lifecycle as .go:
+// a typo = a build-time error, never a silent runtime drift.
 package prompts
 
 import (
 	"embed"
 	"fmt"
-	"os"
 	"strings"
+	"sync"
+	"text/template"
 )
 
-//go:embed *.md
-var bundled embed.FS
+//go:embed *.md.tmpl
+var bundledFS embed.FS
 
-// List returns the names of all bundled prompt files
-// (e.g. "narrative.md", "summary.md"). main.go uses this to
-// log at startup which prompts are baked into the binary.
+// List returns the names of all bundled prompt
+// templates. The list is used at startup to log which
+// prompts are baked into the binary — operators can
+// spot a missing template (a typo in a `//go:embed`
+// pattern, or a forgotten file) at a glance.
 func List() []string {
-	entries, err := bundled.ReadDir(".")
+	entries, err := bundledFS.ReadDir(".")
 	if err != nil {
 		return nil
 	}
 	out := make([]string, 0, len(entries))
 	for _, e := range entries {
-		if !e.IsDir() && strings.HasSuffix(e.Name(), ".md") {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".md.tmpl") {
 			out = append(out, e.Name())
 		}
 	}
 	return out
 }
 
-// Bundled returns the contents of an embedded prompt file.
-// It panics if the name is missing — the prompt is part of
-// the binary's behaviour, and a missing file at runtime is
-// a build-time mistake that the operator should not have to
-// debug.
-func Bundled(name string) string {
-	data, err := bundled.ReadFile(name)
+// templateCache caches parsed templates keyed by filename.
+// Parsing is cheap, but the GM hits the same template
+// thousands of times per day — caching is the right
+// thing. Templates never change at runtime (they are
+// embedded and stable per process), so no invalidation
+// API is needed.
+var templateCache sync.Map // map[string]*template.Template
+
+// Render reads the named prompt from the embedded FS,
+// parses it as a Go template with missingkey=error,
+// and executes it with data. The named template's body
+// is the only template — no `{{ template "name" . }}`
+// cross-file refs, to keep the embed.FS flat and
+// predictable.
+//
+// A typo in `{{ .Narrtive.WordLimit }}` fails loudly at
+// Execute time thanks to missingkey=error, not silently
+// with `<no value>`.
+func Render(name string, data PromptData) (string, error) {
+	if !strings.HasSuffix(name, ".md.tmpl") {
+		return "", fmt.Errorf("prompts: Render only accepts .md.tmpl files, got %q", name)
+	}
+	src, err := bundledFS.ReadFile(name)
 	if err != nil {
-		panic("prompts: bundled file missing: " + name + " (rebuild the binary)")
+		return "", fmt.Errorf("prompts: template not found: %q", name)
 	}
-	return string(data)
+	tpl, err := getOrParse(name, string(src))
+	if err != nil {
+		return "", err
+	}
+	var b strings.Builder
+	if err := tpl.Execute(&b, data); err != nil {
+		return "", fmt.Errorf("prompts: render %q: %w", name, err)
+	}
+	return b.String(), nil
 }
 
-// LoadOption toggles LoadSystemPrompt behaviour. The zero
-// value is the recommended default.
-type LoadOption func(*loadOpts)
-
-type loadOpts struct {
-	// Required: panic if no source is found. Production
-	// code uses this — a missing prompt is a fatal
-	// misconfiguration, not a soft warning. Tests that
-	// exercise the "no override + no default" path turn
-	// it off.
-	Required bool
+// getOrParse returns the parsed template for name,
+// parsing and caching on first call.
+func getOrParse(name, src string) (*template.Template, error) {
+	if v, ok := templateCache.Load(name); ok {
+		return v.(*template.Template), nil
+	}
+	tpl, err := template.New(name).
+		Option("missingkey=error").
+		Funcs(template.FuncMap{
+			"add1": func(i int) int { return i + 1 },
+			"join": strings.Join,
+		}).
+		Parse(src)
+	if err != nil {
+		return nil, fmt.Errorf("prompts: parse %q: %w", name, err)
+	}
+	templateCache.Store(name, tpl)
+	return tpl, nil
 }
 
-// WithRequired makes LoadSystemPrompt panic when no source
-// resolves. This is the production default.
-func WithRequired() LoadOption {
-	return func(o *loadOpts) { o.Required = true }
-}
-
-// LoadSystemPrompt resolves a system prompt by name.
-//
-// Resolution order:
-//
-//  1. If overridePath is non-empty AND points to a readable
-//     file, read it from disk and return.
-//  2. Otherwise read the embedded default with the same name
-//     (e.g. "narrative.md").
-//  3. If both fail and WithRequired was passed, panic with
-//     a clear message. Otherwise return an empty string and
-//     the error.
-//
-// The two-arg form (override + defaultName) is the common
-// path: cfg.Narrative.SystemPromptPath + "narrative.md".
-func LoadSystemPrompt(overridePath, defaultName string, opts ...LoadOption) (string, error) {
-	o := loadOpts{Required: true}
-	for _, fn := range opts {
-		fn(&o)
-	}
-
-	if overridePath != "" {
-		data, err := os.ReadFile(overridePath)
-		if err == nil {
-			return strings.TrimSpace(string(data)), nil
-		}
-		if !os.IsNotExist(err) {
-			return "", fmt.Errorf("prompts: read override %q: %w", overridePath, err)
-		}
-	}
-
-	data := Bundled(defaultName)
-	return strings.TrimSpace(data), nil
+// ResetTemplateCache clears the parsed-template cache.
+// Tests use it to assert the parsing path; production
+// code does not need it.
+func ResetTemplateCache() {
+	templateCache.Range(func(k, _ any) bool {
+		templateCache.Delete(k)
+		return true
+	})
 }

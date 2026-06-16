@@ -30,6 +30,9 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/bestxp/narrative-ai-agent/internal/limits"
+	"github.com/bestxp/narrative-ai-agent/internal/prompts"
 )
 
 // Profile is the canonical NPC record on disk. Field
@@ -115,8 +118,16 @@ type Relation struct {
 // at this size a single NPC profile reaches ~5KB, which
 // is the budget we want to keep for the world block of
 // a multi-NPC scene. The dispatcher fires
-// maintain_npcs at end_day when this threshold is crossed.
-const NPCPersonalMemoryLimit = 25
+// maintain_npcs at end_day when this threshold is
+// crossed.
+//
+// The constant is re-exported from internal/limits so
+// the LLM-side template (prompts/npc_summary.md.tmpl)
+// and the Go-side dispatcher share the same value.
+// Callers that historically wrote
+// `npcprofile.NPCPersonalMemoryLimit` should keep
+// doing so — the alias is kept for back-compat.
+const NPCPersonalMemoryLimit = limits.NPCPersonalMemoryLimit
 
 // ErrNotFound is returned by Load when the file does
 // not exist or exists but is empty. The dispatcher
@@ -173,113 +184,36 @@ func (p Profile) Save() (string, error) {
 //	## Критические знания
 //	## Никнеймы
 //	## Последнее обновление
-func (p Profile) BuildMarkdown() string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "# %s\n\n", strings.TrimSpace(p.DisplayName))
-
-	// Темперамент — scalar, one sentence.
-	if s := strings.TrimSpace(p.Temperament); s != "" {
-		b.WriteString("## Темперамент\n")
-		b.WriteString(s)
-		b.WriteString("\n\n")
+//
+// The actual block order, "## Никнеймы" rendering
+// policy, and footer handling all live in
+// prompts/npc_profile.md.tmpl. This function is a
+// thin wrapper that projects the typed Profile into
+// the data-bag and delegates rendering. The template
+// owns the format; Go owns the data.
+func (p Profile) BuildMarkdown() (string, error) {
+	rows := make([]prompts.NPCRelationRow, 0, len(p.RelationsNPCs))
+	for _, r := range p.RelationsNPCs {
+		rows = append(rows, prompts.NPCRelationRow{
+			Target: strings.TrimSpace(r.Target),
+			Note:   strings.TrimSpace(r.Note),
+		})
 	}
-
-	// Отношения с ГГ — scalar, may be empty.
-	if s := strings.TrimSpace(p.RelationsGG); s != "" {
-		b.WriteString("## Отношения с ГГ\n")
-		b.WriteString(s)
-		b.WriteString("\n\n")
-	}
-
-	// Отношения с другими NPC — list of "- target:
-	// note" lines. The dispatcher / model is allowed
-	// to write prose here too (e.g. "- Наруто:
-	// сложные чувства"), but the underlying YAML is
-	// structured so the summarizer can prune.
-	if len(p.RelationsNPCs) > 0 {
-		b.WriteString("## Отношения с другими NPC\n")
-		for _, r := range p.RelationsNPCs {
-			target := strings.TrimSpace(r.Target)
-			note := strings.TrimSpace(r.Note)
-			if target == "" && note == "" {
-				continue
-			}
-			if note == "" {
-				fmt.Fprintf(&b, "- %s\n", target)
-			} else {
-				fmt.Fprintf(&b, "- %s: %s\n", target, note)
-			}
-		}
-		b.WriteString("\n")
-	}
-
-	// Способности — flat list of "- ability".
-	// Empty list = omit the section so the
-	// operator does not see a placeholder.
-	if len(p.Abilities) > 0 {
-		b.WriteString("## Способности\n")
-		for _, a := range p.Abilities {
-			if a = strings.TrimSpace(a); a != "" {
-				fmt.Fprintf(&b, "- %s\n", a)
-			}
-		}
-		b.WriteString("\n")
-	}
-
-	// Личная память/факты — append-only list. The
-	// "facts" sub-header (## → ###) is what the
-	// operator / summarizer looks for to count
-	// items. Numbered list keeps diffs readable.
-	if len(p.PersonalMemory) > 0 {
-		b.WriteString("## Личная память/факты\n")
-		for i, fact := range p.PersonalMemory {
-			if fact = strings.TrimSpace(fact); fact != "" {
-				fmt.Fprintf(&b, "%d. %s\n", i+1, fact)
-			}
-		}
-		b.WriteString("\n")
-	}
-
-	if s := strings.TrimSpace(p.CurrentStatus); s != "" {
-		b.WriteString("## Текущий статус\n")
-		b.WriteString(s)
-		b.WriteString("\n\n")
-	}
-
-	if len(p.CriticalKnowledge) > 0 {
-		b.WriteString("## Критические знания\n")
-		for _, k := range p.CriticalKnowledge {
-			if k = strings.TrimSpace(k); k != "" {
-				fmt.Fprintf(&b, "- %s\n", k)
-			}
-		}
-		b.WriteString("\n")
-	}
-
-	if len(p.Nicknames) > 0 {
-		b.WriteString("## Никнеймы\n")
-		for _, n := range p.Nicknames {
-			if n = strings.TrimSpace(n); n != "" {
-				fmt.Fprintf(&b, "- %s\n", n)
-			}
-		}
-		b.WriteString("\n")
-	}
-
-	if s := strings.TrimSpace(p.LastUpdate); s != "" {
-		b.WriteString("## Последнее обновление\n")
-		b.WriteString(s)
-		b.WriteString("\n")
-	} else {
-		// Always render the footer so future
-		// update_npc calls have a stable landing
-		// pad and the operator can see at a glance
-		// that this is the most recent section
-		// they should be reading.
-		b.WriteString("## Последнее обновление\n_(пусто)_\n")
-	}
-
-	return b.String()
+	data := prompts.NewNPCProfileDataFromFields(
+		strings.TrimSpace(p.DisplayName),
+		strings.TrimSpace(p.Temperament),
+		strings.TrimSpace(p.RelationsGG),
+		rows,
+		p.Abilities,
+		p.PersonalMemory,
+		p.CriticalKnowledge,
+		p.Nicknames,
+		strings.TrimSpace(p.CurrentStatus),
+		strings.TrimSpace(p.LastUpdate),
+	)
+	return prompts.Render("npc_profile.md.tmpl", prompts.PromptData{
+		NPCProfile: data,
+	})
 }
 
 // BuildCompact renders a medium-detail view of the

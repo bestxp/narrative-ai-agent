@@ -18,12 +18,19 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/bestxp/narrative-ai-agent/internal/limits"
 )
 
 // MaxStageRenderBytes is the hard cap on the rendered size of the
 // active stage block injected into the WorldState prompt. It protects
 // against accidental prompt bloat.
-const MaxStageRenderBytes = 2000
+//
+// Re-exported from internal/limits so the staging
+// renderer and the LLM-side templates share the same
+// value. The local alias is kept for back-compat with
+// every existing caller in this package.
+const MaxStageRenderBytes = limits.StageRenderMaxBytes
 
 // FileStore is the minimal storage surface the staging package needs.
 type FileStore interface {

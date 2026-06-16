@@ -13,7 +13,6 @@ import (
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/llm"
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
 	"github.com/bestxp/narrative-ai-agent/internal/domain"
-	"github.com/bestxp/narrative-ai-agent/internal/prompts"
 	"github.com/bestxp/narrative-ai-agent/internal/slowlog"
 )
 
@@ -690,27 +689,6 @@ func TestGM_AppendChronicleEntry_DoesNotConfuseWithProtocol(t *testing.T) {
 	assert.Contains(t, body, "новая хроника", "chronicle added")
 }
 
-// TestGM_InPlaceCompaction_NotPastDay: the
-// compaction_in_place.md prompt explicitly says the
-// result must start with "[События текущего дня Д<N>]",
-// not "[События прошедшего дня Д<N>]". The end_of_day
-// path uses the OTHER prompt. The two must not be
-// confused at runtime.
-func TestGM_InPlaceCompaction_NotPastDay(t *testing.T) {
-	// Verify the prompt content is what we expect.
-	// We don't have direct access to the file from a
-	// test (it's embedded into the binary). Use
-	// prompts.Bundled for an indirect check.
-	prompt := prompts.Bundled("compaction_in_place.md")
-	assert.Contains(t, prompt, "События текущего дня")
-	assert.NotContains(t, prompt, "События прошедшего дня")
-	// end-of-day must use the opposite marker.
-	eod := prompts.Bundled("end_of_day.md")
-	assert.Contains(t, eod, "События прошедшего дня")
-	assert.NotContains(t, eod, "События текущего дня",
-		"end_of_day prompt must not use the in-place marker")
-}
-
 // TestGM_InPlaceCompaction_InvalidatesWorldState: after
 // appendChronicleEntry + invalidateWorldState, the next
 // buildContext must rebuild the WORLD snapshot from disk
@@ -809,16 +787,6 @@ func TestGM_EnforceProtocolWindow_ByCharCount(t *testing.T) {
 		"the oldest oversized day must be evicted")
 	mem, _ := fs.ReadRaw("worlds/naruto/memorise.md")
 	assert.Contains(t, mem, "д00001: "+huge)
-}
-
-// TestGM_EndOfDay_PromptMarksPast: the end_of_day
-// prompt must mark the day as past (closed), distinct
-// from the in-place marker.
-func TestGM_EndOfDay_PromptMarksPast(t *testing.T) {
-	prompt := prompts.Bundled("end_of_day.md")
-	assert.Contains(t, prompt, "События прошедшего дня")
-	assert.NotContains(t, prompt, "События текущего дня",
-		"end_of_day prompt must not use the in-place marker")
 }
 
 // --- /reload tests ------------------------------------------

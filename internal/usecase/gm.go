@@ -1910,7 +1910,11 @@ func (g *GM) buildContext() (systemMsg, worldMsg string, err error) {
 		defer g.contextMu.Unlock()
 		if g.systemSnapshot == "" {
 			g.systemSnapshot = domain.BuildSystemPrompt(g.staticPrompt, domain.CharacterContext{}, g.role.DisableThinking)
-			g.worldSnapshot = domain.BuildWorldStateMessage(domain.WorldContext{})
+			ws, werr := domain.BuildWorldStateMessage(domain.WorldContext{}, domain.CharacterContext{})
+			if werr != nil {
+				return "", "", werr
+			}
+			g.worldSnapshot = ws
 			g.contextSceneKey = ""
 		}
 		return g.systemSnapshot, g.worldSnapshot, nil
@@ -1970,7 +1974,10 @@ func (g *GM) buildContext() (systemMsg, worldMsg string, err error) {
 		NPCs:          g.loadActiveNPCs(sc.World, sc.State),
 	}
 	builtSystem := domain.BuildSystemPrompt(g.staticPrompt, charCtx, g.role.DisableThinking)
-	builtWorld := domain.BuildWorldStateMessage(worldCtx)
+	builtWorld, err := domain.BuildWorldStateMessage(worldCtx, charCtx)
+	if err != nil {
+		return "", "", err
+	}
 
 	g.contextMu.Lock()
 	g.systemSnapshot = builtSystem

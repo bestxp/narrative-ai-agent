@@ -12,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"syscall"
+	"text/template"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -102,7 +103,24 @@ func main() {
 		log.Fatal().Str("role", config.NarrativeRole).Msg("narrative role not configured")
 	}
 	log.Info().Strs("prompts", promptpkg.List()).Msg("bundled prompts")
-	systemPrompt, err := promptpkg.LoadSystemPrompt(role.SystemPromptPath, "narrative.md")
+	// narrative.md.tmpl is rendered with the data-bag so
+	// word_limit and other config knobs are substituted at
+	// startup. Override-on-disk (if configured) still
+	// wins — see renderNarrativePrompt.
+	renderSnap := promptpkg.NarrativeConfigSnapshot{
+		WordLimit:                  cfg.Narrative.WordLimit,
+		Language:                   cfg.Narrative.Language,
+		RulesCheckBlock:            cfg.Narrative.RulesCheckBlock,
+		IncludeSystemStateInPrompt: cfg.Narrative.IncludeSystemStateInPrompt,
+		CompactionNotify:           cfg.Narrative.CompactionNotify,
+		CompactionNotifyVerbose:    cfg.Narrative.CompactionNotifyVerbose,
+		// Compaction knobs come from the new
+		// narrative.compaction section once the operator
+		// configures it. For now zero values mean "use
+		// the Go-side defaults" (see prompts.pickInt).
+	}
+	compactionSnap := renderSnap
+	systemPrompt, err := renderNarrativePrompt(role.SystemPromptPath, renderSnap)
 	if err != nil {
 		log.Fatal().Err(err).Str("path", role.SystemPromptPath).Msg("read system prompt")
 	}
@@ -188,7 +206,7 @@ func main() {
 				MaxEmptyRetries:          sumRoleCfg.MaxEmptyRetries,
 				EmptyRetryTimeoutSeconds: sumRoleCfg.EmptyRetryTimeoutSeconds,
 			}
-			sumPrompt, err = promptpkg.LoadSystemPrompt(sumRoleCfg.SystemPromptPath, "summary.md")
+			sumPrompt, err = renderSummarizerPrompt("summary.md.tmpl", compactionSnap)
 			if err != nil {
 				log.Warn().Err(err).Str("path", sumRoleCfg.SystemPromptPath).Msg("summary prompt unreadable; dropping to fallback")
 			} else {
@@ -207,7 +225,7 @@ func main() {
 				DisableThinking:       role.DisableThinking,
 				ReasoningEffort:       role.ReasoningEffort,
 			}
-			sumPrompt, err = promptpkg.LoadSystemPrompt("", "summary.md")
+			sumPrompt, err = renderSummarizerPrompt("summary.md.tmpl", compactionSnap)
 			if err != nil || sumPrompt == "" {
 				log.Warn().Err(err).Msg("fallback summary prompt unreadable; compaction will be drop-only")
 			} else {
@@ -233,21 +251,25 @@ func main() {
 			// the same model/role as the regular compaction
 			// path; the prompt differences (150-300 words,
 			// current-day vs 200-400 words, past-day) live
-			// in the .md files.
-			if inPlacePrompt, err := promptpkg.LoadSystemPrompt("", "compaction_in_place.md"); err == nil && inPlacePrompt != "" {
+			// in the .md files. All four are rendered
+			// against the data-bag (config knobs) so
+			// `{{ .Compaction.MemoriseSentencesPer30Days }}`
+			// and similar markers get the actual values
+			// from config.yaml.
+			if inPlacePrompt, err := renderSummarizerPrompt("compaction_in_place.md.tmpl", compactionSnap); err == nil && inPlacePrompt != "" {
 				summarizer.SetCompactionInPlacePrompt(inPlacePrompt)
 			} else {
-				log.Warn().Err(err).Msg("compaction_in_place.md unreadable; in-place compaction will no-op")
+				log.Warn().Err(err).Msg("compaction_in_place.md.tmpl unreadable; in-place compaction will no-op")
 			}
-			if eodPrompt, err := promptpkg.LoadSystemPrompt("", "end_of_day.md"); err == nil && eodPrompt != "" {
+			if eodPrompt, err := renderSummarizerPrompt("end_of_day.md.tmpl", compactionSnap); err == nil && eodPrompt != "" {
 				summarizer.SetEndOfDayPrompt(eodPrompt)
 			} else {
-				log.Warn().Err(err).Msg("end_of_day.md unreadable; end-of-day protocol will no-op")
+				log.Warn().Err(err).Msg("end_of_day.md.tmpl unreadable; end-of-day protocol will no-op")
 			}
-			if charMemPrompt, err := promptpkg.LoadSystemPrompt("", "character_memory_maintain.md"); err == nil && charMemPrompt != "" {
+			if charMemPrompt, err := renderSummarizerPrompt("character_memory_maintain.md.tmpl", compactionSnap); err == nil && charMemPrompt != "" {
 				summarizer.SetCharacterMemoryPrompt(charMemPrompt)
 			} else {
-				log.Warn().Err(err).Msg("character_memory_maintain.md unreadable; end-of-day memory defrag will no-op")
+				log.Warn().Err(err).Msg("character_memory_maintain.md.tmpl unreadable; end-of-day memory defrag will no-op")
 			}
 		}
 	}
@@ -894,6 +916,84 @@ func (a summarizerAdapter) SummarizeCharacterMemory(ctx context.Context, world, 
 		return nil, err
 	}
 	return res.Body, nil
+}
+
+// renderSummarizerPrompt loads a summarizer-side
+// prompt by name and renders it with the data-bag.
+// The summarizer prompts (compaction_in_place,
+// end_of_day, character_memory_maintain, lore_summary,
+// memorise_summary, npc_summary) are static — they
+// depend only on NarrativeConfigSnapshot and not on
+// per-turn context. Rendering once at startup is
+// enough; the resulting string is handed to the
+// summarizer's setters and re-used on every call.
+func renderSummarizerPrompt(name string, snap promptpkg.NarrativeConfigSnapshot) (string, error) {
+	data := promptpkg.NewPromptData(snap, promptpkg.CharacterData{}, promptpkg.WorldData{})
+	return promptpkg.Render(name, data)
+}
+
+// renderNarrativePrompt loads the system prompt for
+// the narrative role. Override-on-disk wins: if the
+// operator configured a path to a hand-written
+// .md or .md.tmpl file, it is read verbatim. If the
+// file looks like a Go template (contains "{{") or
+// has a .md.tmpl extension, it is rendered with the
+// data-bag. Otherwise the override is returned
+// as-is. When no override is configured, the
+// embedded narrative.md.tmpl is rendered.
+func renderNarrativePrompt(overridePath string, snap promptpkg.NarrativeConfigSnapshot) (string, error) {
+	data := promptpkg.PromptData{Character: promptpkg.CharacterData{}, World: promptpkg.WorldData{}}
+	data = promptpkg.NewPromptData(snap, data.Character, data.World)
+	if overridePath == "" {
+		return promptpkg.Render("narrative.md.tmpl", data)
+	}
+	body, err := os.ReadFile(overridePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// No override file — fall through to the
+			// embedded template. The operator may
+			// have set the path in config but not
+			// created the file yet.
+			return promptpkg.Render("narrative.md.tmpl", data)
+		}
+		return "", fmt.Errorf("read override %q: %w", overridePath, err)
+	}
+	text := strings.TrimSpace(string(body))
+	// Plain markdown override (operator drops a
+	// hand-written narrative.md without template
+	// markers) — return as-is.
+	if !strings.HasSuffix(overridePath, ".md.tmpl") && !looksLikeTemplate(text) {
+		return text, nil
+	}
+	// Treat as a template, render with the data-bag.
+	return renderFromBody(overridePath, text, data)
+}
+
+// looksLikeTemplate is a cheap sniff for "{{" markers
+// that distinguishes plain markdown from Go-template
+// source. False positives are harmless: a markdown file
+// containing "{{" simply gets parsed as a template (and
+// the missing-key check will fire if a real {{ is
+// present).
+func looksLikeTemplate(body string) bool {
+	return strings.Contains(body, "{{")
+}
+
+// renderFromBody parses body as a Go template with the
+// data-bag and returns the rendered text. The wrapper
+// around the embedded template cache is intentionally
+// minimal: the override path is rare, so the parse cost
+// is paid once per process.
+func renderFromBody(name, body string, data promptpkg.PromptData) (string, error) {
+	tpl, err := template.New(name).Option("missingkey=error").Parse(body)
+	if err != nil {
+		return "", fmt.Errorf("parse override %q: %w", name, err)
+	}
+	var b strings.Builder
+	if err := tpl.Execute(&b, data); err != nil {
+		return "", fmt.Errorf("execute override %q: %w", name, err)
+	}
+	return b.String(), nil
 }
 
 // healthServer is the bridge between the messaging layer (which

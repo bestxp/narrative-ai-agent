@@ -11,9 +11,28 @@ import (
 
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
 	"github.com/bestxp/narrative-ai-agent/internal/domain"
+	"github.com/bestxp/narrative-ai-agent/internal/prompts"
 	"github.com/bestxp/narrative-ai-agent/internal/slowlog"
 	"github.com/bestxp/narrative-ai-agent/internal/usecase/tools"
 )
+
+// renderStateBody is the data-bag driven renderer for
+// state.md. It replaces the old
+// domain.BuildStateMarkdown(string-builder) path with
+// the project's standard template-based pipeline. The
+// template (prompts/state.md.tmpl) owns block order and
+// conditional formatting; this helper only projects
+// the in-memory StateSnapshot into the data-bag shape.
+func renderStateBody(s domain.StateSnapshot) (string, error) {
+	data := prompts.NewStateData(
+		s.World, s.Day, s.InFlight,
+		s.Location, s.Moment,
+		s.NPCs, s.Events,
+	)
+	return prompts.Render("state.md.tmpl", prompts.PromptData{
+		State: data,
+	})
+}
 
 // State is the file-backed implementation of tools.StateTool:
 // state.md, plan.md and memorise.md lifecycle.
@@ -141,7 +160,10 @@ func (s *State) UpdateState(snap tools.StateSnapshot) error {
 			existing.Events = append(existing.Events, e)
 		}
 	}
-	body := domain.BuildStateMarkdown(existing)
+	body, err := renderStateBody(existing)
+	if err != nil {
+		return err
+	}
 	s.log.Info().
 		Int("day", snap.Day).
 		Bool("in_flight", snap.InFlight).
@@ -352,7 +374,10 @@ func (s *State) ArchiveDay(ctx context.Context, world string, day int, summary s
 		parsed.Day = day + 1
 		parsed.InFlight = true
 		parsed.Events = nil
-		body := domain.BuildStateMarkdown(parsed)
+		body, err := renderStateBody(parsed)
+		if err != nil {
+			return err
+		}
 		if err := s.fs.WriteRawAtomic("worlds/"+world+"/state.md", body); err != nil {
 			return err
 		}
@@ -383,7 +408,10 @@ func (s *State) AppendEvent(text string) error {
 	parsed := ParseStateMD(cur)
 	parsed.World = world
 	parsed.Events = append(parsed.Events, text)
-	body := domain.BuildStateMarkdown(parsed)
+	body, err := renderStateBody(parsed)
+	if err != nil {
+		return err
+	}
 	return s.fs.WriteRawAtomic(rel, body)
 }
 
@@ -483,7 +511,10 @@ func (s *State) EndScene(world string, permanentParty []string) (*EndSceneResult
 	// Re-render. The existing moment/location/chronicle
 	// are preserved — end_scene is a roster edit, not
 	// a state reset.
-	body := domain.BuildStateMarkdown(parsed)
+	body, err := renderStateBody(parsed)
+	if err != nil {
+		return nil, err
+	}
 	if err := s.fs.WriteRawAtomic(rel, body); err != nil {
 		return nil, err
 	}
