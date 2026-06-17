@@ -200,7 +200,7 @@ func (f *FirstLaunch) writeWorld(dir string, w WorldSpec) error {
 	if err := f.fs.WriteRawAtomic(root+"/plan.md", defaultPlan(dir)); err != nil {
 		return err
 	}
-	if err := f.fs.WriteRawAtomic(root+"/memorise.md", ""); err != nil {
+	if err := f.fs.WriteRawAtomic(root+"/chronicle.yaml", "days: {}\nperiods: []\n"); err != nil {
 		return err
 	}
 	if err := f.fs.WriteRawAtomic(root+"/staging.yaml", defaultStaging(dir)); err != nil {

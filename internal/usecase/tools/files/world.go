@@ -150,7 +150,7 @@ func (w *World) initialiseBlankWorld(dir string) error {
 		{root + "/canon.md", "# " + dir + " — канон/сценарий\n"},
 		{root + "/state.md", StateHeader(1, true) + "\nСтартовая сцена.\n"},
 		{root + "/lore.md", "# Мир " + dir + "\nКанон актуален, если игрок не вносит изменения.\n"},
-		{root + "/memorise.md", ""},
+		{root + "/chronicle.yaml", ""},
 		{root + "/characters.md", "# NPC: " + dir + "\n| Имя | Файл | Прозвища |\n|-----|------|----------|\n"},
 	} {
 		if err := w.fs.WriteRawAtomic(p.rel, p.body); err != nil {

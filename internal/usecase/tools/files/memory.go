@@ -3,7 +3,6 @@ package files
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"strings"
 
 	"github.com/rs/zerolog"
@@ -11,7 +10,7 @@ import (
 
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
 	"github.com/bestxp/narrative-ai-agent/internal/charprofile"
-	"github.com/bestxp/narrative-ai-agent/internal/domain"
+	"github.com/bestxp/narrative-ai-agent/internal/chronicle"
 	"github.com/bestxp/narrative-ai-agent/internal/npcprofile"
 	"github.com/bestxp/narrative-ai-agent/internal/usecase/tools"
 )
@@ -35,11 +34,11 @@ type Memory struct {
 	// it is the same *usecase.Summarizer wrapped via
 	// a second adapter in cmd/bot/main.go.
 	loreSummarizer tools.LoreSummarizer
-	// memoriseSummarizer is the LLM-driven 30-day
-	// memorise.md compaction hook. Called from
-	// MemoriseCompressWindow whenever a window closes
-	// (default: day % 30 == 0, or any wider timeskip).
-	memoriseSummarizer tools.MemoriseSummarizer
+	// chronicleSummarizer is the LLM-driven
+	// chronicle.yaml compaction hook. Called from
+	// ChronicleCompressWindow whenever a window closes
+	// (default: day % Window == 0, or any wider timeskip).
+	chronicleSummarizer tools.ChronicleSummarizer
 	// characterMemorySummarizer is the LLM-driven
 	// memory.yaml compaction hook for the active
 	// character. Called from MaintainCharacterMemory
@@ -49,13 +48,13 @@ type Memory struct {
 	characterMemorySummarizer tools.CharacterMemorySummarizer
 }
 
-func newMemory(fs *storage.FileStore, log zerolog.Logger, summarizer tools.NPCSummarizer, loreSummarizer tools.LoreSummarizer, memoriseSummarizer tools.MemoriseSummarizer, characterMemorySummarizer tools.CharacterMemorySummarizer) *Memory {
+func newMemory(fs *storage.FileStore, log zerolog.Logger, summarizer tools.NPCSummarizer, loreSummarizer tools.LoreSummarizer, chronicleSummarizer tools.ChronicleSummarizer, characterMemorySummarizer tools.CharacterMemorySummarizer) *Memory {
 	return &Memory{
 		fs:                        fs,
 		log:                       log.With().Str("component", "memory").Logger(),
 		summarizer:                summarizer,
 		loreSummarizer:            loreSummarizer,
-		memoriseSummarizer:        memoriseSummarizer,
+		chronicleSummarizer:       chronicleSummarizer,
 		characterMemorySummarizer: characterMemorySummarizer,
 	}
 }
@@ -116,10 +115,10 @@ func (m *Memory) MaintainLore(ctx context.Context, world string) (bool, error) {
 			Msg("lore_maintain: no summarizer wired; skipping")
 		return false, nil
 	}
-	memoriseFull, _ := m.fs.ReadRaw("worlds/" + world + "/memorise.md")
+	chronicleFull, _ := m.fs.ReadRaw(m.fs.WorldChronicle(world))
 	stateMD, _ := m.fs.ReadRaw("worlds/" + world + "/state.md")
 
-	newBody, err := m.loreSummarizer.SummarizeLore(ctx, world, []byte(raw), []byte(memoriseFull), []byte(stateMD))
+	newBody, err := m.loreSummarizer.SummarizeLore(ctx, world, []byte(raw), []byte(chronicleFull), []byte(stateMD))
 	if err != nil {
 		return false, err
 	}
@@ -155,67 +154,69 @@ func (m *Memory) MaintainLore(ctx context.Context, world string) (bool, error) {
 	return true, nil
 }
 
-// memoriseCompressAfterArchive is the post-write hook
-// called by State.ArchiveDay. It decides WHICH windows
-// to collapse and delegates each one to
-// MemoriseCompressWindow. The trigger rules:
+// chronicleCompressAfterArchive is the post-write hook
+// called by State.ArchiveChronicleDay. It decides WHICH
+// windows to collapse and delegates each one to
+// ChronicleCompressWindow. The trigger rules:
 //
 //  1. If the just-archived day is the last unfilled slot
-//     of a window (i.e. a day that brings the file's
-//     last single-day entry to a multiple of Window),
-//     collapse that window.
-//  2. If the just-archived day is a TIMESKIP past one
-//     or more whole windows (e.g. last day was д00010
-//     and we just archived д00090), collapse every full
-//     window in between (д00001-д00030, д00031-д00060,
+//     of a window (i.e. a day that brings the chronicle's
+//     last raw day to a multiple of Window), collapse that
+//     window.
+//  2. If the just-archived day is a TIMESKIP past one or
+//     more whole windows (e.g. last day was д00010 and
+//     we just archived д00090), collapse every full window
+//     in between (д00001-д00030, д00031-д00060,
 //     д00061-д00090). This is the "timeskip" case the
 //     operator triggered via /leave with a skip_note.
 //
-// The function never errors out the ArchiveDay call: a
-// failed compression just logs a warning and leaves the
-// file untouched. The next ArchiveDay re-evaluates.
-func (m *Memory) memoriseCompressAfterArchive(ctx context.Context, world string, dayJustArchived int) error {
-	if m.memoriseSummarizer == nil {
+// The function never errors out the ArchiveChronicleDay
+// call: a failed compression just logs a warning and
+// leaves the file untouched. The next ArchiveChronicleDay
+// re-evaluates.
+func (m *Memory) chronicleCompressAfterArchive(ctx context.Context, world string, dayJustArchived int) error {
+	if m.chronicleSummarizer == nil {
 		m.log.Warn().
 			Str("world", world).
 			Int("day", dayJustArchived).
-			Msg("memorise_compress: no summarizer wired; skipping")
+			Msg("chronicle_compress: no summarizer wired; skipping")
 		return nil
 	}
-	rel := "worlds/" + world + "/memorise.md"
+	rel := m.fs.WorldChronicle(world)
 	raw, err := m.fs.ReadRaw(rel)
 	if err != nil || strings.TrimSpace(raw) == "" {
 		return nil
 	}
-	entries, err := domain.ParseDays(raw)
+	c, err := chronicle.Load(raw)
 	if err != nil {
-		return err
-	}
-	if len(entries) == 0 {
+		m.log.Warn().Err(err).Str("world", world).Msg("chronicle_compress: parse failed; skipping")
 		return nil
 	}
-	lastSummaryEnd, _, hasSummary := lastMemoriseSummaryLine(raw)
+	if len(c.Days) == 0 {
+		return nil
+	}
+	lastEnd, hasPeriod := c.LastPeriodEnd()
 	startFrom := 1
-	if hasSummary {
-		startFrom = lastSummaryEnd + 1
+	if hasPeriod {
+		startFrom = lastEnd + 1
 	}
 	endAt := dayJustArchived
 	if endAt < startFrom {
 		return nil
 	}
-	// Collect full windows of size Window=30 (default)
-	// that fit in [startFrom..endAt]. A window is
-	// "full" when both endpoints are within the range.
-	// We do NOT compress partial windows — the operator
-	// sees the un-archived days as a flat log and the
-	// next ArchiveDay will close them.
-	const window = 30
+	// Collect full windows of size Window=WindowSize (30)
+	// that fit in [startFrom..endAt]. A window is "full"
+	// when both endpoints are within the range. We do NOT
+	// compress partial windows — the operator sees the
+	// un-archived days as a flat log and the next
+	// ArchiveChronicleDay will close them.
+	const window = chronicle.WindowSize
 	for wEnd := startFrom + window - 1; wEnd <= endAt; wEnd += window {
 		wStart := wEnd - window + 1
 		if wStart < startFrom {
 			wStart = startFrom
 		}
-		ok, err := m.MemoriseCompressWindow(ctx, world, wStart, wEnd)
+		ok, err := m.ChronicleCompressWindow(ctx, world, wStart, wEnd)
 		if err != nil {
 			return err
 		}
@@ -223,27 +224,27 @@ func (m *Memory) memoriseCompressAfterArchive(ctx context.Context, world string,
 			// Window too thin or summarizer
 			// refused — log and continue with the
 			// next window. We do not abort the
-			// whole cascade: an underfilled
-			// early window is not a reason to
-			// leave later windows open.
+			// whole cascade: an underfilled early
+			// window is not a reason to leave later
+			// windows open.
 			m.log.Info().
 				Str("world", world).
 				Int("start", wStart).
 				Int("end", wEnd).
-				Msg("memorise_compress: window skipped (too thin or no-op)")
+				Msg("chronicle_compress: window skipped (too thin or no-op)")
 		}
 	}
 	return nil
 }
 
-// MemoriseCompressWindow collapses a closed [startDay..endDay]
-// window of memorise.md entries into a single distilled line
-// "д<start>-д<end>: <10..N sentences of essence>". The
-// summarizer receives the WHOLE current memorise.md as
-// context so it can dedupe arcs that span the window
-// boundary (a 15-day training run that started inside the
-// previous window, for example) and stay consistent with
-// earlier, already-compressed lines.
+// ChronicleCompressWindow collapses a closed
+// [startDay..endDay] window of chronicle.yaml raw-day
+// entries into a single Period entry with the summarizer's
+// distilled memory text. The summarizer receives the WHOLE
+// current chronicle YAML as context so it can dedupe arcs
+// that span the window boundary (a 15-day training run that
+// started inside the previous window, for example) and stay
+// consistent with earlier, already-compressed periods.
 //
 // The caller is expected to invoke this whenever a window
 // closes (the default rule is "day % Window == 0", where
@@ -253,53 +254,53 @@ func (m *Memory) memoriseCompressAfterArchive(ctx context.Context, world string,
 // the caller's loop.
 //
 // Returns true if the file was rewritten, false if the
-// summarizer returned an empty body (window too thin) or
-// a malformed prefix (caller should log and leave the file
-// alone). Errors are surfaced for the operator; partial
-// writes are not — the rewrite is atomic via WriteRawAtomic.
-func (m *Memory) MemoriseCompressWindow(ctx context.Context, world string, startDay, endDay int) (bool, error) {
+// summarizer returned an empty body (window too thin).
+// Errors are surfaced for the operator; partial writes are
+// not — the rewrite is atomic via WriteRawAtomic.
+func (m *Memory) ChronicleCompressWindow(ctx context.Context, world string, startDay, endDay int) (bool, error) {
 	if startDay > endDay {
 		return false, nil
 	}
-	rel := "worlds/" + world + "/memorise.md"
+	rel := m.fs.WorldChronicle(world)
 	raw, err := m.fs.ReadRaw(rel)
 	if err != nil || strings.TrimSpace(raw) == "" {
 		return false, nil
 	}
-	if m.memoriseSummarizer == nil {
+	if m.chronicleSummarizer == nil {
 		m.log.Warn().
 			Str("world", world).
 			Int("start", startDay).
 			Int("end", endDay).
-			Msg("memorise_compress: no summarizer wired; skipping")
+			Msg("chronicle_compress: no summarizer wired; skipping")
 		return false, nil
 	}
 
-	// Take the last compressed-window end so we know which
-	// entries to replace. Window boundaries are inclusive:
-	// the line "д00001-д00030: ..." owns slots 1..30.
-	// Anything BEFORE the last existing summary line is
-	// already finalised and we MUST NOT touch it.
-	lastSummaryEnd, _, hasSummary := lastMemoriseSummaryLine(raw)
+	c, err := chronicle.Load(raw)
+	if err != nil {
+		return false, err
+	}
+
+	// Take the last compressed-window end so we know
+	// which days are already finalised and MUST NOT be
+	// touched. Window boundaries are inclusive: a Period
+	// (from=a, to=b) owns slots a..b. Anything BEFORE
+	// the last existing period's end is finalised.
+	lastEnd, hasPeriod := c.LastPeriodEnd()
 	from := startDay
-	if hasSummary && startDay <= lastSummaryEnd {
-		from = lastSummaryEnd + 1
+	if hasPeriod && startDay <= lastEnd {
+		from = lastEnd + 1
 	}
 	to := endDay
 	if to < from {
 		return false, nil
 	}
 
-	// Parse entries and collect exactly those whose Number
-	// is in [from..to]. The window may have gaps (e.g. days
-	// 22 and 25 are missing); we still compress the days
-	// that are present.
-	entries, err := domain.ParseDays(raw)
-	if err != nil {
-		return false, err
-	}
-	var inWindow []domain.DayEntry
-	for _, e := range entries {
+	// Collect exactly those raw days whose Number is
+	// in [from..to]. The window may have gaps (e.g.
+	// days 22 and 25 are missing); we still compress
+	// the days that are present.
+	var inWindow []chronicle.DayEntry
+	for _, e := range c.SortedDays() {
 		if e.Number >= from && e.Number <= to {
 			inWindow = append(inWindow, e)
 		}
@@ -310,55 +311,33 @@ func (m *Memory) MemoriseCompressWindow(ctx context.Context, world string, start
 			Int("start", from).
 			Int("end", to).
 			Int("present", len(inWindow)).
-			Msg("memorise_compress: window too thin; skipping")
+			Msg("chronicle_compress: window too thin; skipping")
 		return false, nil
 	}
 	actualStart := inWindow[0].Number
 	actualEnd := inWindow[len(inWindow)-1].Number
 
-	body, err := m.memoriseSummarizer.SummarizeMemorise(ctx, world, actualStart, actualEnd, raw)
+	body, err := m.chronicleSummarizer.SummarizeChronicle(ctx, world, actualStart, actualEnd, raw)
 	if err != nil {
 		return false, err
 	}
 	if len(body) == 0 {
 		return false, nil
 	}
-	cleaned := strings.TrimSpace(string(body))
-	// Validate prefix: "д<5digits>-д<5digits>: ". The
-	// caller (ArchiveDay → MemoriseCompressWindow) trusts
-	// the model output line; a wrong prefix means the LLM
-	// drifted and we should not corrupt the file.
-	startStr := fmt.Sprintf("д%05d", actualStart)
-	endStr := fmt.Sprintf("д%05d", actualEnd)
-	prefix := startStr + "-" + endStr + ": "
-	if !strings.HasPrefix(cleaned, prefix) {
-		m.log.Warn().
-			Str("world", world).
-			Int("start", actualStart).
-			Int("end", actualEnd).
-			Str("output", truncateForLog(cleaned, 120)).
-			Msg("memorise_compress: bad prefix; skipping")
+	memory := strings.TrimSpace(string(body))
+	if memory == "" {
 		return false, nil
 	}
-	if strings.ContainsAny(cleaned, "\n\r") {
-		// The contract is one logical line. Newlines
-		// break the day-line parser on next read.
-		cleaned = strings.ReplaceAll(cleaned, "\n", " ")
-		cleaned = strings.ReplaceAll(cleaned, "\r", " ")
-		cleaned = strings.Join(strings.Fields(cleaned), " ")
-	}
-
-	// Rewrite: keep the file head (everything up to and
-	// including the last summary line), drop entries
-	// [actualStart..actualEnd], append the new summary
-	// line. The head is computed from the last summary
-	// end we found above — we re-scan to be exact.
-	newBody, err := rewriteMemoriseAfterCompression(raw, actualStart, actualEnd, cleaned)
-	if err != nil {
+	if err := c.CompressWindow(actualStart, actualEnd, memory); err != nil {
+		// Includes "window start inside closed
+		// period" — caller logged the structural
+		// issue; we surface it for the operator's
+		// slowlog trail.
 		return false, err
 	}
-	if newBody == raw {
-		return false, nil
+	newBody, err := c.Save()
+	if err != nil {
+		return false, err
 	}
 	if err := m.fs.WriteRawAtomic(rel, newBody); err != nil {
 		return false, err
@@ -368,121 +347,17 @@ func (m *Memory) MemoriseCompressWindow(ctx context.Context, world string, start
 		Int("start", actualStart).
 		Int("end", actualEnd).
 		Int("present_days", len(inWindow)).
-		Int("output_chars", len(cleaned)).
-		Msg("memorise_compress: compacted")
+		Int("output_chars", len(memory)).
+		Msg("chronicle_compress: compacted")
 	return true, nil
 }
 
-// lastMemoriseSummaryLine finds the most recent
-// "д<start>-д<end>: ..." line in memorise.md and returns
-// (end, start, true). If no summary line is present (file
-// is a flat log of single days) it returns (0, 0, false).
-func lastMemoriseSummaryLine(body string) (end, start int, ok bool) {
-	lines := strings.Split(strings.TrimRight(body, "\n"), "\n")
-	for i := len(lines) - 1; i >= 0; i-- {
-		line := strings.TrimSpace(lines[i])
-		if !strings.HasPrefix(line, "д") {
-			continue
-		}
-		idx := strings.Index(line, "-")
-		if idx < 0 {
-			continue
-		}
-		left := strings.TrimPrefix(line[:idx], "д")
-		right := strings.TrimPrefix(line[idx+1:], "д")
-		colon := strings.Index(right, ":")
-		if colon < 0 {
-			continue
-		}
-		s, err1 := strconv.Atoi(strings.TrimSpace(left))
-		e, err2 := strconv.Atoi(strings.TrimSpace(right[:colon]))
-		if err1 != nil || err2 != nil {
-			continue
-		}
-		if s >= e {
-			continue
-		}
-		return e, s, true
-	}
-	return 0, 0, false
-}
-
-// rewriteMemoriseAfterCompression builds the new file body
-// by walking each line: keep non-day lines as-is, keep
-// out-of-window day lines (whose Number is outside
-// [start..end]), and drop in-window day lines. The new
-// summary line is written exactly once, at the position
-// of the FIRST dropped day line. The head (everything
-// before the first in-window entry) is preserved
-// unchanged, so earlier summary lines stay anchored.
-func rewriteMemoriseAfterCompression(body string, start, end int, newLine string) (string, error) {
-	lines := strings.Split(strings.TrimRight(body, "\n"), "\n")
-	var out strings.Builder
-	wroteSummary := false
-	for _, line := range lines {
-		n, isDay, _ := parseDayLineNumber(line)
-		if !isDay {
-			out.WriteString(line)
-			out.WriteString("\n")
-			continue
-		}
-		if n >= start && n <= end {
-			if !wroteSummary {
-				out.WriteString(newLine)
-				out.WriteString("\n")
-				wroteSummary = true
-			}
-			continue
-		}
-		out.WriteString(line)
-		out.WriteString("\n")
-	}
-	return strings.TrimRight(out.String(), "\n") + "\n", nil
-}
-
-// parseDayLineNumber returns the day Number of a line if
-// it matches the "дNNNNN: ..." shape, plus a bool. The
-// summary line "д00001-д00030: ..." does NOT match (it has
-// a "-" before the colon) — the caller handles those
-// separately via lastMemoriseSummaryLine.
-func parseDayLineNumber(line string) (n int, ok bool, err error) {
-	t := strings.TrimSpace(line)
-	if !strings.HasPrefix(t, "д") {
-		return 0, false, nil
-	}
-	rest := strings.TrimPrefix(t, "д")
-	colon := strings.Index(rest, ":")
-	if colon < 0 {
-		return 0, false, nil
-	}
-	head := rest[:colon]
-	// A summary line's left side stops at "-", e.g.
-	// "00001-д00030: ..." — we want to bail on those.
-	if strings.Contains(head, "-") {
-		return 0, false, nil
-	}
-	num, perr := strconv.Atoi(strings.TrimSpace(head))
-	if perr != nil {
-		return 0, false, perr
-	}
-	return num, true, nil
-}
-
-// truncateForLog keeps the slowlog readable when the model
-// emits a wall of text without the expected prefix.
-func truncateForLog(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "…"
-}
-
 // lineCount is a small helper for the lore maintainer.
-// Empty / whitespace-only lines are counted the same
-// way editors do (every "\n" plus a final 1 for the
-// last line). The number is approximate — what matters
-// is that the threshold is a real file-length check,
-// not a character count.
+// Empty / whitespace-only lines are counted the same way
+// editors do (every "\n" plus a final 1 for the last line).
+// The number is approximate — what matters is that the
+// threshold is a real file-length check, not a character
+// count.
 func lineCount(s string) int {
 	if s == "" {
 		return 0
@@ -492,6 +367,17 @@ func lineCount(s string) int {
 		n++
 	}
 	return n
+}
+
+// truncateForLog keeps the slowlog readable when the
+// summarizer emits a wall of text without the expected
+// shape (e.g. an NPC summary that forgot the personal
+// memory prefix).
+func truncateForLog(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
 }
 
 // MaintainNPCs walks the world's NPC files and asks the
@@ -606,9 +492,9 @@ func (m *Memory) maintainOne(ctx context.Context, world, slug, rel string) (stri
 	if err != nil {
 		return displayName, false, err
 	}
-	memoriseFull, _ := m.fs.ReadRaw("worlds/" + world + "/memorise.md")
+	chronicleFull, _ := m.fs.ReadRaw(m.fs.WorldChronicle(world))
 
-	newBody, err := m.summarizer.SummarizeNPC(ctx, displayName, world, []byte(body), []byte(memoriseFull))
+	newBody, err := m.summarizer.SummarizeNPC(ctx, displayName, world, []byte(body), []byte(chronicleFull))
 	if err != nil {
 		return displayName, false, err
 	}
@@ -755,9 +641,9 @@ func (m *Memory) MaintainCharacterMemory(ctx context.Context, world, character s
 			}
 		}
 	}
-	memoriseFull, _ := m.fs.ReadRaw("worlds/" + world + "/memorise.md")
+	chronicleFull, _ := m.fs.ReadRaw(m.fs.WorldChronicle(world))
 
-	newBody, err := m.characterMemorySummarizer.SummarizeCharacterMemory(ctx, world, displayName, []byte(raw), []byte(memoriseFull))
+	newBody, err := m.characterMemorySummarizer.SummarizeCharacterMemory(ctx, world, displayName, []byte(raw), []byte(chronicleFull))
 	if err != nil {
 		return false, fmt.Errorf("character_memory_maintain: summarizer call: %w", err)
 	}

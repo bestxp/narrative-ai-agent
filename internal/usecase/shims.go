@@ -54,16 +54,16 @@ const FileBackend = "files"
 // summarizer is the LLM-driven NPC condensation hook used
 // by MaintainNPCs. loreSummarizer is the LLM-driven
 // lore.md compaction hook used by MaintainLore.
-// memoriseSummarizer is the LLM-driven 30-day window
-// compression hook used by ArchiveDay (automatic on
+// chronicleSummarizer is the LLM-driven 30-day window
+// compression hook used by ArchiveChronicleDay (automatic on
 // day%30==0 and on timeskips). characterMemorySummarizer
 // is the LLM-driven memory.yaml defragmentation hook
 // used by MaintainCharacterMemory (end-of-day pass).
 // Pass nil to any of them to disable the LLM path — the
 // file backend will then log a warning and skip. Tests
 // typically pass nil for all four (or stubs).
-func NewFileToolset(fs *storage.FileStore, log zerolog.Logger, slow *slowlog.Logger, summarizer tools.NPCSummarizer, loreSummarizer tools.LoreSummarizer, memoriseSummarizer tools.MemoriseSummarizer, characterMemorySummarizer tools.CharacterMemorySummarizer) *files.Toolset {
-	return files.New(fs, log, slow, summarizer, loreSummarizer, memoriseSummarizer, characterMemorySummarizer)
+func NewFileToolset(fs *storage.FileStore, log zerolog.Logger, slow *slowlog.Logger, summarizer tools.NPCSummarizer, loreSummarizer tools.LoreSummarizer, chronicleSummarizer tools.ChronicleSummarizer, characterMemorySummarizer tools.CharacterMemorySummarizer) *files.Toolset {
+	return files.New(fs, log, slow, summarizer, loreSummarizer, chronicleSummarizer, characterMemorySummarizer)
 }
 
 // --- format / threshold / header helpers ---------------------------------

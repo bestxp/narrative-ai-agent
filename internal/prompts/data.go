@@ -113,15 +113,50 @@ type CharacterData struct {
 // intent: it carries the snapshot of the active world
 // that the [WORLD_STATE] block needs.
 type WorldData struct {
-	Name        string
-	State       string
-	Canon       string
-	Lore        string
-	Plan        string
-	Memorise    string
+	Name  string
+	State string
+	Canon string
+	Lore  string
+	Plan  string
+	// Chronicle is the LLM-compressed window log
+	// (Periods) plus the raw per-day log for the open
+	// (unclosed) window (Days). Rendered into the
+	// "Воспоминания за периоды" and "Последняя
+	// хронология событий" blocks of user[0]. Nil →
+	// both blocks hidden (a brand-new world).
+	Chronicle   *ChronicleData
 	Stage       string
 	NPCRegistry string
 	ActiveNPCs  []NPCSnapshotData
+}
+
+// ChronicleData is the rendered shape of one world's
+// chronicle: a list of LLM-compressed windows
+// (Periods) plus the raw per-day log for the open
+// window (Days). Both fields are slices so the
+// renderer can use {{ range }} directly.
+//
+// Mirrors chronicle.Chronicle; the prompts package
+// does not import the chronicle package to avoid an
+// import cycle (usecase → prompts → chronicle vs
+// usecase → chronicle → prompts).
+type ChronicleData struct {
+	Periods []ChroniclePeriodData
+	Days    []ChronicleDayData
+}
+
+// ChroniclePeriodData is one LLM-compressed window
+// covering raw days [From..To].
+type ChroniclePeriodData struct {
+	From   int
+	To     int
+	Memory string
+}
+
+// ChronicleDayData is one raw per-day entry.
+type ChronicleDayData struct {
+	Number int
+	Text   string
 }
 
 // NPCSnapshotData mirrors domain.NPCSnapshot for the

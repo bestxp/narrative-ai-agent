@@ -102,8 +102,8 @@ func TestDispatcher_EndDay(t *testing.T) {
 	rep, err := d.Handle(context.Background(), messaging.IncomingMessage{Command: "endday", Args: []string{"5", "бой"}})
 	require.NoError(t, err)
 	assert.Contains(t, rep, "День 5")
-	mem, _ := fs.ReadRaw("worlds/naruto/memorise.md")
-	assert.Contains(t, mem, "д00005: бой")
+	mem, _ := fs.ReadRaw(fs.WorldChronicle("naruto"))
+	assert.Contains(t, mem, "бой")
 }
 
 func TestDispatcher_LeaveAndReturn(t *testing.T) {

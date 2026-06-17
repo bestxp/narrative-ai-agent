@@ -8,6 +8,7 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
+	"github.com/bestxp/narrative-ai-agent/internal/chronicle"
 	"github.com/bestxp/narrative-ai-agent/internal/domain"
 )
 
@@ -26,12 +27,12 @@ func NewSessionStartWithLogger(fs *storage.FileStore, log zerolog.Logger) *Sessi
 }
 
 type SessionContext struct {
-	Character         string
-	World             string
-	State             string
-	SyncStateAhead    bool
-	SyncMemoriseAhead bool
-	Warnings          []string
+	Character          string
+	World              string
+	State              string
+	SyncStateAhead     bool
+	SyncChronicleAhead bool
+	Warnings           []string
 }
 
 // ErrNoActiveSession is returned by Start when the registry is
@@ -88,7 +89,7 @@ func (s *SessionStart) Start() (*SessionContext, error) {
 		World:     world,
 		State:     state,
 	}
-	ctx.SyncStateAhead, ctx.SyncMemoriseAhead = s.checkSync(world, state)
+	ctx.SyncStateAhead, ctx.SyncChronicleAhead = s.checkSync(world, state)
 	// Note: "session_start" is logged by the caller (gm.buildContextPrompt)
 	// once per Reply, not here. ss.Start() is invoked from tool dispatch
 	// (leave_world, update_character) as well, and we don't want a
@@ -98,13 +99,21 @@ func (s *SessionStart) Start() (*SessionContext, error) {
 }
 
 // checkSync compares the day counter in state.md with the last archived
-// day in memorise.md. If state is ahead, returns (true, false) — caller
-// must backfill. If memorise is ahead of state, returns (false, true)
+// day in chronicle.yaml. If state is ahead, returns (true, false) — caller
+// must backfill. If chronicle is ahead of state, returns (false, true)
 // — caller must surface a hallucination warning to the player.
-func (s *SessionStart) checkSync(world, state string) (stateAhead, memoriseAhead bool) {
+func (s *SessionStart) checkSync(world, state string) (stateAhead, chronicleAhead bool) {
 	stateDay, stateOK := extractDayNumber(state)
-	memRaw, _ := s.fs.ReadRaw("worlds/" + world + "/memorise.md")
-	memDay, memOK := domain.LastDay(memRaw)
+	memRaw, _ := s.fs.ReadRaw(s.fs.WorldChronicle(world))
+	var memDay int
+	var memOK bool
+	if strings.TrimSpace(memRaw) != "" {
+		if c, err := chronicle.Load(memRaw); err == nil {
+			memDay, memOK = c.LastDay()
+		} else {
+			s.log.Warn().Err(err).Str("world", world).Msg("session_start: chronicle parse failed; treating as empty")
+		}
+	}
 	switch {
 	case !stateOK && !memOK:
 		return false, false

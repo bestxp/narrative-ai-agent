@@ -51,12 +51,12 @@ type Character struct {
 // Migrator is the LLM-driven migration hook. The
 // implementation lives in cmd/bot/main.go (it
 // wraps *usecase.Summarizer and reads the legacy
-// file + memorise.md, then calls the summary role
+// file + chronicle.yaml, then calls the summary role
 // to produce clean YAML). Returning the empty
 // string is treated as "no LLM help, use the
 // deterministic fallback".
 type Migrator interface {
-	MigrateCharacterFile(ctx context.Context, kind, name, legacy, memorise string) (string, error)
+	MigrateCharacterFile(ctx context.Context, kind, name, legacy, chronicle string) (string, error)
 }
 
 // SetMigrator wires the LLM-driven migrator.
@@ -120,7 +120,7 @@ func inventoryPath(charDir string) string {
 //
 //  1. Read the legacy .md.
 //  2. If a migrator is wired, ask it to produce
-//     clean YAML using memorise.md as context.
+//     clean YAML using chronicle.yaml as context.
 //     The migrator returns just the YAML body —
 //     no markdown wrapping, no ` ```yaml ` fences.
 //  3. If the migrator returns an error OR the
@@ -138,9 +138,9 @@ func (c *Character) MigrateLegacy(ctx context.Context, charDir, world string) ([
 		return nil, ErrNoActiveCharacter
 	}
 	converted := []string{}
-	memorise := ""
+	chronicle := ""
 	if world != "" {
-		memorise, _ = c.fs.ReadRaw("worlds/" + world + "/memorise.md")
+		chronicle, _ = c.fs.ReadRaw(c.fs.WorldChronicle(world))
 	}
 	for _, kind := range []string{"SOUL", "skill", "memory"} {
 		legacyRel := legacyPath(charDir, kind)
@@ -154,7 +154,7 @@ func (c *Character) MigrateLegacy(ctx context.Context, charDir, world string) ([
 		if c.fs.Exists(yamlPath(charDir, kind)) {
 			continue
 		}
-		body, err := c.migrateOne(ctx, kind, charDir, legacy, memorise)
+		body, err := c.migrateOne(ctx, kind, charDir, legacy, chronicle)
 		if err != nil {
 			c.log.Warn().Err(err).Str("kind", kind).Str("character", charDir).Msg("character migrate failed; leaving legacy in place")
 			continue
@@ -184,9 +184,9 @@ func (c *Character) MigrateLegacy(ctx context.Context, charDir, world string) ([
 // fallback. The return value is the YAML body
 // (including the trailing newline, with stable
 // field order — yaml.Marshal was applied).
-func (c *Character) migrateOne(ctx context.Context, kind, name, legacy, memorise string) (string, error) {
+func (c *Character) migrateOne(ctx context.Context, kind, name, legacy, chronicle string) (string, error) {
 	if c.migrator != nil {
-		raw, err := c.migrator.MigrateCharacterFile(ctx, kind, name, legacy, memorise)
+		raw, err := c.migrator.MigrateCharacterFile(ctx, kind, name, legacy, chronicle)
 		if err == nil {
 			// Verify the LLM response is
 			// parseable YAML of the expected
@@ -370,7 +370,7 @@ func (c *Character) AppendSkill(charDir, section, value string) (bool, error) {
 // method that appended to the per-character
 // memory.md journal — that file is gone in the h5
 // refactor; *Memory.AppendMemory is still used for
-// the world's memorise.md).
+// the world's chronicle.yaml).
 func (c *Character) AppendMemorySection(charDir, section, value string) (bool, error) {
 	if charDir == "" {
 		return false, ErrNoActiveCharacter

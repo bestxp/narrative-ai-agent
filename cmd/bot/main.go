@@ -294,16 +294,16 @@ func main() {
 	// (the file backend will log a warning and skip).
 	var npcSum tools.NPCSummarizer
 	var loreSum tools.LoreSummarizer
-	var memSum tools.MemoriseSummarizer
+	var chronicleSum tools.ChronicleSummarizer
 	var charMemSum tools.CharacterMemorySummarizer
 	if summarizer != nil {
 		adapter := summarizerAdapter{s: summarizer}
 		npcSum = adapter
 		loreSum = adapter
-		memSum = adapter
+		chronicleSum = adapter
 		charMemSum = adapter
 	}
-	fileTools := usecase.NewFileToolset(fs, log, slow, npcSum, loreSum, memSum, charMemSum)
+	fileTools := usecase.NewFileToolset(fs, log, slow, npcSum, loreSum, chronicleSum, charMemSum)
 	log.Info().Str("source", fileTools.Source()).Msg("file-backed toolset ready")
 	disp := dispatcher.New(cfg, fs, gitOp, fileTools, slow, log)
 
@@ -902,16 +902,16 @@ func (a summarizerAdapter) SummarizeLore(ctx context.Context, world string, lore
 	return res.Body, nil
 }
 
-func (a summarizerAdapter) SummarizeMemorise(ctx context.Context, world string, startDay, endDay int, fullMemorise string) ([]byte, error) {
-	res, err := a.s.SummarizeMemorise(ctx, world, startDay, endDay, fullMemorise)
+func (a summarizerAdapter) SummarizeChronicle(ctx context.Context, world string, startDay, endDay int, fullChronicle string) ([]byte, error) {
+	res, err := a.s.SummarizeChronicle(ctx, world, startDay, endDay, fullChronicle)
 	if err != nil {
 		return nil, err
 	}
 	return res.Body, nil
 }
 
-func (a summarizerAdapter) SummarizeCharacterMemory(ctx context.Context, world, character string, memoryBody, memoriseTail []byte) ([]byte, error) {
-	res, err := a.s.SummarizeCharacterMemory(ctx, world, character, memoryBody, memoriseTail)
+func (a summarizerAdapter) SummarizeCharacterMemory(ctx context.Context, world, character string, memoryBody, chronicleTail []byte) ([]byte, error) {
+	res, err := a.s.SummarizeCharacterMemory(ctx, world, character, memoryBody, chronicleTail)
 	if err != nil {
 		return nil, err
 	}

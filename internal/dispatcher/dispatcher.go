@@ -168,13 +168,13 @@ func (d *Dispatcher) cmdStart() (string, error) {
 	if len(sc.Warnings) > 0 {
 		warn = "\nПредупреждения:\n- " + strings.Join(sc.Warnings, "\n- ")
 	}
-	if sc.SyncMemoriseAhead {
-		warn += "\n⚠️ memorise.md опережает state.md — галлюцинация? Спросить игрока."
+	if sc.SyncChronicleAhead {
+		warn += "\n⚠️ chronicle опережает world state — галлюцинация? Спросить игрока."
 	}
 	if sc.SyncStateAhead {
-		warn += "\n⚠️ state.md опережает memorise.md — дописать недостающие дни в memorise.md."
+		warn += "\n⚠️ world state опережает chronicle — дописать недостающие дни."
 	}
-	return fmt.Sprintf("**Сессия запущена**\nПерсонаж: %s\nМир: %s\n\n**state.md**\n%s%s",
+	return fmt.Sprintf("**Сессия запущена**\nПерсонаж: %s\nМир: %s\n\n**world state**\n%s%s",
 		sc.Character, sc.World, sc.State, warn), nil
 }
 
@@ -196,7 +196,7 @@ func (d *Dispatcher) cmdLaunch(msg messaging.IncomingMessage) (string, error) {
 		return "", err
 	}
 	d.commit("first launch: " + charName + " / " + worldName)
-	return fmt.Sprintf("**Создано**\nПерсонаж: %s\nМир: %s\nИспользуйте /start для просмотра state.md.", charName, worldName), nil
+	return fmt.Sprintf("**Создано**\nПерсонаж: %s\nМир: %s\nИспользуйте /start для просмотра world state.", charName, worldName), nil
 }
 
 func (d *Dispatcher) cmdStatus() (string, error) {
@@ -207,7 +207,7 @@ func (d *Dispatcher) cmdStatus() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("Персонаж: %s\nМир: %s\n\n**state.md**\n%s", sc.Character, sc.World, sc.State), nil
+	return fmt.Sprintf("Персонаж: %s\nМир: %s\n\n**world state**\n%s", sc.Character, sc.World, sc.State), nil
 }
 
 // cmdMe shows the active character's persistent files: SOUL.md,
@@ -369,11 +369,11 @@ func (d *Dispatcher) cmdEndDay(msg messaging.IncomingMessage) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := d.tools.ArchiveDay(context.Background(), sc.World, day, summary); err != nil {
+	if err := d.tools.ArchiveChronicleDay(context.Background(), sc.World, day, summary); err != nil {
 		return "", err
 	}
 	d.commit(fmt.Sprintf("День %d", day))
-	return fmt.Sprintf("День %d заархивирован в memorise.md.", day), nil
+	return fmt.Sprintf("День %d заархивирован в chronicle.", day), nil
 }
 
 func (d *Dispatcher) cmdLeave(msg messaging.IncomingMessage) (string, error) {
@@ -467,11 +467,11 @@ func (d *Dispatcher) cmdReload() (string, error) {
 // Telegram).
 func (d *Dispatcher) Commands() []messaging.BotCommand {
 	return []messaging.BotCommand{
-		{Command: "start", Description: "Загрузить info.yaml и state.md"},
+		{Command: "start", Description: "Загрузить info.yaml и world state"},
 		{Command: "status", Description: "Текущий персонаж, мир, день"},
 		{Command: "me", Description: "Содержимое SOUL/SKILL/memory/state"},
 		{Command: "launch", Description: "Первоначальная настройка (перс + мир)"},
-		{Command: "endday", Description: "Записать день в memorise.md"},
+		{Command: "endday", Description: "Записать день в chronicle"},
 		{Command: "maintenance", Description: "Сжать NPC > 40 строк"},
 		{Command: "leave", Description: "Переход в новый мир"},
 		{Command: "return", Description: "Возврат с time-skip"},
@@ -485,11 +485,11 @@ func (d *Dispatcher) Commands() []messaging.BotCommand {
 
 func (d *Dispatcher) cmdHelp() (string, error) {
 	cmds := []string{
-		"/start — загрузить info.yaml и state.md",
+		"/start — загрузить info.yaml и world state",
 		"/launch <перс> <мир> [канон] — первоначальная настройка",
-		"/status — текущий персонаж/мир/state.md",
+		"/status — текущий персонаж/мир/world state",
 		"/me — содержимое SOUL/SKILL/memory/state персонажа",
-		"/endday <N> <выжимка> — записать день в memorise.md",
+		"/endday <N> <выжимка> — записать день в chronicle",
 		"/maintenance — выжимка NPC > 40 строк",
 		"/leave <мир> [время] — переход в новый мир",
 		"/return <мир> <дней> — возврат с time-skip",

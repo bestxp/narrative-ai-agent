@@ -4,12 +4,13 @@
 // operations the bot performs in response to model tool calls
 // or to player /commands:
 //
-//   - state.md / plan.md / memorise.md lifecycle (UpdateState,
-//     AppendEvent, AppendHistoryToState, ArchiveDay, RotatePlan)
+//   - state.md / plan.md / chronicle lifecycle (UpdateState,
+//     AppendEvent, AppendHistoryToState, ArchiveChronicleDay,
+//     RotatePlan)
 //   - NPC creation and profile reads (Create, Load)
 //   - world transitions (/leave, /return)
-//   - character files (Append, Read) for SOUL.md / SKILL.md /
-//     memory.md
+//   - character files (Append, Read) for SOUL / SKILL /
+//     memory
 //   - memory + lore + NPC condensation (AppendMemory, AppendLore,
 //     CompactNPCs)
 //
@@ -38,7 +39,7 @@ import (
 // StateSnapshot is the trimmed "here and now" written to
 // state.md. AppendEvents is the day's log: each entry is
 // appended on every UpdateState call, and the section is
-// cleared on ArchiveDay.
+// cleared on ArchiveChronicleDay.
 type StateSnapshot struct {
 	World        string
 	Day          int
@@ -164,26 +165,27 @@ type CharacterSnapshot struct {
 // summariser / state machine needs.
 //
 // Naming convention: methods that match an LLM tool use the
-// tool's canonical name in PascalCase (UpdateState, ArchiveDay,
+// tool's canonical name in PascalCase (UpdateState, ArchiveChronicleDay,
 // Create, Load, Leave, ReturnWorld, Append, Read, CompactNPCs).
 // Methods that are pure plumbing (AppendEvent,
 // AppendHistoryToState) keep the same PascalCase convention
 // but have no LLM tool counterpart.
 type Tool interface {
-	// --- state.md / plan.md / memorise.md ---
+	// --- state.md / plan.md / chronicle ---
 	UpdateState(snap StateSnapshot) error
 	AppendEvent(text string) error
 	AppendHistoryToState(world, summary string, at time.Time) error
-	// ArchiveDay appends a new day entry to memorise.md and
-	// triggers automatic 30-day window compression when the
-	// recorded day closes a window (day % 30 == 0, or any
-	// wider timeskip). The context carries the request
-	// deadline — the compression step is an LLM call that
-	// may take a few seconds, so the per-turn deadline
-	// applies. The summarizer is wired in cmd/bot/main.go
-	// (see tools.MemoriseSummarizer); nil summarizers are
+	// ArchiveChronicleDay appends a new day entry to the
+	// world's chronicle and triggers automatic window
+	// compression when the recorded day closes a window
+	// (day % Window == 0, or any wider timeskip). The
+	// context carries the request deadline — the
+	// compression step is an LLM call that may take a
+	// few seconds, so the per-turn deadline applies. The
+	// summarizer is wired in cmd/bot/main.go (see
+	// tools.ChronicleSummarizer); nil summarizers are
 	// tolerated and the call is logged + skipped.
-	ArchiveDay(ctx context.Context, world string, day int, summary string) error
+	ArchiveChronicleDay(ctx context.Context, world string, day int, summary string) error
 	// EndScene closes the current scene without closing
 	// the day. It prunes the active roster to the
 	// permanent_party subset (nil = no prune) so the
@@ -255,7 +257,7 @@ type Tool interface {
 	AppendSoul(characterDir, section, value string) (bool, error)
 	AppendSkill(characterDir, section, value string) (bool, error)
 	// AppendMemorySection is the per-NPC-name collision
-	// avoidance: the *Memory concern (memorise.md
+	// avoidance: the *Memory concern (chronicle
 	// inside worlds) already has its own AppendMemory
 	// method on a different type. They are reachable
 	// from different call sites — a `*Toolset` in

@@ -15,6 +15,7 @@ import (
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/llm"
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
 	"github.com/bestxp/narrative-ai-agent/internal/charprofile"
+	"github.com/bestxp/narrative-ai-agent/internal/chronicle"
 	"github.com/bestxp/narrative-ai-agent/internal/domain"
 	"github.com/bestxp/narrative-ai-agent/internal/slowlog"
 	"github.com/bestxp/narrative-ai-agent/internal/staging"
@@ -26,7 +27,7 @@ import (
 // DefaultProtocolWindowDays is the number of past days for
 // which a full day-protocol (200-400 word narrative) is kept
 // in the WorldState (index:1). Days older than this window
-// are still on disk in memorise.md as shorter summaries —
+// are still on disk in chronicle.yaml as shorter summaries —
 // the model can recall the **facts** via the per-NPC
 // personal_memory field, but no longer the verbatim
 // conversation. 2 is the "remember yesterday and the day
@@ -36,7 +37,7 @@ const DefaultProtocolWindowDays = 2
 // DefaultProtocolMaxChars is the hard cap on the size of
 // the "## Протокол прошедших дней" section in WorldState.
 // When the section grows past this, the oldest day is
-// evicted to memorise.md. 5000 chars ≈ 1500 tokens; a
+// evicted to chronicle.yaml. 5000 chars ≈ 1500 tokens; a
 // 200-400 word narrative per day leaves room for 2-3 days
 // even with multi-NPC scenes.
 const DefaultProtocolMaxChars = 5000
@@ -323,7 +324,7 @@ func (g *GM) Reply(ctx context.Context, chatID, userText string, cb Callbacks) (
 	// are first compressed to a 200-400 token fact log and
 	// appended to state.md so the next system prompt still
 	// sees them. Without a summarizer we just drop (the
-	// facts live in state.md/memorise.md/SOUL.md anyway,
+	// facts live in state.md/chronicle.yaml/SOUL.md anyway,
 	// and the operator sees a "🔄" notice all the same).
 	if g.compaction.ContextWindow > 0 {
 		ctxChars := len(g.staticPrompt)
@@ -1963,15 +1964,17 @@ func (g *GM) buildContext() (systemMsg, worldMsg string, err error) {
 		// A separate enumeration block would just
 		// duplicate the YAML keys.
 	}
+	periods, days := g.loadChronicle(sc.World)
+	chron := &domain.Chronicle{Periods: periods, Days: days}
 	worldCtx := domain.WorldContext{
-		World:         sc.World,
-		WorldState:    safeRead(g.fs, "worlds/"+sc.World+"/state.md"),
-		WorldCanon:    safeRead(g.fs, "worlds/"+sc.World+"/canon.md"),
-		WorldLore:     safeRead(g.fs, "worlds/"+sc.World+"/lore.md"),
-		WorldPlan:     safeRead(g.fs, "worlds/"+sc.World+"/plan.md"),
-		WorldMemorise: safeRead(g.fs, "worlds/"+sc.World+"/memorise.md"),
-		WorldStage:    g.loadWorldStage(sc.World, sc.Character),
-		NPCs:          g.loadActiveNPCs(sc.World, sc.State),
+		World:      sc.World,
+		WorldState: safeRead(g.fs, "worlds/"+sc.World+"/state.md"),
+		WorldCanon: safeRead(g.fs, "worlds/"+sc.World+"/canon.md"),
+		WorldLore:  safeRead(g.fs, "worlds/"+sc.World+"/lore.md"),
+		WorldPlan:  safeRead(g.fs, "worlds/"+sc.World+"/plan.md"),
+		Chronicle:  chron,
+		WorldStage: g.loadWorldStage(sc.World, sc.Character),
+		NPCs:       g.loadActiveNPCs(sc.World, sc.State),
 	}
 	builtSystem := domain.BuildSystemPrompt(g.staticPrompt, charCtx, g.role.DisableThinking)
 	builtWorld, err := domain.BuildWorldStateMessage(worldCtx, charCtx)
@@ -2010,7 +2013,7 @@ func (g *GM) buildContextPrompt() (string, error) {
 // invalidateWorldState drops the cached system prompt and
 // WorldState user message, forcing the next buildContext to
 // re-read from disk. Called on:
-//   - end_day (ArchiveDay hook) after appending the protocol
+//   - end_day (ArchiveChronicleDay hook) after appending the protocol
 //   - end_scene
 //   - leave_world (world switch)
 //   - /reload (operator override)
@@ -2165,19 +2168,19 @@ func (g *GM) appendChronicleEntry(world string, day int, body []byte) error {
 // "## Протокол прошедших дней" in state.md. The protocol
 // is consulted by the model through g.protocolWindowDays
 // (default 2) — the oldest day is then evicted to
-// memorise.md to keep the section bounded.
+// chronicle.yaml to keep the section bounded.
 //
 // Sources of context for the protocol:
 //   - "## Хроника текущего дня" (if in-place compaction
 //     ran during the day)
 //   - state.md body (current "moment", active NPCs)
-//   - the day's summary that ArchiveDay just wrote to
-//     memorise.md (always present — ArchiveDay's
+//   - the day's summary that ArchiveChronicleDay just wrote to
+//     chronicle.yaml (always present — ArchiveChronicleDay's
 //     contract requires summary != "")
 //
 // Note: this is a "summary of summaries" — if the day
 // had no compaction, the protocol is built mostly from
-// the player's short summary in memorise.md. Days with
+// the player's short summary in chronicle.yaml. Days with
 // heavy activity and no compaction will produce
 // short protocols; that is a known cost of running
 // without compaction. The narrative still captures
@@ -2195,10 +2198,10 @@ func (g *GM) EndOfDay(ctx context.Context, world string, day int) error {
 		return nil
 	}
 	stateMD, _ := g.fs.ReadRaw("worlds/" + world + "/state.md")
-	memoriseMD, _ := g.fs.ReadRaw("worlds/" + world + "/memorise.md")
+	chronicleRaw, _ := g.fs.ReadRaw("worlds/" + world + "/chronicle.yaml")
 	// Build a context-only message set: extract the
 	// current "## Хроника текущего дня" lines (if any)
-	// and the player's summary from memorise.md. We
+	// and the player's summary from chronicle.yaml. We
 	// pass these as the user message so the model
 	// reads them as one block, not as a conversation
 	// turn. Using a synthetic single user message
@@ -2209,18 +2212,18 @@ func (g *GM) EndOfDay(ctx context.Context, world string, day int) error {
 		ctxBuf.WriteString(chronicle)
 		ctxBuf.WriteString("\n\n")
 	}
-	if memoriseMD != "" {
-		// Find the last "д<day>: " line in memorise.md.
-		dayStr := fmt.Sprintf("%05d", day)
-		marker := "д" + dayStr + ":"
-		idx := strings.Index(memoriseMD, marker)
-		if idx >= 0 {
-			nl := strings.Index(memoriseMD[idx:], "\n")
-			if nl >= 0 {
-				ctxBuf.WriteString("# Краткий summary игрока в memorise.md (этот день)\n")
-				ctxBuf.WriteString(memoriseMD[idx : idx+nl])
+	if chronicleRaw != "" {
+		// Find the chronicle entry for this day.
+		// The chronicle is YAML; parse it and pull the
+		// day's text out of `days` (a raw per-day map).
+		if c, err := chronicle.Load(chronicleRaw); err == nil {
+			if txt, ok := c.Days[day]; ok && strings.TrimSpace(txt) != "" {
+				ctxBuf.WriteString("# Краткий summary игрока в chronicle (этот день)\n")
+				ctxBuf.WriteString(strings.TrimSpace(txt))
 				ctxBuf.WriteString("\n")
 			}
+		} else {
+			g.log.Warn().Err(err).Str("world", world).Msg("end-of-day: chronicle parse failed; skipping day summary block")
 		}
 	}
 	dayMessages := []llm.Message{{Role: "user", Content: ctxBuf.String()}}
@@ -2236,7 +2239,7 @@ func (g *GM) EndOfDay(ctx context.Context, world string, day int) error {
 		return err
 	}
 	// Window enforcement: if the section grew past the
-	// limits, evict the oldest day to memorise.md.
+	// limits, evict the oldest day to chronicle.yaml.
 	if err := g.enforceProtocolWindow(world); err != nil {
 		g.log.Warn().Err(err).Str("world", world).Msg("end-of-day: enforce window failed (non-fatal)")
 	}
@@ -2367,7 +2370,7 @@ func protocolSectionBounds(body string) (start, end int) {
 // enforceProtocolWindow applies g.protocolWindowDays
 // (count of day entries) and g.protocolMaxChars (size
 // of the entire section) limits. The oldest day is
-// moved into memorise.md (appended as a "д<NNNNN>: "
+// moved into chronicle.yaml (appended as a "д<NNNNN>: "
 // line). The new section is the truncated remaining
 // entries.
 func (g *GM) enforceProtocolWindow(world string) error {
@@ -2426,11 +2429,11 @@ func (g *GM) enforceProtocolWindow(world string) error {
 		}
 		oldest := entries[0]
 		entries = entries[1:]
-		// Move to memorise.md.
-		if err := g.evictProtocolToMemorise(world, oldest); err != nil {
+		// Move to chronicle.
+		if err := g.evictProtocolToChronicle(world, oldest); err != nil {
 			return err
 		}
-		g.log.Info().Str("world", world).Int("day", oldest.day).Msg("end-of-day: protocol entry evicted to memorise")
+		g.log.Info().Str("world", world).Int("day", oldest.day).Msg("end-of-day: protocol entry evicted to chronicle")
 	}
 
 	// Reassemble the section.
@@ -2452,29 +2455,99 @@ func (g *GM) enforceProtocolWindow(world string) error {
 	return g.fs.WriteRawAtomic(rel, newBody)
 }
 
-// evictProtocolToMemorise appends the evicted day to
-// memorise.md as "д<NNNNN>: <narrative>" so the
-// 30-day LLM-compression path (Memory.MemoriseCompressWindow)
-// can later condense it.
-func (g *GM) evictProtocolToMemorise(world string, oldest struct {
+// evictProtocolToChronicle appends the evicted day to
+// the chronicle as a raw day entry so the 30-day
+// LLM-compression path (Memory.ChronicleCompressWindow)
+// can later condense it. The chronicle is YAML
+// (periods + days); we read, parse, append via the
+// chronicle.AppendDay helper, save. A parse error
+// surfaces to the operator (corrupt file); an
+// append-already-present (re-issued eviction) is a
+// silent no-op.
+func (g *GM) evictProtocolToChronicle(world string, oldest struct {
 	day    int
 	header string
 	body   string
 }) error {
-	rel := "worlds/" + world + "/memorise.md"
-	cur, _ := g.fs.ReadRaw(rel)
-	if cur != "" && !strings.HasSuffix(cur, "\n") {
-		cur += "\n"
+	rel := g.fs.WorldChronicle(world)
+	raw, err := g.fs.ReadRaw(rel)
+	if err != nil {
+		return err
 	}
-	dayStr := fmt.Sprintf("%05d", oldest.day)
+	c, err := loadOrEmptyChronicleForGM(raw)
+	if err != nil {
+		g.log.Warn().Err(err).Str("world", world).Msg("evict_protocol_to_chronicle: parse failed; using empty chronicle")
+		c = chronicle.Chronicle{Periods: []chronicle.Period{}, Days: map[int]string{}}
+	}
 	narrative := strings.TrimSpace(oldest.body)
-	cur += "д" + dayStr + ": " + narrative + "\n"
-	return g.fs.WriteRawAtomic(rel, cur)
+	if !c.AppendDay(oldest.day, narrative) {
+		// Duplicate day — already present. Treat as
+		// success so the eviction loop continues.
+		return nil
+	}
+	body, err := c.Save()
+	if err != nil {
+		return err
+	}
+	return g.fs.WriteRawAtomic(rel, body)
+}
+
+// loadOrEmptyChronicleForGM parses raw YAML into a
+// Chronicle; an empty body returns the zero-value
+// Chronicle with both maps initialised so Save()
+// round-trips to "periods: []\ndays: {}" rather
+// than to nothing.
+func loadOrEmptyChronicleForGM(raw string) (chronicle.Chronicle, error) {
+	if strings.TrimSpace(raw) == "" {
+		return chronicle.Chronicle{Periods: []chronicle.Period{}, Days: map[int]string{}}, nil
+	}
+	return chronicle.Load(raw)
 }
 
 func safeRead(fs *storage.FileStore, rel string) string {
 	s, _ := fs.ReadRaw(rel)
 	return s
+}
+
+// loadChronicle reads the world's chronicle YAML file
+// and projects it into the domain-level shape. Returns
+// (nil, nil) for a brand-new world — the renderer hides
+// both blocks, which is the right "no history yet" UX.
+//
+// Parse errors are logged and treated as "no chronicle"
+// (returning empty Periods/Days rather than nil — the
+// renderer treats both as "show no blocks", but a
+// non-nil Chronicle with empty slices lets the operator
+// see in slow.log that a parse failure happened).
+func (g *GM) loadChronicle(world string) ([]domain.ChroniclePeriod, []domain.ChronicleDay) {
+	if g.fs == nil || world == "" {
+		return nil, nil
+	}
+	body, err := g.fs.ReadRaw(g.fs.WorldChronicle(world))
+	if err != nil || strings.TrimSpace(body) == "" {
+		return nil, nil
+	}
+	c, err := chronicle.Load(body)
+	if err != nil {
+		g.log.Warn().Err(err).Str("world", world).Msg("load_chronicle parse failed; rendering empty")
+		return nil, nil
+	}
+	periods := make([]domain.ChroniclePeriod, 0, len(c.Periods))
+	for _, p := range c.Periods {
+		periods = append(periods, domain.ChroniclePeriod{
+			From:   p.From,
+			To:     p.To,
+			Memory: p.Memory,
+		})
+	}
+	days := make([]domain.ChronicleDay, 0, len(c.Days))
+	for _, e := range c.SortedDays() {
+		days = append(days, domain.ChronicleDay{
+			Number: e.Number,
+			Text:   e.Text,
+		})
+	}
+	return periods, days
 }
 
 // loadWorldStage loads the active stage for the world and renders it
@@ -2675,14 +2748,14 @@ func (g *GM) dispatchOneTool(ctx context.Context, tc llm.ToolCall) (string, stri
 			return "", "end_day requires day and summary"
 		}
 		world := currentWorldName(g.fs)
-		// BEFORE ArchiveDay updates state.md to day+1, produce
+		// BEFORE ArchiveChronicleDay updates state.md to day+1, produce
 		// the "## Протокол прошедших дней" entry from whatever
 		// context survived (Хроника if compaction ran, state.md
-		// body, and the memorise.md summary).
+		// body, and the chronicle.yaml summary).
 		if err := g.EndOfDay(ctx, world, day); err != nil {
 			g.log.Warn().Err(err).Str("world", world).Int("day", day).Msg("end_day: protocol append failed; continuing with archive")
 		}
-		if err := g.tools.ArchiveDay(ctx, world, day, summary); err != nil {
+		if err := g.tools.ArchiveChronicleDay(ctx, world, day, summary); err != nil {
 			return "", err.Error()
 		}
 		return okJSON("archived"), ""

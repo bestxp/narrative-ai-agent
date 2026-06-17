@@ -27,7 +27,7 @@ func TestFirstLaunch_CreatesSkeleton(t *testing.T) {
 		"worlds/naruto/state.md",
 		"worlds/naruto/lore.md",
 		"worlds/naruto/plan.md",
-		"worlds/naruto/memorise.md",
+		"worlds/naruto/chronicle.yaml",
 		"worlds/naruto/characters.md",
 		"worlds/naruto/characters",
 	} {

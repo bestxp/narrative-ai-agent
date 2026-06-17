@@ -38,9 +38,11 @@
 {{ .World.Plan }}
 {{ end }}
 
-{{ if .World.Memorise }}### Хронология (chronicle)
-{{ .World.Memorise }}
-{{ end }}
+{{ if .World.Chronicle }}{{ if .World.Chronicle.Periods }}### Воспоминания за периоды
+{{ range .World.Chronicle.Periods }}с {{ .From }} по {{ .To }} дни: {{ .Memory }}
+{{ end }}{{ end }}{{ if .World.Chronicle.Days }}### Последняя хронология событий
+{{ range .World.Chronicle.Days }}День {{ .Number }}: {{ .Text }}
+{{ end }}{{ end }}{{ end }}
 
 {{ if .World.Stage }}{{ .World.Stage }}
 {{ end }}

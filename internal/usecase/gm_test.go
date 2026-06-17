@@ -69,7 +69,7 @@ func newGMTestEnv(t *testing.T) (*GM, *storage.FileStore, *fakeLLM) {
 	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/lore.md", "lore"))
 	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/plan.md", "plan"))
 	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/canon.md", "canon"))
-	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/memorise.md", ""))
+	require.NoError(t, fs.WriteRawAtomic(fs.WorldChronicle("naruto"), ""))
 	require.NoError(t, fs.EnsureDir("worlds/naruto/characters"))
 	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/characters/kakashi.yaml", "display_name: Какаши\ntemperament: спокойный\n"))
 
@@ -129,8 +129,8 @@ func TestGM_ToolRound_EndDay(t *testing.T) {
 	var got strings.Builder
 	_, err := g.Reply(context.Background(), "chat1", "конец дня", deltaOnly(&got))
 	require.NoError(t, err)
-	mem, _ := fs.ReadRaw("worlds/naruto/memorise.md")
-	assert.Contains(t, mem, "д00001: первый день")
+	mem, _ := fs.ReadRaw(fs.WorldChronicle("naruto"))
+	assert.Contains(t, mem, "первый день")
 	assert.Equal(t, 2, fake.calls)
 }
 
@@ -531,11 +531,11 @@ func TestGM_WorldStateSnapshot_InvalidatedOnEndDay(t *testing.T) {
 	firstSys, firstWorld, err := g.buildContext()
 	require.NoError(t, err)
 
-	// Simulate end_day: write to memorise.md (this is
-	// what ArchiveDay does) and then call the same hook
-	// ArchiveDay uses.
-	require.NoError(t, g.fs.WriteRawAtomic("worlds/naruto/memorise.md",
-		"д00001: тестовый день\n"))
+	// Simulate end_day: write to chronicle.yaml (this is
+	// what ArchiveChronicleDay does) and then call the
+	// same hook ArchiveChronicleDay uses.
+	require.NoError(t, g.fs.WriteRawAtomic(g.fs.WorldChronicle("naruto"),
+		"days:\n    1: тестовый день\n"))
 	g.InvalidateWorldState("end_day")
 
 	secondSys, secondWorld, err := g.buildContext()
@@ -547,7 +547,7 @@ func TestGM_WorldStateSnapshot_InvalidatedOnEndDay(t *testing.T) {
 		"system snapshot must NOT change on end_day")
 	assert.NotEqual(t, firstWorld, secondWorld,
 		"world snapshot must rebuild after end_day invalidation")
-	assert.Contains(t, secondWorld, "д00001: тестовый день",
+	assert.Contains(t, secondWorld, "1: тестовый день",
 		"new world snapshot must include the freshly archived day")
 }
 
@@ -766,9 +766,9 @@ func TestGM_EnforceProtocolWindow_EvictsToMemorise(t *testing.T) {
 		"oldest day must be evicted from protocol")
 	assert.Contains(t, body, "средний")
 	assert.Contains(t, body, "новейший")
-	mem, _ := fs.ReadRaw("worlds/naruto/memorise.md")
-	assert.Contains(t, mem, "д00001: самый старый",
-		"evicted day must land in memorise.md as д<NNNNN>: <narrative>")
+	mem, _ := fs.ReadRaw(fs.WorldChronicle("naruto"))
+	assert.Contains(t, mem, "самый старый",
+		"evicted day must land in the chronicle")
 }
 
 // TestGM_EnforceProtocolWindow_ByCharCount: even with
@@ -785,8 +785,8 @@ func TestGM_EnforceProtocolWindow_ByCharCount(t *testing.T) {
 	body, _ := fs.ReadRaw("worlds/naruto/state.md")
 	assert.NotContains(t, body, huge,
 		"the oldest oversized day must be evicted")
-	mem, _ := fs.ReadRaw("worlds/naruto/memorise.md")
-	assert.Contains(t, mem, "д00001: "+huge)
+	mem, _ := fs.ReadRaw(fs.WorldChronicle("naruto"))
+	assert.Contains(t, mem, huge)
 }
 
 // --- /reload tests ------------------------------------------

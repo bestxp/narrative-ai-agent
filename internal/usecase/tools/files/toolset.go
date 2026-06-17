@@ -46,20 +46,20 @@ type Toolset struct {
 // summarizer is the LLM-driven NPC condensation hook used
 // by MaintainNPCs. loreSummarizer is the LLM-driven
 // lore.md compaction hook used by MaintainLore.
-// memoriseSummarizer is the LLM-driven 30-day window
-// compression hook used by ArchiveDay. characterMemorySummarizer
+// chronicleSummarizer is the LLM-driven 30-day window
+// compression hook used by ArchiveChronicleDay. characterMemorySummarizer
 // is the LLM-driven memory.yaml defragmentation hook used by
 // MaintainCharacterMemory (end-of-day pass). Pass nil to
 // any of them to disable the LLM path — the file backend
 // will then log a warning and skip.
-func New(fs *storage.FileStore, log zerolog.Logger, slow *slowlog.Logger, summarizer tools.NPCSummarizer, loreSummarizer tools.LoreSummarizer, memoriseSummarizer tools.MemoriseSummarizer, characterMemorySummarizer tools.CharacterMemorySummarizer) *Toolset {
-	mem := newMemory(fs, log, summarizer, loreSummarizer, memoriseSummarizer, characterMemorySummarizer)
+func New(fs *storage.FileStore, log zerolog.Logger, slow *slowlog.Logger, summarizer tools.NPCSummarizer, loreSummarizer tools.LoreSummarizer, chronicleSummarizer tools.ChronicleSummarizer, characterMemorySummarizer tools.CharacterMemorySummarizer) *Toolset {
+	mem := newMemory(fs, log, summarizer, loreSummarizer, chronicleSummarizer, characterMemorySummarizer)
 	st := newState(fs, log, slow)
-	// Wire the post-ArchiveDay hook so the state writer
-	// does not need a direct reference to the memory
-	// struct. The hook is nil-safe — it logs and skips
-	// when no summarizer is wired.
-	st.SetMemoriseCompress(mem.memoriseCompressAfterArchive)
+	// Wire the post-ArchiveChronicleDay hook so the
+	// state writer does not need a direct reference to
+	// the memory struct. The hook is nil-safe — it logs
+	// and skips when no summarizer is wired.
+	st.SetChronicleCompress(mem.chronicleCompressAfterArchive)
 	return &Toolset{
 		State:     st,
 		Memory:    mem,

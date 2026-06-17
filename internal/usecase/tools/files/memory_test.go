@@ -3,7 +3,6 @@ package files
 import (
 	"context"
 	"fmt"
-	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -13,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
-	"github.com/bestxp/narrative-ai-agent/internal/domain"
+	"github.com/bestxp/narrative-ai-agent/internal/chronicle"
 	"github.com/bestxp/narrative-ai-agent/internal/npcprofile"
 	"github.com/bestxp/narrative-ai-agent/internal/slowlog"
 	"github.com/bestxp/narrative-ai-agent/internal/usecase/tools"
@@ -662,35 +661,33 @@ func TestMaintainCharacterMemory_EmptyCharacterNoop(t *testing.T) {
 // the test ever needs a real Logger.
 var _ = slowlog.Discard
 
-// --- memorise window compression ----------------------------------------
+// --- chronicle window compression ----------------------------------------
 
-// stubMemoriseSummarizer is a deterministic test double
-// for tools.MemoriseSummarizer. It records every call and
-// returns a fixed body that follows the
-// "д<start>-д<end>: <text>" contract, unless the test
-// wants the model to misbehave (err / empty / bad prefix).
-type stubMemoriseSummarizer struct {
+// stubChronicleSummarizer is a deterministic test double
+// for tools.ChronicleSummarizer. It records every call and
+// returns a fixed memory text (the new Period's Memory
+// field). Tests that want the model to misbehave set
+// err / skipOutput.
+type stubChronicleSummarizer struct {
 	calls     int
 	lastBody  string
 	lastFrom  int
 	lastTo    int
 	firstFrom int
 	firstTo   int
-	// ReturnedBody is appended after the canonical prefix
-	// to produce the final line. Empty string yields a
-	// model that returned no content at all.
-	returnedBody string
-	// BadPrefix drops the canonical prefix, simulating a
-	// model that drifted.
-	badPrefix bool
-	err       error
+	// ReturnedMemory is what the stub returns as the
+	// Period's Memory field. Empty string yields a model
+	// that returned no content at all.
+	returnedMemory string
+	// Err, when set, makes the stub return an error.
+	err error
 	// SkipOutput, when true, makes the stub return
-	// ([]byte{}, nil) regardless of returnedBody — the
+	// ([]byte{}, nil) regardless of returnedMemory — the
 	// "too thin" code path.
 	skipOutput bool
 }
 
-func (s *stubMemoriseSummarizer) SummarizeMemorise(ctx context.Context, world string, startDay, endDay int, fullMemorise string) ([]byte, error) {
+func (s *stubChronicleSummarizer) SummarizeChronicle(ctx context.Context, world string, startDay, endDay int, fullChronicle string) ([]byte, error) {
 	s.calls++
 	if s.calls == 1 {
 		s.firstFrom = startDay
@@ -698,198 +695,187 @@ func (s *stubMemoriseSummarizer) SummarizeMemorise(ctx context.Context, world st
 	}
 	s.lastFrom = startDay
 	s.lastTo = endDay
-	s.lastBody = fullMemorise
+	s.lastBody = fullChronicle
 	if s.err != nil {
 		return nil, s.err
 	}
 	if s.skipOutput {
 		return []byte{}, nil
 	}
-	prefix := fmt.Sprintf("д%05d-д%05d: ", startDay, endDay)
-	if s.badPrefix {
-		return []byte("д00099-д00099: nonsense"), nil
-	}
-	return []byte(prefix + s.returnedBody), nil
+	return []byte(s.returnedMemory), nil
 }
 
-var _ tools.MemoriseSummarizer = (*stubMemoriseSummarizer)(nil)
+var _ tools.ChronicleSummarizer = (*stubChronicleSummarizer)(nil)
 
-// writeMemoriseDays writes a 1-day-per-line memorise.md
-// for the world. Days not in the `days` slice are
-// skipped (so the test can simulate a gap in the
-// calendar — e.g. 1..29, 31..60 with day 30 missing).
-func writeMemoriseDays(t *testing.T, fs *storage.FileStore, world string, days map[int]string) {
+// writeChronicleDays writes a chronicle.yaml with the
+// given raw per-day entries. The function is the test
+// analog of a sequence of ArchiveChronicleDay calls
+// without actually running the state tool (which would
+// require a full GM wiring). Days not in the `days`
+// slice are skipped (so the test can simulate a gap in
+// the calendar — e.g. 1..29, 31..60 with day 30
+// missing).
+func writeChronicleDays(t *testing.T, fs *storage.FileStore, world string, days map[int]string) {
 	t.Helper()
-	var b strings.Builder
-	nums := make([]int, 0, len(days))
-	for n := range days {
-		nums = append(nums, n)
+	c := chronicle.Chronicle{Periods: []chronicle.Period{}, Days: map[int]string{}}
+	for d, txt := range days {
+		c.AppendDay(d, txt)
 	}
-	sort.Ints(nums)
-	for _, n := range nums {
-		b.WriteString(domain.FormatDay(n, days[n]))
-		b.WriteString("\n")
-	}
-	require.NoError(t, fs.WriteRawAtomic("worlds/"+world+"/memorise.md", b.String()))
+	body, err := c.Save()
+	require.NoError(t, err)
+	require.NoError(t, fs.WriteRawAtomic(fs.WorldChronicle(world), body))
 }
 
-// TestMemoriseCompressWindow_Basic30Days writes days
-// 1..30, calls ArchiveDay(30) which must compress
-// д00001-д00030 into a single line.
-func TestMemoriseCompressWindow_Basic30Days(t *testing.T) {
+// TestChronicleCompressWindow_Basic30Days writes days
+// 1..30, calls the compression hook with day=30 which
+// must collapse days 1..30 into a single Period.
+func TestChronicleCompressWindow_Basic30Days(t *testing.T) {
 	fs, _ := storage.NewFileStore(t.TempDir())
 	require.NoError(t, fs.EnsureDir("worlds/naruto"))
 	days := make(map[int]string, 30)
 	for i := 1; i <= 30; i++ {
 		days[i] = "день " + strconv.Itoa(i)
 	}
-	writeMemoriseDays(t, fs, "naruto", days)
-	stub := &stubMemoriseSummarizer{returnedBody: "выжимка 30 дней"}
+	writeChronicleDays(t, fs, "naruto", days)
+	stub := &stubChronicleSummarizer{returnedMemory: "выжимка 30 дней"}
 	mem := newMemory(fs, zerolog.Nop(), nil, nil, stub, nil)
-	// ArchiveDay will call the hook after writing. We use
-	// the state struct directly because the tool wiring
-	// (State.ArchiveDay → Memory.memoriseCompressAfterArchive)
-	// is set up in NewFileToolset, but we can also call
-	// memoriseCompressAfterArchive directly.
-	err := mem.memoriseCompressAfterArchive(context.Background(), "naruto", 30)
+	err := mem.chronicleCompressAfterArchive(context.Background(), "naruto", 30)
 	require.NoError(t, err)
 	assert.Equal(t, 1, stub.calls)
 	assert.Equal(t, 1, stub.lastFrom)
 	assert.Equal(t, 30, stub.lastTo)
-	// File should now contain the summary line.
-	body, _ := fs.ReadRaw("worlds/naruto/memorise.md")
-	assert.Contains(t, body, "д00001-д00030: выжимка 30 дней")
-	// No more single-day lines for days 1..30.
+	// File should now contain the Period with the
+	// stub's memory text. The raw day entries for
+	// 1..30 must be gone.
+	body, _ := fs.ReadRaw(fs.WorldChronicle("naruto"))
+	assert.Contains(t, body, "from: 1")
+	assert.Contains(t, body, "to: 30")
+	assert.Contains(t, body, "memory: выжимка 30 дней")
+	// The days map should be empty (or at least not
+	// contain the in-window days).
+	c, err := chronicle.Load(body)
+	require.NoError(t, err)
 	for i := 1; i <= 30; i++ {
-		assert.NotContains(t, body, "д"+strconv.Itoa(i)+":", "day %d should be gone", i)
-		if i < 10 {
-			assert.NotContains(t, body, "д0000"+strconv.Itoa(i)+":")
-		}
+		_, present := c.Days[i]
+		assert.False(t, present, "day %d should be removed", i)
 	}
+	assert.Equal(t, 1, len(c.Periods))
 }
 
-// TestMemoriseCompressWindow_Ladder: archive up to day
-// 60 → must produce TWO summary lines, one per window.
-func TestMemoriseCompressWindow_Ladder(t *testing.T) {
+// TestChronicleCompressWindow_Ladder: archive up to day
+// 60 → must produce TWO Period entries, one per window.
+func TestChronicleCompressWindow_Ladder(t *testing.T) {
 	fs, _ := storage.NewFileStore(t.TempDir())
 	require.NoError(t, fs.EnsureDir("worlds/naruto"))
 	days := make(map[int]string, 60)
 	for i := 1; i <= 60; i++ {
 		days[i] = "день " + strconv.Itoa(i)
 	}
-	writeMemoriseDays(t, fs, "naruto", days)
-	stub := &stubMemoriseSummarizer{returnedBody: "выжимка"}
+	writeChronicleDays(t, fs, "naruto", days)
+	stub := &stubChronicleSummarizer{returnedMemory: "выжимка"}
 	mem := newMemory(fs, zerolog.Nop(), nil, nil, stub, nil)
-	err := mem.memoriseCompressAfterArchive(context.Background(), "naruto", 60)
+	err := mem.chronicleCompressAfterArchive(context.Background(), "naruto", 60)
 	require.NoError(t, err)
 	assert.Equal(t, 2, stub.calls, "two windows → two LLM calls")
-	body, _ := fs.ReadRaw("worlds/naruto/memorise.md")
-	assert.Contains(t, body, "д00001-д00030:")
-	assert.Contains(t, body, "д00031-д00060:")
+	c, err := chronicle.Load(mustRead(t, fs, "naruto"))
+	require.NoError(t, err)
+	require.Equal(t, 2, len(c.Periods))
+	assert.Equal(t, 1, c.Periods[0].From)
+	assert.Equal(t, 30, c.Periods[0].To)
+	assert.Equal(t, 31, c.Periods[1].From)
+	assert.Equal(t, 60, c.Periods[1].To)
 }
 
-// TestMemoriseCompressWindow_Timeskip simulates a jump
-// from day 10 to day 90 in one ArchiveDay call (e.g. the
-// player left the world and returned). The file already
-// has days 1..10; the new archive brings the count to
-// 90. Three windows must be compressed: 1..30, 31..60,
-// 61..90.
-func TestMemoriseCompressWindow_Timeskip(t *testing.T) {
+// TestChronicleCompressWindow_Timeskip simulates a jump
+// from day 10 to day 90 (e.g. the player left the world
+// and returned). The file already has days 1..10; the
+// hook is called as if day 90 was just archived. Three
+// windows must be compressed: 1..30, 31..60, 61..90.
+func TestChronicleCompressWindow_Timeskip(t *testing.T) {
 	fs, _ := storage.NewFileStore(t.TempDir())
 	require.NoError(t, fs.EnsureDir("worlds/naruto"))
-	// Pre-existing: days 1..10.
-	pre := make(map[int]string, 10)
-	for i := 1; i <= 10; i++ {
-		pre[i] = "до таймскипа " + strconv.Itoa(i)
-	}
-	writeMemoriseDays(t, fs, "naruto", pre)
-	// Simulate the new days being written through the
-	// state.ArchiveDay path: write days 11..90 directly
-	// here, then call the hook as if day 90 was just
-	// archived.
-	var buf strings.Builder
+	days := make(map[int]string, 90)
 	for i := 1; i <= 90; i++ {
-		buf.WriteString(domain.FormatDay(i, "день "+strconv.Itoa(i)))
-		buf.WriteString("\n")
+		days[i] = "день " + strconv.Itoa(i)
 	}
-	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/memorise.md", buf.String()))
-	stub := &stubMemoriseSummarizer{returnedBody: "окно"}
+	writeChronicleDays(t, fs, "naruto", days)
+	stub := &stubChronicleSummarizer{returnedMemory: "окно"}
 	mem := newMemory(fs, zerolog.Nop(), nil, nil, stub, nil)
-	err := mem.memoriseCompressAfterArchive(context.Background(), "naruto", 90)
+	err := mem.chronicleCompressAfterArchive(context.Background(), "naruto", 90)
 	require.NoError(t, err)
 	assert.Equal(t, 3, stub.calls, "three windows → three LLM calls")
-	body, _ := fs.ReadRaw("worlds/naruto/memorise.md")
-	assert.Contains(t, body, "д00001-д00030:")
-	assert.Contains(t, body, "д00031-д00060:")
-	assert.Contains(t, body, "д00061-д00090:")
-	// The single-day lines for 1..90 must be gone.
-	for i := 1; i <= 90; i++ {
-		if i < 10 {
-			assert.NotContains(t, body, "д0000"+strconv.Itoa(i)+": день")
-		} else {
-			assert.NotContains(t, body, "д"+strconv.Itoa(i)+": день")
-		}
-	}
+	c, err := chronicle.Load(mustRead(t, fs, "naruto"))
+	require.NoError(t, err)
+	require.Equal(t, 3, len(c.Periods))
+	assert.Equal(t, 1, c.Periods[0].From)
+	assert.Equal(t, 30, c.Periods[0].To)
+	assert.Equal(t, 31, c.Periods[1].From)
+	assert.Equal(t, 60, c.Periods[1].To)
+	assert.Equal(t, 61, c.Periods[2].From)
+	assert.Equal(t, 90, c.Periods[2].To)
+	assert.Equal(t, 0, len(c.Days), "all 90 days should be inside Periods")
 }
 
-// TestMemoriseCompressWindow_NoSummarizer: nil summarizer
+// TestChronicleCompressWindow_NoSummarizer: nil summarizer
 // must log a warning and leave the file untouched.
-func TestMemoriseCompressWindow_NoSummarizer(t *testing.T) {
+func TestChronicleCompressWindow_NoSummarizer(t *testing.T) {
 	fs, _ := storage.NewFileStore(t.TempDir())
 	require.NoError(t, fs.EnsureDir("worlds/naruto"))
 	days := make(map[int]string, 30)
 	for i := 1; i <= 30; i++ {
 		days[i] = "день"
 	}
-	writeMemoriseDays(t, fs, "naruto", days)
-	before, _ := fs.ReadRaw("worlds/naruto/memorise.md")
+	writeChronicleDays(t, fs, "naruto", days)
+	before, _ := fs.ReadRaw(fs.WorldChronicle("naruto"))
 	mem := newMemory(fs, zerolog.Nop(), nil, nil, nil, nil)
-	err := mem.memoriseCompressAfterArchive(context.Background(), "naruto", 30)
+	err := mem.chronicleCompressAfterArchive(context.Background(), "naruto", 30)
 	require.NoError(t, err)
-	after, _ := fs.ReadRaw("worlds/naruto/memorise.md")
+	after, _ := fs.ReadRaw(fs.WorldChronicle("naruto"))
 	assert.Equal(t, before, after, "no summarizer → no write")
 }
 
-// TestMemoriseCompressWindow_BadPrefix: model returns a
-// line that does NOT start with the required prefix; the
-// window must be left untouched.
-func TestMemoriseCompressWindow_BadPrefix(t *testing.T) {
+// TestChronicleCompressWindow_BadOutput: model returns
+// empty body (the only kind of "bad" output the new
+// chronicle API rejects — no bad-prefix concept
+// anymore, the Memory field is free-form). The window
+// must be left untouched.
+func TestChronicleCompressWindow_BadOutput(t *testing.T) {
 	fs, _ := storage.NewFileStore(t.TempDir())
 	require.NoError(t, fs.EnsureDir("worlds/naruto"))
 	days := make(map[int]string, 30)
 	for i := 1; i <= 30; i++ {
 		days[i] = "день"
 	}
-	writeMemoriseDays(t, fs, "naruto", days)
-	before, _ := fs.ReadRaw("worlds/naruto/memorise.md")
-	stub := &stubMemoriseSummarizer{badPrefix: true}
+	writeChronicleDays(t, fs, "naruto", days)
+	before, _ := fs.ReadRaw(fs.WorldChronicle("naruto"))
+	stub := &stubChronicleSummarizer{skipOutput: true}
 	mem := newMemory(fs, zerolog.Nop(), nil, nil, stub, nil)
-	err := mem.memoriseCompressAfterArchive(context.Background(), "naruto", 30)
+	err := mem.chronicleCompressAfterArchive(context.Background(), "naruto", 30)
 	require.NoError(t, err)
-	after, _ := fs.ReadRaw("worlds/naruto/memorise.md")
-	assert.Equal(t, before, after, "bad prefix → no write")
+	after, _ := fs.ReadRaw(fs.WorldChronicle("naruto"))
+	assert.Equal(t, before, after, "empty output → no write")
 }
 
-// TestMemoriseCompressWindow_TooThin: only 3 days in a
+// TestChronicleCompressWindow_TooThin: only 3 days in a
 // 30-day window. Must skip the LLM call entirely.
-func TestMemoriseCompressWindow_TooThin(t *testing.T) {
+func TestChronicleCompressWindow_TooThin(t *testing.T) {
 	fs, _ := storage.NewFileStore(t.TempDir())
 	require.NoError(t, fs.EnsureDir("worlds/naruto"))
 	days := map[int]string{1: "a", 5: "b", 10: "c"}
-	writeMemoriseDays(t, fs, "naruto", days)
-	stub := &stubMemoriseSummarizer{returnedBody: "should not be called"}
+	writeChronicleDays(t, fs, "naruto", days)
+	stub := &stubChronicleSummarizer{returnedMemory: "should not be called"}
 	mem := newMemory(fs, zerolog.Nop(), nil, nil, stub, nil)
-	err := mem.memoriseCompressAfterArchive(context.Background(), "naruto", 10)
+	err := mem.chronicleCompressAfterArchive(context.Background(), "naruto", 10)
 	require.NoError(t, err)
 	assert.Equal(t, 0, stub.calls, "window too thin (3 days out of 30) — no LLM call")
 }
 
-// TestMemoriseCompressWindow_WithGap: days 1..29 and
+// TestChronicleCompressWindow_WithGap: days 1..29 and
 // 31..60 are present, day 30 is missing. The window
 // 1..30 must still be compressed (29 days is plenty),
 // and the model receives the actual present-day list
 // (start=1, end=29 in actualStart/actualEnd).
-func TestMemoriseCompressWindow_WithGap(t *testing.T) {
+func TestChronicleCompressWindow_WithGap(t *testing.T) {
 	fs, _ := storage.NewFileStore(t.TempDir())
 	require.NoError(t, fs.EnsureDir("worlds/naruto"))
 	days := make(map[int]string, 59)
@@ -899,85 +885,105 @@ func TestMemoriseCompressWindow_WithGap(t *testing.T) {
 	for i := 31; i <= 60; i++ {
 		days[i] = "день " + strconv.Itoa(i)
 	}
-	writeMemoriseDays(t, fs, "naruto", days)
-	stub := &stubMemoriseSummarizer{returnedBody: "сжато"}
+	writeChronicleDays(t, fs, "naruto", days)
+	stub := &stubChronicleSummarizer{returnedMemory: "окно с дыркой"}
 	mem := newMemory(fs, zerolog.Nop(), nil, nil, stub, nil)
-	err := mem.memoriseCompressAfterArchive(context.Background(), "naruto", 60)
+	err := mem.chronicleCompressAfterArchive(context.Background(), "naruto", 60)
 	require.NoError(t, err)
-	// First window saw 29 days (1..29); second saw 30
-	// days (31..60). Both compressed.
-	assert.Equal(t, 2, stub.calls)
-	// The LLM was called with the LATEST window's bounds
-	// as lastFrom/lastTo (31, 60) — that is the second
-	// call. The first call's bounds are (1, 29).
+	assert.Equal(t, 2, stub.calls, "two windows → two LLM calls")
+	// First window is days 1..29 (gap at 30).
 	assert.Equal(t, 1, stub.firstFrom)
-	assert.Equal(t, 29, stub.firstTo)
+	assert.Equal(t, 29, stub.firstTo, "window 1..30 collapses to 1..29 because day 30 is absent")
+	// Second window is days 31..60 (no gap).
 	assert.Equal(t, 31, stub.lastFrom)
 	assert.Equal(t, 60, stub.lastTo)
-	// And the prefix in the file must use the actual
-	// window bounds (1..29 and 31..60), not the
-	// "expected" 1..30 and 31..60.
-	body, _ := fs.ReadRaw("worlds/naruto/memorise.md")
-	assert.Contains(t, body, "д00001-д00029:")
-	assert.Contains(t, body, "д00031-д00060:")
-	assert.NotContains(t, body, "д00001-д00030:",
-		"window 1..30 was actually 1..29 — prefix must reflect that")
+	c, err := chronicle.Load(mustRead(t, fs, "naruto"))
+	require.NoError(t, err)
+	assert.Equal(t, 2, len(c.Periods))
 }
 
-// TestMemoriseCompressWindow_KeepsEarlierSummaries: if
-// the file already has a summary line for д00001-д00030
-// and we archive day 60, only д00031-д00060 should be
-// rewritten. The earlier summary stays untouched.
-func TestMemoriseCompressWindow_KeepsEarlierSummaries(t *testing.T) {
+// mustRead is a small helper for tests that want to
+// fail on read errors. chronicle.Load + ReadRaw
+// returns err==nil for missing files (the FileStore
+// returns ""), so we use require.NoError for parse
+// failures and a t.Fatalf for I/O errors.
+func mustRead(t *testing.T, fs *storage.FileStore, world string) string {
+	t.Helper()
+	body, err := fs.ReadRaw(fs.WorldChronicle(world))
+	require.NoError(t, err)
+	return body
+}
+
+// TestChronicleCompressWindow_KeepsEarlierSummaries: if
+// the chronicle already has a Period for days 1..30
+// and we archive day 60, only the days 31..60 window
+// should be compressed. The earlier Period stays
+// untouched.
+func TestChronicleCompressWindow_KeepsEarlierSummaries(t *testing.T) {
 	fs, _ := storage.NewFileStore(t.TempDir())
 	require.NoError(t, fs.EnsureDir("worlds/naruto"))
-	pre := "д00001-д00030: старая сводка 1\n"
+	// Build a chronicle with one Period (1..30) plus raw
+	// days 31..60.
+	c := chronicle.Chronicle{Periods: []chronicle.Period{{From: 1, To: 30, Memory: "старая сводка 1"}}, Days: map[int]string{}}
 	for i := 31; i <= 60; i++ {
-		pre += domain.FormatDay(i, "день "+strconv.Itoa(i)) + "\n"
+		c.AppendDay(i, "день "+strconv.Itoa(i))
 	}
-	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/memorise.md", pre))
-	stub := &stubMemoriseSummarizer{returnedBody: "новая сводка 2"}
+	body, err := c.Save()
+	require.NoError(t, err)
+	require.NoError(t, fs.WriteRawAtomic(fs.WorldChronicle("naruto"), body))
+	stub := &stubChronicleSummarizer{returnedMemory: "новая сводка 2"}
 	mem := newMemory(fs, zerolog.Nop(), nil, nil, stub, nil)
-	err := mem.memoriseCompressAfterArchive(context.Background(), "naruto", 60)
+	err = mem.chronicleCompressAfterArchive(context.Background(), "naruto", 60)
 	require.NoError(t, err)
 	assert.Equal(t, 1, stub.calls, "only one window left to compress")
 	assert.Equal(t, 31, stub.lastFrom)
 	assert.Equal(t, 60, stub.lastTo)
-	body, _ := fs.ReadRaw("worlds/naruto/memorise.md")
-	assert.Contains(t, body, "д00001-д00030: старая сводка 1",
+	out, err := chronicle.Load(mustRead(t, fs, "naruto"))
+	require.NoError(t, err)
+	require.Equal(t, 2, len(out.Periods), "earlier Period + new Period")
+	assert.Equal(t, 1, out.Periods[0].From)
+	assert.Equal(t, 30, out.Periods[0].To)
+	assert.Equal(t, "старая сводка 1", out.Periods[0].Memory,
 		"earlier summary must NOT be touched")
-	assert.Contains(t, body, "д00031-д00060: новая сводка 2")
+	assert.Equal(t, 31, out.Periods[1].From)
+	assert.Equal(t, 60, out.Periods[1].To)
+	assert.Equal(t, "новая сводка 2", out.Periods[1].Memory)
 }
 
 // TestStateArchiveDay_TriggersCompression: end-to-end
-// through State.ArchiveDay, the MemoriseCompressWindow
-// hook must fire on a closing day. Day 30 closes the
-// 1..30 window — it BECOMES part of the compressed
-// summary line (the just-archived day's text "итог" is
-// included in the source body the LLM sees). The result
-// is a single summary line for the whole window.
+// through State.ArchiveChronicleDay, the
+// ChronicleCompressWindow hook must fire on a closing
+// day. Day 30 closes the 1..30 window — the just-
+// archived day's text "итог" is included in the raw
+// days the LLM sees. The result is a single Period
+// covering the whole window.
 func TestStateArchiveDay_TriggersCompression(t *testing.T) {
 	fs, _ := storage.NewFileStore(t.TempDir())
 	require.NoError(t, fs.EnsureDir("worlds/naruto"))
-	days := make(map[int]string, 30)
-	for i := 1; i <= 30; i++ {
+	// 29 days, day 30 will be added by ArchiveChronicleDay.
+	days := make(map[int]string, 29)
+	for i := 1; i <= 29; i++ {
 		days[i] = "день"
 	}
-	writeMemoriseDays(t, fs, "naruto", days)
-	stub := &stubMemoriseSummarizer{returnedBody: "сводка"}
+	writeChronicleDays(t, fs, "naruto", days)
+	stub := &stubChronicleSummarizer{returnedMemory: "сводка"}
 	mem := newMemory(fs, zerolog.Nop(), nil, nil, stub, nil)
 	st := newState(fs, zerolog.Nop(), slowlog.Discard())
-	st.SetMemoriseCompress(mem.memoriseCompressAfterArchive)
-	require.NoError(t, st.ArchiveDay(context.Background(), "naruto", 30, "итог"))
+	st.SetChronicleCompress(mem.chronicleCompressAfterArchive)
+	require.NoError(t, st.ArchiveChronicleDay(context.Background(), "naruto", 30, "итог"))
 	assert.Equal(t, 1, stub.calls)
 	assert.Equal(t, 30, stub.lastTo)
-	body, _ := fs.ReadRaw("worlds/naruto/memorise.md")
-	assert.Contains(t, body, "д00001-д00030: сводка",
-		"the 30-day window was compressed into a single summary line")
-	// The per-day line for day 30 ("д00030: итог") is
-	// GONE — it was absorbed into the summary.
-	assert.NotContains(t, body, "д00030: итог",
-		"day 30 itself is part of the compressed window")
+	out, err := chronicle.Load(mustRead(t, fs, "naruto"))
+	require.NoError(t, err)
+	require.Equal(t, 1, len(out.Periods))
+	assert.Equal(t, 1, out.Periods[0].From)
+	assert.Equal(t, 30, out.Periods[0].To)
+	assert.Equal(t, "сводка", out.Periods[0].Memory,
+		"the 30-day window was compressed into a single Period")
+	// Day 30 must NOT be in the raw days map — it was
+	// absorbed into the Period.
+	_, present := out.Days[30]
+	assert.False(t, present, "day 30 is part of the compressed Period")
 }
 
 // TestStateArchiveDay_NotMultipleOf30: archiving day
@@ -989,11 +995,11 @@ func TestStateArchiveDay_NotMultipleOf30(t *testing.T) {
 	for i := 1; i <= 25; i++ {
 		days[i] = "день"
 	}
-	writeMemoriseDays(t, fs, "naruto", days)
-	stub := &stubMemoriseSummarizer{returnedBody: "no"}
+	writeChronicleDays(t, fs, "naruto", days)
+	stub := &stubChronicleSummarizer{returnedMemory: "no"}
 	mem := newMemory(fs, zerolog.Nop(), nil, nil, stub, nil)
 	st := newState(fs, zerolog.Nop(), slowlog.Discard())
-	st.SetMemoriseCompress(mem.memoriseCompressAfterArchive)
-	require.NoError(t, st.ArchiveDay(context.Background(), "naruto", 25, "x"))
+	st.SetChronicleCompress(mem.chronicleCompressAfterArchive)
+	require.NoError(t, st.ArchiveChronicleDay(context.Background(), "naruto", 25, "x"))
 	assert.Equal(t, 0, stub.calls, "day 25 is not a window boundary")
 }

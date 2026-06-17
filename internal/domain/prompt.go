@@ -38,8 +38,8 @@ type CharacterContext struct {
 }
 
 // WorldContext is the per-turn bundle of active-world data:
-// the world's state.md, canon, lore, plan, memorise and the
-// profiles of NPCs currently in the scene. Everything in
+// the world's world state, canon, lore, plan, chronicle and
+// the profiles of NPCs currently in the scene. Everything in
 // here depends on the active world and changes only on
 // end_day / leave_world / /reload / compaction, so it goes
 // into a separate user message with a cache-pointe on Anthropic.
@@ -64,9 +64,14 @@ type WorldContext struct {
 	WorldPlan string
 	// lore.md — canon deviations accumulated in this playthrough.
 	WorldLore string
-	// memorise.md — full file, including earlier compressed
-	// 30-day windows. The "история" view.
-	WorldMemorise string
+	// Chronicle is the rendered history of the world:
+	// one entry per LLM-compressed 30-day window plus
+	// the raw per-day log for the open window. Either
+	// field may be empty (a fresh world has neither;
+	// a long-running world may have many periods and
+	// an empty open window). Nil Chronicle means the
+	// renderer hides both blocks.
+	Chronicle *Chronicle
 	// NPCs currently in the scene, rendered as compact
 	// profiles. The active roster is the slice of characters
 	// the LLM needs to know about right now.
@@ -82,6 +87,37 @@ type WorldContext struct {
 	// Empty when the world has no characters.yaml yet
 	// (firstlaunch path) or when staging is disabled.
 	NPCRegistry string
+}
+
+// Chronicle is the rendered history of one world.
+// Periods are LLM-compressed 30-day windows; Days
+// are the raw per-day log for the currently-open
+// (most-recent, unclosed) window. The renderer
+// iterates Periods in From-order (append-order —
+// the compression hook never re-orders) and Days
+// sorted by Number ascending.
+type Chronicle struct {
+	Periods []ChroniclePeriod
+	Days    []ChronicleDay
+}
+
+// ChroniclePeriod is one LLM-compressed window covering
+// raw days [From..To]. Memory is the distilled essence
+// the summarizer produced; the renderer emits it as
+// "с <From> по <To> дни: <Memory>".
+type ChroniclePeriod struct {
+	From   int
+	To     int
+	Memory string
+}
+
+// ChronicleDay is one raw per-day entry. Number is the
+// day counter; Text is the player-supplied narrative
+// summary that ArchiveChronicleDay recorded. The renderer
+// emits it as "День <Number>: <Text>".
+type ChronicleDay struct {
+	Number int
+	Text   string
 }
 
 // StateSnapshot is the in-memory representation of
@@ -194,7 +230,7 @@ func BuildWorldStateMessage(world WorldContext, char CharacterContext) (string, 
 		Canon:       world.WorldCanon,
 		Lore:        world.WorldLore,
 		Plan:        world.WorldPlan,
-		Memorise:    world.WorldMemorise,
+		Chronicle:   convertChronicle(world.Chronicle),
 		Stage:       world.WorldStage,
 		NPCRegistry: world.NPCRegistry,
 	}
@@ -232,3 +268,37 @@ func BuildWorldStateMessage(world WorldContext, char CharacterContext) (string, 
 // that need to debug a missing-slug issue should look
 // at the world_state template, not the domain
 // package.
+
+// convertChronicle projects the domain-level Chronicle
+// (Periods + Days) into the prompts-package shape used
+// by world_state.md.tmpl. nil → nil (the template sees
+// the {{ if .World.Chronicle }} guard and hides both
+// blocks). A non-nil Chronicle with empty Periods and
+// empty Days renders as "no periods, no days" — which
+// is the same as nil for our purposes, but we keep it
+// distinct so callers can express "we have looked at
+// the file and it has nothing" vs "we never read the
+// file".
+func convertChronicle(in *Chronicle) *prompts.ChronicleData {
+	if in == nil {
+		return nil
+	}
+	out := &prompts.ChronicleData{
+		Periods: make([]prompts.ChroniclePeriodData, len(in.Periods)),
+		Days:    make([]prompts.ChronicleDayData, len(in.Days)),
+	}
+	for i, p := range in.Periods {
+		out.Periods[i] = prompts.ChroniclePeriodData{
+			From:   p.From,
+			To:     p.To,
+			Memory: p.Memory,
+		}
+	}
+	for i, d := range in.Days {
+		out.Days[i] = prompts.ChronicleDayData{
+			Number: d.Number,
+			Text:   d.Text,
+		}
+	}
+	return out
+}

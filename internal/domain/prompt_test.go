@@ -54,12 +54,20 @@ func TestBuildSystemPrompt_StaticOnly(t *testing.T) {
 // set has to round-trip byte-for-byte.
 func TestBuildWorldStateMessage_IncludesEverythingElse(t *testing.T) {
 	got, err := BuildWorldStateMessage(WorldContext{
-		World:         "naruto",
-		WorldState:    "День 3 (в процессе).\nУтро.",
-		WorldPlan:     "- День +1: встреча с Какаши",
-		WorldMemorise: "д00001: a\nд00002: b",
-		WorldCanon:    "канон",
-		WorldLore:     "отклонения",
+		World:      "naruto",
+		WorldState: "День 3 (в процессе).\nУтро.",
+		WorldPlan:  "- День +1: встреча с Какаши",
+		Chronicle: &Chronicle{
+			Periods: []ChroniclePeriod{
+				{From: 1, To: 30, Memory: "first window summary"},
+			},
+			Days: []ChronicleDay{
+				{Number: 31, Text: "raw day 31"},
+				{Number: 32, Text: "raw day 32"},
+			},
+		},
+		WorldCanon: "канон",
+		WorldLore:  "отклонения",
 		NPCs: []NPCSnapshot{
 			{DisplayName: "Какаши", Profile: "Шаринган"},
 		},
@@ -72,14 +80,18 @@ func TestBuildWorldStateMessage_IncludesEverythingElse(t *testing.T) {
 	assert.Contains(t, got, "### Канон")
 	assert.Contains(t, got, "### Отклонения от канона (lore)")
 	assert.Contains(t, got, "### plan (3-5 предстоящих событий)")
-	assert.Contains(t, got, "### Хронология (chronicle)")
+	assert.Contains(t, got, "### Воспоминания за периоды")
+	assert.Contains(t, got, "с 1 по 30 дни: first window summary")
+	assert.Contains(t, got, "### Последняя хронология событий")
+	assert.Contains(t, got, "День 31: raw day 31")
+	assert.Contains(t, got, "День 32: raw day 32")
 	assert.Contains(t, got, "## Активные NPC")
 	assert.Contains(t, got, "### Какаши")
 	assert.Contains(t, got, "Шаринган")
 }
 
 // TestBuildWorldStateMessage_PassesLongFieldsThroughUncut: the
-// world-state user message must NOT self-edit canon/lore/memorise
+// world-state user message must NOT self-edit canon/lore/chronicle
 // /NPC profiles — summarisation lives in their respective
 // maintain_* tools. The pass-through guarantees cache hits
 // (the model sees the same bytes on every turn, no surprise
@@ -87,13 +99,17 @@ func TestBuildWorldStateMessage_IncludesEverythingElse(t *testing.T) {
 func TestBuildWorldStateMessage_PassesLongFieldsThroughUncut(t *testing.T) {
 	longCanon := strings.Repeat("A", 5000)
 	longLore := strings.Repeat("B", 5000)
-	longMemorise := strings.Repeat("M", 10000)
+	longMemory := strings.Repeat("M", 10000)
 	longProfile := strings.Repeat("X", 3000)
 	got, err := BuildWorldStateMessage(WorldContext{
-		World:         "w",
-		WorldCanon:    longCanon,
-		WorldLore:     longLore,
-		WorldMemorise: longMemorise,
+		World:      "w",
+		WorldCanon: longCanon,
+		WorldLore:  longLore,
+		Chronicle: &Chronicle{
+			Periods: []ChroniclePeriod{
+				{From: 1, To: 30, Memory: longMemory},
+			},
+		},
 		NPCs: []NPCSnapshot{
 			{DisplayName: "Какаши", Profile: longProfile},
 		},
@@ -102,7 +118,7 @@ func TestBuildWorldStateMessage_PassesLongFieldsThroughUncut(t *testing.T) {
 	assert.NotContains(t, got, "[…truncated…]")
 	assert.Contains(t, got, longCanon)
 	assert.Contains(t, got, longLore)
-	assert.Contains(t, got, longMemorise)
+	assert.Contains(t, got, longMemory)
 	assert.Contains(t, got, longProfile)
 }
 

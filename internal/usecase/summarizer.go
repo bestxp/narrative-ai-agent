@@ -221,7 +221,7 @@ type NPCSummaryResult struct {
 // tells the model the rules: keep base sections, dedup
 // relations, prune abilities, squeeze personal_memory to
 // 20-30 critical facts. The world name and the
-// memorise.md tail give the model context (which days
+// chronicle tail give the model context (which days
 // were key, which NPCs are still active).
 //
 // The summarizer is best-effort. If the LLM returns the
@@ -235,7 +235,7 @@ type NPCSummaryResult struct {
 // use on the same role (the GM serialises per-chat turns
 // with chatMu; the maintenance tool is called serially
 // per round by the dispatcher).
-func (s *Summarizer) SummarizeNPC(ctx context.Context, displayName, world string, yamlBody, memoriseTail []byte) (NPCSummaryResult, error) {
+func (s *Summarizer) SummarizeNPC(ctx context.Context, displayName, world string, yamlBody, chronicleTail []byte) (NPCSummaryResult, error) {
 	res := NPCSummaryResult{Body: yamlBody, Compressed: false}
 	if !s.IsConfigured() {
 		return res, nil
@@ -244,7 +244,7 @@ func (s *Summarizer) SummarizeNPC(ctx context.Context, displayName, world string
 		return res, nil
 	}
 
-	// Build the user prompt. The memorise.md tail
+	// Build the user prompt. The chronicle tail
 	// (last 20 days) gives the model the long-term
 	// context it needs to decide which facts are
 	// "key" vs "everyday". Without that context the
@@ -257,9 +257,9 @@ func (s *Summarizer) SummarizeNPC(ctx context.Context, displayName, world string
 	userBuf.WriteString("\n\n# Current profile (YAML)\n```yaml\n")
 	userBuf.Write(yamlBody)
 	userBuf.WriteString("\n```\n")
-	if len(memoriseTail) > 0 {
-		userBuf.WriteString("\n# Полный memorise.md (контекст хронологии, без обрезки)\n```\n")
-		userBuf.Write(memoriseTail)
+	if len(chronicleTail) > 0 {
+		userBuf.WriteString("\n# Полный chronicle (контекст хронологии, без обрезки)\n```\n")
+		userBuf.Write(chronicleTail)
 		userBuf.WriteString("\n```\n")
 	}
 	userBuf.WriteString("\nВерни сжатый YAML. Только YAML, без обёрток и комментариев.")
@@ -390,7 +390,7 @@ type LoreSummaryResult struct {
 // loaded from internal/prompts/lore_summary.md) tells
 // the model the rules: keep canon deviations, death,
 // first NPC appearances; trim routine events; preserve
-// chronologically. The world name and the memorise.md
+// chronologically. The world name and the chronicle
 // tail + state.md give the model the long-term context.
 //
 // Best-effort: invalid markdown or a returned body
@@ -398,7 +398,7 @@ type LoreSummaryResult struct {
 // untouched. The caller (MaintainLore) decides what
 // counts as "valid" — for lore this is just a non-empty
 // body with at least one "## " section.
-func (s *Summarizer) SummarizeLore(ctx context.Context, world string, loreBody, memoriseTail, stateMD []byte) (LoreSummaryResult, error) {
+func (s *Summarizer) SummarizeLore(ctx context.Context, world string, loreBody, chronicleTail, stateMD []byte) (LoreSummaryResult, error) {
 	res := LoreSummaryResult{Body: loreBody, Compressed: false}
 	if !s.IsConfigured() {
 		return res, nil
@@ -413,9 +413,9 @@ func (s *Summarizer) SummarizeLore(ctx context.Context, world string, loreBody, 
 	userBuf.WriteString("\n\n# Current lore.md\n```markdown\n")
 	userBuf.Write(loreBody)
 	userBuf.WriteString("\n```\n")
-	if len(memoriseTail) > 0 {
-		userBuf.WriteString("\n# Полный memorise.md (контекст хронологии, без обрезки)\n```\n")
-		userBuf.Write(memoriseTail)
+	if len(chronicleTail) > 0 {
+		userBuf.WriteString("\n# Полный chronicle (контекст хронологии, без обрезки)\n```\n")
+		userBuf.Write(chronicleTail)
 		userBuf.WriteString("\n```\n")
 	}
 	if len(stateMD) > 0 {
@@ -496,7 +496,7 @@ type CharacterMemorySummaryResult struct {
 //
 // The world name (for canon context), the display
 // name (not the dir slug), the current YAML body,
-// and the world's memorise.md tail are passed to
+// and the world's chronicle tail are passed to
 // the model. The model emits a NEW YAML body in
 // the canonical `data: [{section, values}]` shape.
 //
@@ -505,7 +505,7 @@ type CharacterMemorySummaryResult struct {
 // untouched (the caller writes nothing). The
 // caller (MaintainCharacterMemory) is the only
 // gatekeeper — we just produce the body.
-func (s *Summarizer) SummarizeCharacterMemory(ctx context.Context, world, character string, memoryBody, memoriseTail []byte) (CharacterMemorySummaryResult, error) {
+func (s *Summarizer) SummarizeCharacterMemory(ctx context.Context, world, character string, memoryBody, chronicleTail []byte) (CharacterMemorySummaryResult, error) {
 	res := CharacterMemorySummaryResult{Body: memoryBody, Compressed: false, BeforeBytes: len(memoryBody)}
 	if !s.IsConfigured() {
 		return res, nil
@@ -525,9 +525,9 @@ func (s *Summarizer) SummarizeCharacterMemory(ctx context.Context, world, charac
 	userBuf.WriteString("\n\n# Current memory.yaml\n```yaml\n")
 	userBuf.Write(memoryBody)
 	userBuf.WriteString("\n```\n")
-	if len(memoriseTail) > 0 {
-		userBuf.WriteString("\n# Полный memorise.md (контекст хронологии, без обрезки)\n```\n")
-		userBuf.Write(memoriseTail)
+	if len(chronicleTail) > 0 {
+		userBuf.WriteString("\n# Полный chronicle (контекст хронологии, без обрезки)\n```\n")
+		userBuf.Write(chronicleTail)
 		userBuf.WriteString("\n```\n")
 	}
 	userBuf.WriteString("\nВерни сжатый memory.yaml. Только YAML, без обёрток и комментариев.")
@@ -592,47 +592,47 @@ func stripMarkdownFence(s string) string {
 	return strings.TrimSpace(s)
 }
 
-// MemoriseSummaryResult is what SummarizeMemorise returns.
-// Body is the compressed text the caller should append to
-// memorise.md as a single line; it must start with the
-// literal "д<start>-д<end>: " prefix. Compressed is true
-// when the body is non-empty and shorter than the input
-// window (i.e. a real shrink happened, not a no-op echo).
-type MemoriseSummaryResult struct {
+// ChronicleSummaryResult is what SummarizeChronicle returns.
+// Body is the compressed text the caller should store as a
+// new Period's Memory field. Compressed is true when the
+// body is non-empty and shorter than the input window
+// (i.e. a real shrink happened, not a no-op echo).
+type ChronicleSummaryResult struct {
 	Body        []byte
 	Compressed  bool
 	OutputChars int
 	InputDays   int
 }
 
-// SummarizeMemorise asks the LLM to compact a window of
+// SummarizeChronicle asks the LLM to compact a window of
 // N consecutive day entries (default N=30, larger on
-// timeskips) into a single line "д<start>-д<end>: <10..N
+// timeskips) into a single Period memory: "<10..N
 // sentences of distilled essence>". The system prompt
-// (loaded from internal/prompts/memorise_summary.md) sets
-// the rules: chronological, dedupe repetitions, preserve
-// canon-relevant facts (NPC introductions, death, player
-// actions that change the world).
+// (loaded from internal/prompts/chronicle_summary.md)
+// sets the rules: chronological, dedupe repetitions,
+// preserve canon-relevant facts (NPC introductions,
+// death, player actions that change the world).
 //
-// The summarizer receives the WHOLE current memorise.md
-// as context — earlier, already-compressed windows are
-// passed through so the model can keep the new summary
-// consistent with what has already been said (and dedupe
-// arcs that span the window boundary, like a 15-day
-// training run that started inside the previous window).
+// The summarizer receives the WHOLE current chronicle
+// YAML as context — earlier, already-compressed periods
+// are passed through so the model can keep the new
+// summary consistent with what has already been said
+// (and dedupe arcs that span the window boundary, like a
+// 15-day training run that started inside the previous
+// window).
 //
 // Best-effort: the model may return an empty body (the
 // window is too thin to compress — e.g. only 3 real days
 // of activity in a 30-day calendar window). The caller
 // treats that as "no compression happened" and leaves
 // the file untouched.
-func (s *Summarizer) SummarizeMemorise(ctx context.Context, world string, startDay, endDay int, fullMemorise string) (MemoriseSummaryResult, error) {
-	res := MemoriseSummaryResult{Body: nil, Compressed: false, InputDays: endDay - startDay + 1}
+func (s *Summarizer) SummarizeChronicle(ctx context.Context, world string, startDay, endDay int, fullChronicle string) (ChronicleSummaryResult, error) {
+	res := ChronicleSummaryResult{Body: nil, Compressed: false, InputDays: endDay - startDay + 1}
 	if !s.IsConfigured() {
 		return res, nil
 	}
 	if endDay < startDay {
-		return res, fmt.Errorf("summarizer: memorise window invalid: start=%d end=%d", startDay, endDay)
+		return res, fmt.Errorf("summarizer: chronicle window invalid: start=%d end=%d", startDay, endDay)
 	}
 
 	var userBuf strings.Builder
@@ -645,10 +645,10 @@ func (s *Summarizer) SummarizeMemorise(ctx context.Context, world string, startD
 	userBuf.WriteString(" (")
 	userBuf.WriteString(strconv.Itoa(endDay - startDay + 1))
 	userBuf.WriteString(" дней)\n")
-	userBuf.WriteString("\n# Полный memorise.md (используй для контекста и дедупликации пересечений с предыдущими сводками)\n```\n")
-	userBuf.WriteString(fullMemorise)
+	userBuf.WriteString("\n# Полный chronicle.yaml (используй для контекста и дедупликации пересечений с предыдущими сводками)\n```\n")
+	userBuf.WriteString(fullChronicle)
 	userBuf.WriteString("\n```\n")
-	userBuf.WriteString("\nВерни ОДНУ строку. Формат: д<start>-д<end>: <суть>. Без обёрток, без markdown, без переносов строк внутри.")
+	userBuf.WriteString("\nВерни ОДИН абзац distilled essence. Без обёрток, без markdown, без префикса.")
 
 	role := s.role
 	if role.MaxTokens < 2000 {
@@ -677,7 +677,7 @@ func (s *Summarizer) SummarizeMemorise(ctx context.Context, world string, startD
 		return nil
 	})
 	if streamErr != nil {
-		return res, fmt.Errorf("summarizer: memorise stream: %w", streamErr)
+		return res, fmt.Errorf("summarizer: chronicle stream: %w", streamErr)
 	}
 	out := strings.TrimSpace(buf.String())
 	if out == "" {
@@ -819,7 +819,7 @@ type EndOfDaySummaryResult struct {
 // for a closing day. Called from GM.EndOfDay.
 // The body is appended to "## Протокол прошедших дней"
 // in WorldState and (when the window overflows) eventually
-// moved to memorise.md.
+// moved to chronicle.
 //
 // The end_of_day.md prompt is explicit: this is a
 // CLOSING day. Tomorrow is a new day. Verbs are in

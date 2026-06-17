@@ -61,8 +61,8 @@ func (f *FileStore) WorldState(name string) string {
 func (f *FileStore) WorldPlan(name string) string {
 	return f.WorldDir(name) + string(filepath.Separator) + "plan.md"
 }
-func (f *FileStore) WorldMemorise(name string) string {
-	return f.WorldDir(name) + string(filepath.Separator) + "memorise.md"
+func (f *FileStore) WorldChronicle(name string) string {
+	return f.WorldDir(name) + string(filepath.Separator) + "chronicle.yaml"
 }
 func (f *FileStore) WorldLore(name string) string {
 	return f.WorldDir(name) + string(filepath.Separator) + "lore.md"

@@ -5,7 +5,7 @@ import "context"
 // NPCSummarizer is the LLM-driven compaction hook the
 // file-backed NPC maintainer calls when a profile's
 // personal_memory list has grown past the threshold
-// (npcprofile.NPCPersonalMemoryLimit = 40). It lives in
+// (npcprofile.NPCPersonalMemoryLimit). It lives in
 // the tools package as a small, focused interface so
 // the file implementation (files.Memory) can be wired
 // against any summarizer — the production usecase-based
@@ -14,7 +14,7 @@ import "context"
 // The summarizer is given a display name (so the LLM
 // can address the NPC in its system prompt), the
 // current profile body in YAML form, and the world's
-// memorise.md tail for context. It returns a NEW YAML
+// chronicle tail for context. It returns a NEW YAML
 // body (or the original, if it could not compress
 // further). The contract is:
 //
@@ -24,7 +24,7 @@ import "context"
 //     leaves the original file untouched.
 //  2. The summarizer MUST NOT call back into the
 //     tools layer (no AppendLore, no UpdateNPC). It
-//     receives the world name + memorise.md tail
+//     receives the world name + chronicle tail
 //     purely as read context, not as a write handle.
 //  3. The summarizer is best-effort. It may decide
 //     the profile is already tight (returns the
@@ -34,7 +34,7 @@ import "context"
 //     maintenance tool. The implementation may
 //     respect ctx cancellation.
 type NPCSummarizer interface {
-	SummarizeNPC(ctx context.Context, displayName, world string, yamlBody, memoriseTail []byte) ([]byte, error)
+	SummarizeNPC(ctx context.Context, displayName, world string, yamlBody, chronicleTail []byte) ([]byte, error)
 }
 
 // LoreSummarizer is the LLM-driven compaction hook
@@ -49,50 +49,55 @@ type NPCSummarizer interface {
 //     something else the caller logs a warning and
 //     leaves the file alone.
 //  2. The summarizer MUST NOT call back into the
-//     tools layer. It receives memorise.md tail and
-//     state.md for read-only context, no write handle.
+//     tools layer. It receives chronicle tail and
+//     world state for read-only context, no write handle.
 //  3. Best-effort: returns the input unchanged when
 //     the summarizer could not compress.
 //  4. Respects ctx cancellation.
 type LoreSummarizer interface {
-	SummarizeLore(ctx context.Context, world string, loreBody, memoriseTail, stateMD []byte) ([]byte, error)
+	SummarizeLore(ctx context.Context, world string, loreBody, chronicleTail, stateMD []byte) ([]byte, error)
 }
 
-// MemoriseSummarizer is the LLM-driven compaction hook for the
-// file-backed memorise maintainer. It is invoked automatically
-// after ArchiveDay records a day that closes a window, and on
-// any larger timeskip (the caller computes the actual day range
+// ChronicleSummarizer is the LLM-driven compaction hook
+// for the file-backed chronicle maintainer. It is
+// invoked automatically after ArchiveChronicleDay
+// records a day that closes a window, and on any larger
+// timeskip (the caller computes the actual day range
 // to compact, not a fixed 30).
 //
-// The summarizer receives the world name, the day range being
-// collapsed (start, end, both inclusive), and the WHOLE current
-// memorise.md file as read context. The whole-file context is
-// important: the model needs the earlier, already-compressed
-// summaries to keep its prose consistent (it must not invent
-// facts that contradict an earlier window, and it should
-// dedupe any cross-window repetitions such as a 15-day
-// training arc that spans the boundary).
+// The summarizer receives the world name, the day
+// range being collapsed (start, end, both inclusive),
+// and the WHOLE current chronicle file as read
+// context. The whole-file context is important: the
+// model needs the earlier, already-compressed
+// summaries to keep its prose consistent (it must not
+// invent facts that contradict an earlier window, and
+// it should dedupe any cross-window repetitions such
+// as a 15-day training arc that spans the boundary).
 //
 // The contract mirrors NPCSummarizer / LoreSummarizer:
 //
-//  1. The returned body MUST start with the literal prefix
-//     "д<start>-д<end>: " (5-digit zero-padded day numbers,
-//     same shape as the day-line entries). The caller appends
-//     it to the file as a single line; malformed output is
-//     rejected by the caller (file is left untouched).
+//  1. The returned body MUST be the distilled memory
+//     text for the [start..end] window. The caller
+//     appends it as a new Period entry; the raw day
+//     entries for that range are dropped. Empty output
+//     means "no compression happened" and the caller
+//     skips.
 //  2. The summarizer MUST NOT call back into the tools
 //     layer. It is read-only over the supplied context.
-//  3. Best-effort: the model may decide the window is already
-//     too thin to compress (e.g. only 5 days of real activity
-//     in a 30-day window) and return an empty body — the caller
-//     treats that as "no compression happened" and skips.
-//  4. The summarizer SHOULD aim for ~10 sentences for a
-//     30-day window, scaling roughly linearly for wider
-//     windows (60 days → ~20 sentences, 90 days → ~30). The
-//     exact target is in the system prompt.
+//  3. Best-effort: the model may decide the window is
+//     already too thin to compress (e.g. only 5 days of
+//     real activity in a 30-day window) and return an
+//     empty body — the caller treats that as "no
+//     compression happened" and skips.
+//  4. The summarizer SHOULD aim for ~10 sentences for
+//     a 30-day window, scaling roughly linearly for
+//     wider windows (60 days → ~20 sentences,
+//     90 days → ~30). The exact target is in the
+//     system prompt.
 //  5. Respects ctx cancellation.
-type MemoriseSummarizer interface {
-	SummarizeMemorise(ctx context.Context, world string, startDay, endDay int, fullMemorise string) ([]byte, error)
+type ChronicleSummarizer interface {
+	SummarizeChronicle(ctx context.Context, world string, startDay, endDay int, fullChronicle string) ([]byte, error)
 }
 
 // CharacterMemorySummarizer is the LLM-driven
@@ -108,7 +113,7 @@ type MemoriseSummarizer interface {
 // The summarizer receives the world name (for
 // context — what canon is in play), the character
 // display name, the current memory.yaml body in
-// YAML form, and the world's memorise.md tail
+// YAML form, and the world's chronicle tail
 // (for "which days are key" context). The returned
 // body is a NEW memory.yaml in the canonical
 // `data: [{section, values}]` shape.
@@ -125,7 +130,7 @@ type MemoriseSummarizer interface {
 //  2. The summarizer is READ-ONLY over the
 //     supplied context (it has no write handle, by
 //     interface). It MUST NOT add or invent facts
-//     that are not in the input body or memorise.md
+//     that are not in the input body or chronicle
 //     tail.
 //  3. The summarizer is best-effort. It may decide
 //     the file is already tight and return the
@@ -139,12 +144,12 @@ type MemoriseSummarizer interface {
 //     where appropriate or dropped as transient
 //     mood.
 //  5. The summarizer SHOULD drop redundant day-of
-//     references (the player's chronology is in
-//     memorise.md / state.md — duplicating "День 5"
-//     inside a memory fact is noise).
+//     references (the player's chronology is in the
+//     chronicle — duplicating "День 5" inside a
+//     memory fact is noise).
 //  6. Respects ctx cancellation.
 type CharacterMemorySummarizer interface {
-	SummarizeCharacterMemory(ctx context.Context, world, character string, memoryBody, memoriseTail []byte) ([]byte, error)
+	SummarizeCharacterMemory(ctx context.Context, world, character string, memoryBody, chronicleTail []byte) ([]byte, error)
 }
 
 // LoreMaintainThreshold is the line count at which

@@ -23,7 +23,7 @@ import (
 // The LLM pops one per Stream() call.
 //
 // Why not route on system-prompt content? SummarizeNPC,
-// SummarizeEndOfDay, SummarizeLore and SummarizeMemorise
+// SummarizeEndOfDay, SummarizeLore and SummarizeChronicle
 // all use the same `s.prompt` field (the third arg of
 // NewSummarizer), so they cannot be distinguished by
 // prompt alone. The test instead pre-loads the order of
@@ -114,7 +114,7 @@ temperament: "спокойный"
 
 	// Build a real summarizer with both end-of-day and
 	// in-place prompts wired. SummarizeNPC, SummarizeLore,
-	// SummarizeMemorise, SummarizeInPlace and
+	// SummarizeChronicle, SummarizeInPlace and
 	// SummarizeEndOfDay all read s.prompt (the field set
 	// by NewSummarizer's third arg) — SetCompactionInPlacePrompt
 	// / SetEndOfDayPrompt are kept around for callers
@@ -151,7 +151,7 @@ temperament: "спокойный"
 
 // summarizerAdapterForTest is a local shim that exposes
 // *usecase.Summarizer as tools.NPCSummarizer,
-// tools.LoreSummarizer, tools.MemoriseSummarizer and
+// tools.LoreSummarizer, tools.ChronicleSummarizer and
 // tools.CharacterMemorySummarizer (the production
 // main.go uses a similar adapter; we inline a copy
 // here to avoid dragging the main-package-only
@@ -174,8 +174,8 @@ func (a summarizerAdapterForTest) SummarizeLore(ctx context.Context, world strin
 	return res.Body, nil
 }
 
-func (a summarizerAdapterForTest) SummarizeMemorise(ctx context.Context, world string, startDay, endDay int, fullMemorise string) ([]byte, error) {
-	res, err := a.s.SummarizeMemorise(ctx, world, startDay, endDay, fullMemorise)
+func (a summarizerAdapterForTest) SummarizeChronicle(ctx context.Context, world string, startDay, endDay int, fullMemorise string) ([]byte, error) {
+	res, err := a.s.SummarizeChronicle(ctx, world, startDay, endDay, fullMemorise)
 	if err != nil {
 		return nil, err
 	}
