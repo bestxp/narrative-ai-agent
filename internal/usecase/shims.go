@@ -12,6 +12,7 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
+	"github.com/bestxp/narrative-ai-agent/internal/repository/api"
 	"github.com/bestxp/narrative-ai-agent/internal/slowlog"
 	"github.com/bestxp/narrative-ai-agent/internal/usecase/tools"
 	"github.com/bestxp/narrative-ai-agent/internal/usecase/tools/files"
@@ -48,22 +49,25 @@ const FileBackend = "files"
 
 // NewFileToolset is the canonical entry point for the
 // file-backed toolset. main.go calls this once and hands
-// the result to gm and dispatcher. The returned *files.Toolset
-// satisfies tools.Tool and tools.Reloadable.
+// the result to gm and dispatcher.
+//
+// fs is the legacy file-storage backend used by the
+// raw-file paths (legacy migration, /me snapshot reads).
+// repos is the canonical write path — every persistent
+// write goes through a repository, not through fs.
 //
 // summarizer is the LLM-driven NPC condensation hook used
 // by MaintainNPCs. loreSummarizer is the LLM-driven
 // lore.md compaction hook used by MaintainLore.
 // chronicleSummarizer is the LLM-driven 30-day window
-// compression hook used by ArchiveChronicleDay (automatic on
-// day%30==0 and on timeskips). characterMemorySummarizer
-// is the LLM-driven memory.yaml defragmentation hook
-// used by MaintainCharacterMemory (end-of-day pass).
-// Pass nil to any of them to disable the LLM path — the
-// file backend will then log a warning and skip. Tests
-// typically pass nil for all four (or stubs).
-func NewFileToolset(fs *storage.FileStore, log zerolog.Logger, slow *slowlog.Logger, summarizer tools.NPCSummarizer, loreSummarizer tools.LoreSummarizer, chronicleSummarizer tools.ChronicleSummarizer, characterMemorySummarizer tools.CharacterMemorySummarizer) *files.Toolset {
-	return files.New(fs, log, slow, summarizer, loreSummarizer, chronicleSummarizer, characterMemorySummarizer)
+// compression hook used by ArchiveChronicleDay.
+// characterMemorySummarizer is the LLM-driven memory.yaml
+// defragmentation hook used by MaintainCharacterMemory
+// (end-of-day pass). Pass nil to any of them to disable
+// the LLM path — the file backend will then log a warning
+// and skip.
+func NewFileToolset(fs *storage.FileStore, repos *api.Repositories, log zerolog.Logger, slow *slowlog.Logger, summarizer tools.NPCSummarizer, loreSummarizer tools.LoreSummarizer, chronicleSummarizer tools.ChronicleSummarizer, characterMemorySummarizer tools.CharacterMemorySummarizer) *files.Toolset {
+	return files.New(fs, repos, log, slow, summarizer, loreSummarizer, chronicleSummarizer, characterMemorySummarizer)
 }
 
 // --- format / threshold / header helpers ---------------------------------

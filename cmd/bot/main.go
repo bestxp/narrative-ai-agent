@@ -31,7 +31,9 @@ import (
 	"github.com/bestxp/narrative-ai-agent/internal/messaging/telegram"
 	vktransport "github.com/bestxp/narrative-ai-agent/internal/messaging/vk"
 	promptpkg "github.com/bestxp/narrative-ai-agent/internal/prompts"
+	"github.com/bestxp/narrative-ai-agent/internal/repository/api"
 	"github.com/bestxp/narrative-ai-agent/internal/slowlog"
+	yamlfs "github.com/bestxp/narrative-ai-agent/internal/storage/fs"
 	"github.com/bestxp/narrative-ai-agent/internal/structured"
 	"github.com/bestxp/narrative-ai-agent/internal/usecase"
 	"github.com/bestxp/narrative-ai-agent/internal/usecase/tools"
@@ -303,7 +305,9 @@ func main() {
 		chronicleSum = adapter
 		charMemSum = adapter
 	}
-	fileTools := usecase.NewFileToolset(fs, log, slow, npcSum, loreSum, chronicleSum, charMemSum)
+	yamlStore, _ := yamlfs.New(absData)
+	repos := api.NewYamlRepositories(yamlStore)
+	fileTools := usecase.NewFileToolset(fs, repos, log, slow, npcSum, loreSum, chronicleSum, charMemSum)
 	log.Info().Str("source", fileTools.Source()).Msg("file-backed toolset ready")
 	disp := dispatcher.New(cfg, fs, gitOp, fileTools, slow, log)
 

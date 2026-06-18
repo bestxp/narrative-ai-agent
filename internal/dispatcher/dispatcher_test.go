@@ -14,7 +14,9 @@ import (
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
 	"github.com/bestxp/narrative-ai-agent/internal/config"
 	"github.com/bestxp/narrative-ai-agent/internal/messaging"
+	"github.com/bestxp/narrative-ai-agent/internal/repository/api"
 	"github.com/bestxp/narrative-ai-agent/internal/slowlog"
+	yamlfs "github.com/bestxp/narrative-ai-agent/internal/storage/fs"
 	"github.com/bestxp/narrative-ai-agent/internal/usecase"
 )
 
@@ -61,7 +63,10 @@ func setup(t *testing.T) (*Dispatcher, *storage.FileStore) {
 	require.NoError(t, os.MkdirAll(dataDir, 0o755))
 	fs, err := storage.NewFileStore(dataDir)
 	require.NoError(t, err)
-	tools := usecase.NewFileToolset(fs, zerolog.Nop(), slowlog.Discard(), nil, nil, nil, nil)
+	require.NoError(t, fs.EnsureDir("worlds/naruto"))
+	yamlStore, _ := yamlfs.New(fs.Root())
+	repos := api.NewYamlRepositories(yamlStore)
+	tools := usecase.NewFileToolset(fs, repos, zerolog.Nop(), slowlog.Discard(), nil, nil, nil, nil)
 	d := New(newCfg(t, workdir), fs, nil, tools, slowlog.Discard(), zerolog.Nop())
 	return d, fs
 }
@@ -102,7 +107,7 @@ func TestDispatcher_EndDay(t *testing.T) {
 	rep, err := d.Handle(context.Background(), messaging.IncomingMessage{Command: "endday", Args: []string{"5", "бой"}})
 	require.NoError(t, err)
 	assert.Contains(t, rep, "День 5")
-	mem, _ := fs.ReadRaw(fs.WorldChronicle("naruto"))
+	mem, _ := fs.ReadRaw("worlds/naruto/chronicle.yaml")
 	assert.Contains(t, mem, "бой")
 }
 

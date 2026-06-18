@@ -6,25 +6,25 @@ import (
 
 	"github.com/rs/zerolog"
 
-	"github.com/bestxp/narrative-ai-agent/internal/staging"
+	"github.com/bestxp/narrative-ai-agent/internal/repository/api"
 )
 
 // StageTool implements UpdateStage, AdvanceTimeline and
-// ApplyPendingStage against the world's staging.yaml + stage.md
-// pair. It is a thin layer over the staging package — all
-// validation and repair logic lives there.
+// ApplyPendingStage via the StagingRepository. It is a
+// thin layer over repos.Staging — all validation and
+// repair logic lives in the staging package (via the
+// repository's YAML implementation).
 type StageTool struct {
-	fs  staging.FileStore
-	log zerolog.Logger
+	repos *api.Repositories
+	log   zerolog.Logger
 }
 
-func newStage(fs staging.FileStore, log zerolog.Logger) *StageTool {
-	return &StageTool{fs: fs, log: log.With().Str("component", "stage").Logger()}
+func newStage(fs interface{}, log zerolog.Logger, repos *api.Repositories) *StageTool {
+	_ = fs
+	return &StageTool{repos: repos, log: log.With().Str("component", "stage").Logger()}
 }
 
-// UpdateStage writes the pending stage transition to stage.md.
-// Returns true when the file was rewritten. The model can
-// re-call with the same next_id — it is idempotent.
+// UpdateStage writes the pending stage transition.
 func (s *StageTool) UpdateStage(ctx context.Context, world, nextID string) (bool, error) {
 	if world == "" {
 		return false, fmt.Errorf("stage: world is empty")
@@ -32,69 +32,46 @@ func (s *StageTool) UpdateStage(ctx context.Context, world, nextID string) (bool
 	if nextID == "" {
 		return false, fmt.Errorf("stage: next_id is empty")
 	}
-	st, err := staging.Load(s.fs, world)
+	ok, err := s.repos.Staging.UpdateStage(world, nextID)
 	if err != nil {
-		return false, fmt.Errorf("stage: load: %w", err)
-	}
-	if !st.Enabled {
-		return false, nil
-	}
-	if err := st.UpdateStage(s.fs, world, nextID); err != nil {
 		return false, fmt.Errorf("stage: update: %w", err)
 	}
-	s.log.Info().
-		Str("world", world).
-		Str("next", nextID).
-		Msg("update_stage: pending transition recorded")
-	return true, nil
+	if ok {
+		s.log.Info().
+			Str("world", world).
+			Str("next", nextID).
+			Msg("update_stage: pending transition recorded")
+	}
+	return ok, nil
 }
 
-// AdvanceTimeline moves the timeline cursor forward by one.
-// Returns true on a successful advance, false when already at
-// the last point or when staging is disabled.
+// AdvanceTimeline moves the timeline cursor forward.
 func (s *StageTool) AdvanceTimeline(ctx context.Context, world string) (bool, error) {
 	if world == "" {
 		return false, fmt.Errorf("stage: world is empty")
 	}
-	st, err := staging.Load(s.fs, world)
+	ok, err := s.repos.Staging.AdvanceTimeline(world)
 	if err != nil {
-		return false, fmt.Errorf("stage: load: %w", err)
-	}
-	if !st.Enabled {
-		return false, nil
-	}
-	if err := st.AdvanceTimeline(s.fs, world); err != nil {
 		return false, fmt.Errorf("stage: advance: %w", err)
 	}
-	s.log.Info().
-		Str("world", world).
-		Int("timeline_index", st.TimelineIndex).
-		Msg("advance_timeline: cursor moved")
-	return true, nil
+	if ok {
+		s.log.Info().
+			Str("world", world).
+			Msg("advance_timeline: cursor moved")
+	}
+	return ok, nil
 }
 
-// ApplyPendingStage activates a previously-scheduled transition.
-// No-op when nothing is pending.
+// ApplyPendingStage activates a scheduled transition.
 func (s *StageTool) ApplyPendingStage(world string) error {
 	if world == "" {
 		return fmt.Errorf("stage: world is empty")
 	}
-	st, err := staging.Load(s.fs, world)
-	if err != nil {
-		return fmt.Errorf("stage: load: %w", err)
-	}
-	if !st.Enabled {
-		return nil
-	}
-	if st.Next == "" {
-		return nil
-	}
-	if err := st.ApplyPending(s.fs, world); err != nil {
+	if err := s.repos.Staging.ApplyPendingStage(world); err != nil {
 		return fmt.Errorf("stage: apply: %w", err)
 	}
 	s.log.Info().
 		Str("world", world).
-		Str("current", st.Current.ID).
 		Msg("apply_pending_stage: transition activated")
 	return nil
 }

@@ -3160,13 +3160,16 @@ func (g *GM) dispatchOneTool(ctx context.Context, tc llm.ToolCall) (string, stri
 		if rate, ok := g.npcSearchRate[query]; ok && g.turnCounter-rate < g.rateWindow {
 			return "", "search_npc: rate-limited (same query recently)"
 		}
-		world := currentWorldName(g.fs)
+		world := ""
+		if g.fs != nil {
+			world = currentWorldName(g.fs)
+		}
 		res, err := g.tools.SearchNPC(world, query)
 		if err != nil {
-			// Compact error so the messages cache stays
-			// small and the model can recover (try a
-			// different query, or call create_npc).
 			return "", "search_npc: " + err.Error()
+		}
+		if res == nil {
+			return "", "search_npc: NPC not found"
 		}
 		g.npcSearchRate[query] = g.turnCounter
 		return okJSON(map[string]any{

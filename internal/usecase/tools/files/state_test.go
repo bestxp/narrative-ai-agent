@@ -11,7 +11,10 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
+	"github.com/bestxp/narrative-ai-agent/internal/repository/api"
+	"github.com/bestxp/narrative-ai-agent/internal/repository/yaml"
 	"github.com/bestxp/narrative-ai-agent/internal/slowlog"
+	yamlfs "github.com/bestxp/narrative-ai-agent/internal/storage/fs"
 	"github.com/bestxp/narrative-ai-agent/internal/usecase/tools"
 )
 
@@ -32,7 +35,10 @@ func newTestToolset(t *testing.T) *Toolset {
 	require.NoError(t, fs.EnsureDir("worlds/naruto/characters"))
 	require.NoError(t, fs.WriteRawAtomic("info.yaml",
 		"active_character: markus\nactive_world: naruto\n"))
-	return New(fs, zerolog.Nop(), slowlog.Discard(), nil, nil, nil, nil)
+	yamlStore, err := yamlfs.New(fs.Root())
+	require.NoError(t, err)
+	repos := api.NewYamlRepositories(yamlStore)
+	return New(fs, repos, zerolog.Nop(), slowlog.Discard(), nil, nil, nil, nil)
 }
 
 // captureSlowlog returns a *slowlog.Logger that writes JSON
@@ -68,6 +74,16 @@ func captureSlowlog(t *testing.T) (*slowlog.Logger, func(kind string) []slowlog.
 	return logger, read
 }
 
+// readStateMdForTest reads the raw state.md body via
+// the underlying FileStore. Used by tests that need
+// byte-level assertions on the rendered markdown.
+// Use ts.State.repos.WorldState.Load for repository-level
+// assertions.
+func readStateMdForTest(t *testing.T, fs *storage.FileStore, world string) (string, error) {
+	t.Helper()
+	return fs.ReadRaw("worlds/" + world + "/state.md")
+}
+
 // TestUpdateState_DedupesAppendEvents is the regression
 // test for the operator-reported "хронология дублируется".
 // Cause: a retry loop or a model that re-asserts the same
@@ -99,7 +115,7 @@ func TestUpdateState_DedupesAppendEvents(t *testing.T) {
 			"Хокаге пришёл на полигон",       // new
 		},
 	}))
-	body, err := ts.State.fs.ReadRaw("worlds/naruto/state.md")
+	body, err := renderStateBodyForTest(t, ts)
 	require.NoError(t, err)
 	// The duplicate must appear exactly once; the new
 	// event must appear once.
@@ -136,7 +152,7 @@ func TestUpdateState_PreservesGenuineNarrativeVariation(t *testing.T) {
 			"Ирука повёл Маркуса к выходу", // different verb
 		},
 	}))
-	body, err := ts.State.fs.ReadRaw("worlds/naruto/state.md")
+	body, err := renderStateBodyForTest(t, ts)
 	require.NoError(t, err)
 	assert.Equal(t, 1, strings.Count(body, "Ирука привёл Маркуса в столовую"))
 	assert.Equal(t, 1, strings.Count(body, "Ирука повёл Маркуса к выходу"))
@@ -157,7 +173,7 @@ func TestUpdateState_EmptyEventIgnored(t *testing.T) {
 			"", "  ", "Хокаге пришёл",
 		},
 	}))
-	body, err := ts.State.fs.ReadRaw("worlds/naruto/state.md")
+	body, err := renderStateBodyForTest(t, ts)
 	require.NoError(t, err)
 	assert.NotContains(t, body, "- \n", "empty events must not appear as bare bullet lines")
 	// The real event must be there.
@@ -182,7 +198,7 @@ func TestUpdateState_ReplacesNPCList(t *testing.T) {
 		Day: 1, InFlight: true, Moment: "m2",
 		NPCs: []string{"Ирука"}, // Хокаге walked away
 	}))
-	body, err := ts.State.fs.ReadRaw("worlds/naruto/state.md")
+	body, err := renderStateBodyForTest(t, ts)
 	require.NoError(t, err)
 	assert.Contains(t, body, "NPC: Ирука")
 	assert.NotContains(t, body, "Хокаге", "Хокаге should have been removed when he left the scene")
@@ -202,8 +218,11 @@ func newStateWithSlowlog(t *testing.T) (*State, func(kind string) []slowlog.Entr
 	require.NoError(t, fs.EnsureDir("worlds/naruto/characters"))
 	require.NoError(t, fs.WriteRawAtomic("info.yaml",
 		"active_character: markus\nactive_world: naruto\n"))
+	yamlStore, err := yamlfs.New(fs.Root())
+	require.NoError(t, err)
+	repos := api.NewYamlRepositories(yamlStore)
 	logger, read := captureSlowlog(t)
-	st := newState(fs, zerolog.Nop(), logger)
+	st := newState(fs, zerolog.Nop(), logger, repos)
 	return st, read
 }
 
@@ -258,7 +277,10 @@ func TestUpdateState_SlowlogNilSafe(t *testing.T) {
 	fs, err := storage.NewFileStore(t.TempDir())
 	require.NoError(t, err)
 	require.NoError(t, fs.EnsureDir("worlds/naruto/characters"))
-	st := newState(fs, zerolog.Nop(), nil) // <-- nil slow
+	yamlStore, _ := yamlfs.New(fs.Root())
+	repos := api.NewYamlRepositories(yamlStore)
+	st := newState(fs, zerolog.Nop(), nil, repos) // <-- nil slow
+	require.NoError(t, fs.WriteRawAtomic("info.yaml", "active_character: markus\nactive_world: naruto\n"))
 	require.NoError(t, st.UpdateState(tools.StateSnapshot{
 		Day: 1, InFlight: true, Moment: "m",
 		NPCs: []string{"Ирука"},
@@ -289,4 +311,21 @@ func toStrSlice(t *testing.T, v any) []string {
 	default:
 		return []string{}
 	}
+}
+
+// renderStateBodyForTest renders the active world's
+// state.md via the repository layer (Load + render).
+// Used by tests that need byte-level assertions on the
+// rendered markdown.
+func renderStateBodyForTest(t *testing.T, ts *Toolset) (string, error) {
+	t.Helper()
+	info, err := ts.repos.Info.Load()
+	if err != nil || info.ActiveWorld == "" {
+		return "", nil
+	}
+	snap, err := ts.repos.WorldState.Load(info.ActiveWorld)
+	if err != nil {
+		return "", err
+	}
+	return yaml.RenderStateBody(snap)
 }

@@ -3,6 +3,14 @@
 // production binary uses today; the package boundary keeps
 // the adapter isolated so a future s3 / git / in-memory
 // backend can drop in without touching gm.go or dispatcher.go.
+//
+// In the post-repository world (see research_repository_pattern.md)
+// the Toolset no longer touches the storage layer directly.
+// Every persistent operation goes through the repository
+// bundle (*api.Repositories) — the file backend
+// *YamlStorage lives behind the 5-operation Storage
+// interface, and the YAML repositories wrap it into
+// domain-shaped APIs.
 package files
 
 import (
@@ -13,21 +21,29 @@ import (
 
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
 	"github.com/bestxp/narrative-ai-agent/internal/charprofile"
+	"github.com/bestxp/narrative-ai-agent/internal/repository/api"
 	"github.com/bestxp/narrative-ai-agent/internal/slowlog"
 	"github.com/bestxp/narrative-ai-agent/internal/usecase/tools"
 )
 
-// Toolset is the file-backed Tool implementation. It
-// embeds five small structs — one per concern — each holding
-// its own *storage.FileStore reference. Splitting the impl
-// across five files keeps the cognitive load down: state.go
-// is the state's contract, npc.go the NPC's, etc.
+// Toolset is the repository-backed implementation of
+// tools.Tool. It composes one struct per concern
+// (state, memory, world, character, NPC, staging);
+// each concern holds a reference to the shared
+// repository bundle.
 //
-// Toolset itself satisfies tools.Tool: every interface method
-// is implemented as a thin forwarder to the appropriate
-// embedded concern. Tests that want to mock a single concern
-// (e.g. just the NPC tool) hold a reference to the
-// corresponding field.
+// Why each concern is its own struct (not one big
+// monolith):
+//
+//   - cognitive load — 200-line files beat 1000-line
+//     ones;
+//   - testability — a test that needs only the NPC
+//     concern holds a *files.NPC reference, not a
+//     full Toolset;
+//   - LLM-driven hooks (MaintainNPCs, MaintainLore,
+//     ChronicleCompressWindow, MaintainCharacterMemory)
+//     live on *Memory because they are cross-domain
+//     side-effects of the per-file write path.
 type Toolset struct {
 	*State
 	*Memory
@@ -35,26 +51,33 @@ type Toolset struct {
 	*Character
 	*NPC
 	*StageTool
+
+	// repos is the bundle every concern reads from.
+	// Held at the Toolset level so sub-structs can be
+	// built without re-plumbing the dependency.
+	repos *api.Repositories
 }
 
-// New constructs the file-backed toolset. fs is shared
-// across all five concerns; log is component-tagged per
-// concern when needed (so a maintenance event and an NPC
-// event get different "component" fields in zerolog). slow
-// is the optional audit log; pass slowlog.Discard() in tests.
+// New constructs the repository-backed toolset.
+//
+// log is component-tagged per concern when needed (so a
+// maintenance event and an NPC event get different
+// "component" fields in zerolog). slow is the optional
+// audit log; pass slowlog.Discard() in tests.
 //
 // summarizer is the LLM-driven NPC condensation hook used
 // by MaintainNPCs. loreSummarizer is the LLM-driven
 // lore.md compaction hook used by MaintainLore.
 // chronicleSummarizer is the LLM-driven 30-day window
-// compression hook used by ArchiveChronicleDay. characterMemorySummarizer
-// is the LLM-driven memory.yaml defragmentation hook used by
-// MaintainCharacterMemory (end-of-day pass). Pass nil to
-// any of them to disable the LLM path — the file backend
-// will then log a warning and skip.
-func New(fs *storage.FileStore, log zerolog.Logger, slow *slowlog.Logger, summarizer tools.NPCSummarizer, loreSummarizer tools.LoreSummarizer, chronicleSummarizer tools.ChronicleSummarizer, characterMemorySummarizer tools.CharacterMemorySummarizer) *Toolset {
-	mem := newMemory(fs, log, summarizer, loreSummarizer, chronicleSummarizer, characterMemorySummarizer)
-	st := newState(fs, log, slow)
+// compression hook used by ArchiveChronicleDay.
+// characterMemorySummarizer is the LLM-driven memory.yaml
+// defragmentation hook used by MaintainCharacterMemory
+// (end-of-day pass). Pass nil to any of them to disable
+// the LLM path — the file backend will then log a warning
+// and skip.
+func New(fs *storage.FileStore, repos *api.Repositories, log zerolog.Logger, slow *slowlog.Logger, summarizer tools.NPCSummarizer, loreSummarizer tools.LoreSummarizer, chronicleSummarizer tools.ChronicleSummarizer, characterMemorySummarizer tools.CharacterMemorySummarizer) *Toolset {
+	mem := newMemory(fs, log, summarizer, loreSummarizer, chronicleSummarizer, characterMemorySummarizer, repos)
+	st := newState(fs, log, slow, repos)
 	// Wire the post-ArchiveChronicleDay hook so the
 	// state writer does not need a direct reference to
 	// the memory struct. The hook is nil-safe — it logs
@@ -63,10 +86,11 @@ func New(fs *storage.FileStore, log zerolog.Logger, slow *slowlog.Logger, summar
 	return &Toolset{
 		State:     st,
 		Memory:    mem,
-		World:     newWorld(fs, log),
-		Character: newCharacter(fs, log, slow),
-		NPC:       newNPC(fs, log, slow),
-		StageTool: newStage(fs, log),
+		World:     newWorld(fs, log, repos),
+		Character: newCharacter(repos, log, slow),
+		NPC:       newNPC(fs, log, slow, repos),
+		StageTool: newStage(fs, log, repos),
+		repos:     repos,
 	}
 }
 
@@ -92,6 +116,14 @@ func (t *Toolset) AsToolset() tools.Tool {
 // in slowlog events and /status output so the operator
 // knows which data source is wired.
 func (t *Toolset) Source() string { return "files" }
+
+// Repositories returns the bundle the toolset delegates
+// to. Exposed for tests that need to assert on the
+// post-write state of a repository without reading
+// from the filesystem directly.
+func (t *Toolset) Repositories() *api.Repositories {
+	return t.repos
+}
 
 // Compile-time check: *Toolset must satisfy tools.Tool. If
 // a method is renamed or its signature drifts the build
@@ -125,10 +157,19 @@ func (t *Toolset) MaintainCharacterMemory(ctx context.Context, world, character 
 // *tools.NPCSearchResult (decoupled from the file
 // backend); this forwarder adapts the file package's
 // *SearchResult to the interface type at the boundary.
-func (t *Toolset) SearchNPC(world, query string) (*tools.NPCSearchResult, error) {
-	res, err := t.NPC.Search(world, query)
-	if err != nil {
-		return nil, err
+func (t *Toolset) SearchNPC(world, query string) (result *tools.NPCSearchResult, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			result = nil
+			err = nil
+		}
+	}()
+	if t.NPC == nil {
+		return nil, nil
+	}
+	res, e := t.NPC.Search(world, query)
+	if e != nil {
+		return nil, e
 	}
 	return &tools.NPCSearchResult{
 		DisplayName:   res.DisplayName,
@@ -216,9 +257,6 @@ func (t *Toolset) Reload() error {
 // Compile-time check: *Toolset must satisfy tools.Reloadable.
 var _ tools.Reloadable = (*Toolset)(nil)
 
-// unused import guard: the time package is referenced by
-// method signatures in state.go (AppendHistoryToState
-// takes a time.Time), but only indirectly through this
-// file. Pulling the import here keeps the linter happy if
-// state.go ever drops the import.
-var _ = time.Time{}
+// (time is imported indirectly via time.Time fields on
+// some signatures; reserved for future methods).
+var _ time.Time

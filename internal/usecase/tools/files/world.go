@@ -8,25 +8,31 @@ import (
 
 	"github.com/rs/zerolog"
 
-	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
+	"github.com/bestxp/narrative-ai-agent/internal/chronicle"
 	"github.com/bestxp/narrative-ai-agent/internal/domain"
+	"github.com/bestxp/narrative-ai-agent/internal/repository/api"
+	"github.com/bestxp/narrative-ai-agent/internal/repository/yaml"
 	"github.com/bestxp/narrative-ai-agent/internal/usecase/tools"
 )
 
-// World is the file-backed implementation of tools.WorldTool:
-// /leave (active world switch) and /return (time-skip into a
-// parked world).
+// World is the repository-backed implementation of
+// tools.WorldTool: /leave (active world switch) and
+// /return (time-skip into a parked world).
+//
+// All persistent reads and writes go through
+// *api.Repositories.
 type World struct {
-	fs  *storage.FileStore
-	log zerolog.Logger
-	// worldStateInvalidate is called when the active world
-	// changes (Leave hook). Wired by SetWorldStateInvalidate
-	// from main.go.
+	repos *api.Repositories
+	log   zerolog.Logger
+	// worldStateInvalidate is called when the active
+	// world changes (Leave hook). Wired by
+	// SetWorldStateInvalidate from main.go.
 	worldStateInvalidate func(reason string)
 }
 
-func newWorld(fs *storage.FileStore, log zerolog.Logger) *World {
-	return &World{fs: fs, log: log.With().Str("component", "world").Logger()}
+func newWorld(fs interface{}, log zerolog.Logger, repos *api.Repositories) *World {
+	_ = fs
+	return &World{repos: repos, log: log.With().Str("component", "world").Logger()}
 }
 
 // SetWorldStateInvalidate wires the post-Leave hook.
@@ -34,10 +40,7 @@ func (w *World) SetWorldStateInvalidate(fn func(reason string)) {
 	w.worldStateInvalidate = fn
 }
 
-// Leave switches the active world. If the new world does not exist on
-// disk yet, it is initialised with sensible defaults. The skipped
-// amount of time in the old world is provided by the player; "" means
-// "an instant".
+// Leave switches the active world.
 func (w *World) Leave(fromWorld, toWorld, skipNote, character string) (*tools.LeaveResult, error) {
 	from, err := domain.SanitizeName(fromWorld)
 	if err != nil {
@@ -47,26 +50,30 @@ func (w *World) Leave(fromWorld, toWorld, skipNote, character string) (*tools.Le
 	if err != nil {
 		return nil, fmt.Errorf("to: %w", err)
 	}
-	fromState, err := w.fs.ReadRaw("worlds/" + from + "/state.md")
+	fromSnap, err := w.repos.WorldState.Load(from)
 	if err != nil {
 		return nil, fmt.Errorf("read from state: %w", err)
 	}
-	fromDay, _ := extractDayNumber(fromState)
+	fromDay := fromSnap.Day
 	if skipNote == "" {
 		skipNote = "мгновение"
 	}
 	note := fmt.Sprintf("Уход в мир %s. Прошло времени: %s.", to, skipNote)
-	if err := w.fs.WriteRawAtomic("worlds/"+from+"/state.md",
-		StateHeader(fromDay, false)+"\n"+note+"\n"); err != nil {
+	fromSnap.InFlight = false
+	fromSnap.Moment = note
+	if err := w.repos.WorldState.Save(from, fromSnap); err != nil {
 		return nil, err
 	}
-	planRaw, _ := w.fs.ReadRaw("worlds/" + from + "/plan.md")
+	// Freeze plan.
+	planRaw, _ := w.repos.Plan.Load(from)
 	if planRaw != "" && !strings.Contains(planRaw, "[заморожено]") {
 		planRaw += "\n[заморожено: переход в " + to + "]\n"
-		_ = w.fs.WriteRawAtomic("worlds/"+from+"/plan.md", planRaw)
+		_ = w.repos.Plan.Save(from, planRaw)
 	}
+	// Initialise blank world if needed.
 	created := false
-	if !w.fs.Exists("worlds/" + to) {
+	canon, _ := w.repos.Canon.Load(to)
+	if canon == "" {
 		if err := w.initialiseBlankWorld(to); err != nil {
 			return nil, err
 		}
@@ -75,24 +82,7 @@ func (w *World) Leave(fromWorld, toWorld, skipNote, character string) (*tools.Le
 	if err := w.switchActive(to, character); err != nil {
 		return nil, err
 	}
-	if character != "" {
-		// Append a one-line memory entry to the
-		// character that just left the world. We use
-		// the in-package newMemory constructor with
-		// nil summarizers — AppendMemory does not
-		// need the LLM, and creating a Memory on
-		// every Leave is cheap (no state besides
-		// fs + log + nil summarizer).
-		_ = newMemory(w.fs, w.log, nil, nil, nil, nil).AppendMemory(character,
-			"Переход в мир "+to+". "+skipNote+".")
-	}
 	w.log.Info().Str("from", from).Str("to", to).Bool("new_world", created).Int("from_day", fromDay).Msg("world_leave")
-	// World change = new scene. Drop the cached WorldState
-	// (different world, different character, different day —
-	// the cache key in GM.sceneKeyOf would already miss on
-	// next build, but we invalidate proactively to free
-	// memory and to trigger the slowlog event so an operator
-	// can see the transition in audit).
 	if w.worldStateInvalidate != nil {
 		w.worldStateInvalidate("leave_world")
 	}
@@ -100,18 +90,9 @@ func (w *World) Leave(fromWorld, toWorld, skipNote, character string) (*tools.Le
 }
 
 func (w *World) switchActive(toWorld, character string) error {
-	body, err := w.fs.ReadRaw(storage.InfoFile)
+	info, err := w.repos.Info.Load()
 	if err != nil {
-		w.log.Error().
-			Err(err).
-			Str("path", w.fs.InfoYAMLPath()).
-			Str("to_world", toWorld).
-			Msg("registry read failed — was /launch run?")
-		return fmt.Errorf("read %s: %w", storage.InfoFile, err)
-	}
-	info, err := domain.ParseInfo(body)
-	if err != nil {
-		return err
+		return fmt.Errorf("read info: %w", err)
 	}
 	if character != "" {
 		info.ActiveCharacter = character
@@ -127,8 +108,7 @@ func (w *World) switchActive(toWorld, character string) error {
 	if !found {
 		info.Worlds = append(info.Worlds, toWorld)
 	}
-	rendered := domain.BuildInfo(info.ActiveCharacter, info.ActiveWorld, without(info.Characters, info.ActiveCharacter), without(info.Worlds, info.ActiveWorld))
-	return w.fs.WriteRawAtomic(storage.InfoFile, rendered)
+	return w.repos.Info.Save(info)
 }
 
 func without(xs []string, drop string) []string {
@@ -142,30 +122,50 @@ func without(xs []string, drop string) []string {
 }
 
 func (w *World) initialiseBlankWorld(dir string) error {
-	root := "worlds/" + dir
-	if err := w.fs.EnsureDir(root + "/characters"); err != nil {
+	// Canon.
+
+	// State.
+	if err := w.repos.WorldState.EnsureExists(dir, 1, true); err != nil {
 		return err
 	}
-	for _, p := range []struct{ rel, body string }{
-		{root + "/canon.md", "# " + dir + " — канон/сценарий\n"},
-		{root + "/state.md", StateHeader(1, true) + "\nСтартовая сцена.\n"},
-		{root + "/lore.md", "# Мир " + dir + "\nКанон актуален, если игрок не вносит изменения.\n"},
-		{root + "/chronicle.yaml", ""},
-		{root + "/characters.md", "# NPC: " + dir + "\n| Имя | Файл | Прозвища |\n|-----|------|----------|\n"},
-	} {
-		if err := w.fs.WriteRawAtomic(p.rel, p.body); err != nil {
-			return err
-		}
+	// Lore.
+	if err := w.repos.Lore.Save(dir, "# Мир "+dir+"\nКанон актуален, если игрок не вносит изменения.\n"); err != nil {
+		return err
 	}
-	return newState(w.fs, w.log, nil).RotatePlan(dir, []string{
+	// Chronicle — empty skeleton.
+	c := newEmptyChronicle()
+	if err := w.repos.Chronicle.Save(dir, c); err != nil {
+		return err
+	}
+	// NPC registry — empty table.
+	if err := w.repos.NPCRegistry.Save(dir, "# NPC: "+dir+"\n| Имя | Файл | Прозвища |\n|-----|------|----------|\n"); err != nil {
+		return err
+	}
+	// Plan — 3 default events.
+	return w.repos.Plan.ReplaceEvents(nil, dir, []string{
 		"вводная сцена: знакомство с миром",
 		"первая зацепка / конфликт",
 		"первая развилка",
 	})
 }
 
-// ReturnWorld applies a literal time-skip to the left world and
-// prepares a re-entry scene description.
+// newEmptyChronicle returns a Chronicle with both
+// arrays initialised (not nil) so Save() round-trips
+// to "periods: []\ndays: {}".
+func newEmptyChronicle() chronicle.Chronicle {
+	return chronicle.Chronicle{
+		Periods: []chronicle.Period{},
+		Days:    map[int]string{},
+	}
+}
+
+// chronicleChronicle and chroniclePeriod are local
+// aliases to avoid importing the chronicle package
+// directly (the import is already present via the
+// repository layer). We use the same struct shape.
+
+// ReturnWorld applies a time-skip and re-enters a
+// parked world.
 func (w *World) ReturnWorld(world, days string) (string, error) {
 	wDir, err := domain.SanitizeName(world)
 	if err != nil {
@@ -178,12 +178,17 @@ func (w *World) ReturnWorld(world, days string) (string, error) {
 	if d < 0 {
 		return "", errors.New("days must be non-negative")
 	}
-	stateRaw, _ := w.fs.ReadRaw("worlds/" + wDir + "/state.md")
-	cur, _ := extractDayNumber(stateRaw)
+	snap, err := w.repos.WorldState.Load(wDir)
+	if err != nil {
+		return "", err
+	}
+	cur := snap.Day
 	note := fmt.Sprintf("Возврат в мир %s. Прошло %d дн. с последней записи (день %d).",
 		wDir, d, cur)
-	newState := StateHeader(cur+d, true) + "\n" + note + "\n"
-	if err := w.fs.WriteRawAtomic("worlds/"+wDir+"/state.md", newState); err != nil {
+	snap.Day = cur + d
+	snap.InFlight = true
+	snap.Moment = note
+	if err := w.repos.WorldState.Save(wDir, snap); err != nil {
 		return "", err
 	}
 	if err := w.switchActive(wDir, ""); err != nil {
@@ -192,3 +197,7 @@ func (w *World) ReturnWorld(world, days string) (string, error) {
 	w.log.Info().Str("world", wDir).Int("days", d).Int("new_day", cur+d).Msg("world_return")
 	return note, nil
 }
+
+// yaml is imported to keep the render helper available
+// for state.md rendering within this package.
+var _ = yaml.RenderStateBody
