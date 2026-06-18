@@ -1,0 +1,15 @@
+{{ printf "# История диалога (хронологически)\n\n" -}}
+{{- range $i, $m := .Summarizer.Messages }}
+  {{- if eq $m.Role "user" }}
+    {{- printf "[Игрок]: %s\n" (trim $m.Content) }}
+  {{- else if eq $m.Role "assistant" }}
+    {{- if $m.Content }}
+      {{- printf "[GM]: %s\n" (trim $m.Content) }}
+    {{- else if $m.ToolCalls }}
+      {{- printf "[GM]: (вызвал tools: %s)\n" (join $m.ToolCalls ",") }}
+    {{- end }}
+  {{- else if eq $m.Role "tool" }}
+    {{- printf "  [→ %s]: %s\n" $m.Name (trim $m.Content) }}
+  {{- end }}
+  {{- if lt $i (sub (len $.Summarizer.Messages) 1) }}{{ "\n" }}{{- end }}
+{{- end }}

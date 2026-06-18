@@ -11,6 +11,7 @@ import (
 
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/llm"
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
+	"github.com/bestxp/narrative-ai-agent/internal/prompts"
 	"github.com/bestxp/narrative-ai-agent/internal/repository/api"
 	"github.com/bestxp/narrative-ai-agent/internal/slowlog"
 	yamlfs "github.com/bestxp/narrative-ai-agent/internal/storage/fs"
@@ -107,7 +108,9 @@ func TestRenderTurnsForSummary_AllRoles(t *testing.T) {
 		{Role: "assistant", Content: "hi there"},
 		{Role: "tool", Name: "end_day", Content: `{"ok":true}`},
 	}
-	out := renderTurnsForSummary(msgs)
+	sum := prompts.NewOldTurnsSummaryData(projectMessages(msgs))
+	out, err := prompts.RenderSummarizerUser("summarizer_old_turns_user.md.tmpl", sum)
+	require.NoError(t, err)
 	assert.Contains(t, out, "[Игрок]: hello")
 	assert.Contains(t, out, "[GM]: hi there")
 	assert.Contains(t, out, "[→ end_day]")
@@ -120,7 +123,9 @@ func TestRenderTurnsForSummary_AssistantWithToolCalls(t *testing.T) {
 			{Function: llm.FunctionCall{Name: "update_state", Arguments: `{}`}},
 		}},
 	}
-	out := renderTurnsForSummary(msgs)
+	sum := prompts.NewOldTurnsSummaryData(projectMessages(msgs))
+	out, err := prompts.RenderSummarizerUser("summarizer_old_turns_user.md.tmpl", sum)
+	require.NoError(t, err)
 	assert.Contains(t, out, "(вызвал tools: end_day,update_state)")
 }
 

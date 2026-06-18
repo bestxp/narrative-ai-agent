@@ -1,0 +1,18 @@
+{{ printf "# World: %s\n" .Summarizer.World -}}
+{{- printf "\n# Character: %s\n" .Summarizer.CharacterDisplayName -}}
+{{- printf "\n# Current memory.yaml\n```yaml\n%s\n```\n" .Summarizer.CharacterMemoryBody -}}
+{{- if .Summarizer.Chronicle }}
+  {{- printf "\n# Полный chronicle (контекст хронологии, без обрезки)\n" -}}
+  {{- if .Summarizer.Chronicle.Periods }}periods:
+{{ range $pr := .Summarizer.Chronicle.Periods }}- from: {{ $pr.From }}
+  to: {{ $pr.To }}
+  memory: {{ $pr.Memory }}
+{{ end }}{{- else }}periods: []
+{{- end -}}
+  {{- if .Summarizer.Chronicle.Days }}days:
+{{ range $d := .Summarizer.Chronicle.Days }}  {{ $d.Number }}: {{ $d.Text }}
+{{ end }}{{- else }}days: {}
+{{- end -}}
+  {{- printf "\n```\n" }}
+{{- end -}}
+{{- printf "\nВерни сжатый memory.yaml. Только YAML, без обёрток и комментариев." }}

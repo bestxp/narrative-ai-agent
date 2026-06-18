@@ -1,0 +1,30 @@
+{{ printf "# World: %s\n" .Summarizer.World -}}
+{{- printf "\n# Закрываемый день: д%s\n" (pad5 .Summarizer.Day) -}}
+{{- printf "\n# Диалог дня (%d сообщений)\n```\n" (len .Summarizer.Messages) -}}
+{{- printf "# История диалога (хронологически)\n\n" -}}
+{{- range $i, $m := .Summarizer.Messages }}
+  {{- if eq $m.Role "user" }}
+    {{- printf "[Игрок]: %s\n" (trim $m.Content) }}
+  {{- else if eq $m.Role "assistant" }}
+    {{- if $m.Content }}
+      {{- printf "[GM]: %s\n" (trim $m.Content) }}
+    {{- else if $m.ToolCalls }}
+      {{- printf "[GM]: (вызвал tools: %s)\n" (join $m.ToolCalls ",") }}
+    {{- end }}
+  {{- else if eq $m.Role "tool" }}
+    {{- printf "  [→ %s]: %s\n" $m.Name (trim $m.Content) }}
+  {{- end }}
+  {{- if lt $i (sub (len $.Summarizer.Messages) 1) }}{{ "\n" }}{{- end }}
+{{- end }}
+{{- printf "\n```\n" -}}
+{{- if .Summarizer.State }}
+  {{- $st := .Summarizer.State -}}
+  {{- printf "\n# state на момент закрытия дня\n```\n# Состояние мира: %s\n" $st.World }}
+  {{- if $st.InFlight }}{{ printf "День %d (в процессе).\n" $st.Day }}{{- else }}{{ printf "День %d (завершён).\n" $st.Day }}{{- end -}}
+  {{- if $st.Location }}{{ printf "Локация: %s.\n" $st.Location }}{{- end -}}
+  {{- if $st.NPCs }}{{ printf "NPC: " }}{{ range $i, $npc := $st.NPCs }}{{ if $i }}, {{ end }}{{ $npc }}{{ end }}{{ printf ".\n" }}{{- end -}}
+  {{- if $st.Moment }}{{ printf "Момент: %s.\n" $st.Moment }}{{- end -}}
+  {{- if $st.Events }}{{ printf "\n## Хронология дня\n" }}{{ range $st.Events }}{{ printf "- %s\n" . }}{{ end }}{{- end -}}
+  {{- printf "\n```\n" }}
+{{- end -}}
+{{- printf "\nВерни ОДНУ запись [События прошедшего дня Д<N>] ... {{ .Compaction.EndOfDaySummaryWordsMin }}-{{ .Compaction.EndOfDaySummaryWordsMax }} слов." }}

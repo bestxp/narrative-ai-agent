@@ -36,6 +36,18 @@ const (
 	DefaultStageRenderMaxBytes        = limits.StageRenderMaxBytes
 	DefaultProtocolWindowDays         = limits.ProtocolWindowDays
 	DefaultProtocolMaxChars           = limits.ProtocolMaxChars
+	DefaultInPlaceSummaryWordsMin     = limits.InPlaceSummaryWordsMin
+	DefaultInPlaceSummaryWordsMax     = limits.InPlaceSummaryWordsMax
+	DefaultEndOfDaySummaryWordsMin    = limits.EndOfDaySummaryWordsMin
+	DefaultEndOfDaySummaryWordsMax    = limits.EndOfDaySummaryWordsMax
+	DefaultOldTurnsSummaryTokensMin   = limits.OldTurnsSummaryTokensMin
+	DefaultOldTurnsSummaryTokensMax   = limits.OldTurnsSummaryTokensMax
+	DefaultLoreTargetLinesMin         = limits.LoreTargetLinesMin
+	DefaultLoreTargetLinesMax         = limits.LoreTargetLinesMax
+	DefaultLoreSectionTargetMin       = limits.LoreSectionTargetMin
+	DefaultLoreSectionTargetMax       = limits.LoreSectionTargetMax
+	DefaultMemoriseSentenceMin        = limits.MemoriseSentenceMin
+	DefaultMemoriseSentenceMax        = limits.MemoriseSentenceMax
 )
 
 // PromptData is the root data structure handed to every
@@ -56,6 +68,14 @@ type PromptData struct {
 	// of NPCProfile / LegacyNPC is populated per render.
 	LegacyNPC *LegacyNPCProfileData
 	State     *StateData
+	// Summarizer carries the raw inputs for a summarizer
+	// user-message render. Populated only by the 7
+	// Summarizer.Summarize* methods; nil for all other
+	// templates. The sub-struct holds raw data only —
+	// every LLM-facing string (headers, fences,
+	// instructions, day formatting, message roles) is
+	// rendered by the template, never by Go.
+	Summarizer *SummarizerData
 }
 
 // NarrativeData is the subset of config.NarrativeConfig
@@ -64,6 +84,7 @@ type PromptData struct {
 // feels "config-shaped" to a template author.
 type NarrativeData struct {
 	WordLimit                  int
+	WordLimitFloor             int
 	Language                   string
 	RulesCheckBlock            bool
 	IncludeSystemStateInPrompt bool
@@ -88,6 +109,25 @@ type CompactionData struct {
 	StageRenderMaxBytes        int
 	ProtocolWindowDays         int
 	ProtocolMaxChars           int
+	// In-place compaction word-count range (soft target).
+	InPlaceSummaryWordsMin int
+	InPlaceSummaryWordsMax int
+	// End-of-day protocol word-count range (soft target).
+	EndOfDaySummaryWordsMin int
+	EndOfDaySummaryWordsMax int
+	// Old-turns compaction token-count range (soft target).
+	OldTurnsSummaryTokensMin int
+	OldTurnsSummaryTokensMax int
+	// Lore-summary line-count band (around LoreTargetLines).
+	LoreTargetLinesMin int
+	LoreTargetLinesMax int
+	// Lore-summary section-count band ("примерно N-M секций").
+	LoreSectionTargetMin int
+	LoreSectionTargetMax int
+	// Memorise-summary acceptable sentence band around
+	// MemoriseSentencesPer30Days.
+	MemoriseSentenceMin int
+	MemoriseSentenceMax int
 }
 
 // DisplayData covers on-the-wire / UI constants. They
@@ -268,6 +308,7 @@ func NewPromptData(
 	return PromptData{
 		Narrative: NarrativeData{
 			WordLimit:                  narrative.WordLimit,
+			WordLimitFloor:             limits.NarrativeWordLimitFloor,
 			Language:                   narrative.Language,
 			RulesCheckBlock:            narrative.RulesCheckBlock,
 			IncludeSystemStateInPrompt: narrative.IncludeSystemStateInPrompt,
@@ -285,6 +326,18 @@ func NewPromptData(
 			StageRenderMaxBytes:        pickInt(narrative.StageRenderMaxBytes, DefaultStageRenderMaxBytes),
 			ProtocolWindowDays:         pickInt(narrative.ProtocolWindowDays, DefaultProtocolWindowDays),
 			ProtocolMaxChars:           pickInt(narrative.ProtocolMaxChars, DefaultProtocolMaxChars),
+			InPlaceSummaryWordsMin:     DefaultInPlaceSummaryWordsMin,
+			InPlaceSummaryWordsMax:     DefaultInPlaceSummaryWordsMax,
+			EndOfDaySummaryWordsMin:    DefaultEndOfDaySummaryWordsMin,
+			EndOfDaySummaryWordsMax:    DefaultEndOfDaySummaryWordsMax,
+			OldTurnsSummaryTokensMin:   DefaultOldTurnsSummaryTokensMin,
+			OldTurnsSummaryTokensMax:   DefaultOldTurnsSummaryTokensMax,
+			LoreTargetLinesMin:         DefaultLoreTargetLinesMin,
+			LoreTargetLinesMax:         DefaultLoreTargetLinesMax,
+			LoreSectionTargetMin:       DefaultLoreSectionTargetMin,
+			LoreSectionTargetMax:       DefaultLoreSectionTargetMax,
+			MemoriseSentenceMin:        DefaultMemoriseSentenceMin,
+			MemoriseSentenceMax:        DefaultMemoriseSentenceMax,
 		},
 		Display: DisplayData{
 			Language: narrative.Language,
@@ -353,6 +406,136 @@ func ConvertNPCSnapshots(displayName, profile []string) []NPCSnapshotData {
 		out[i] = NPCSnapshotData{DisplayName: displayName[i], Profile: profile[i]}
 	}
 	return out
+}
+
+// SummarizerData carries the raw, structural inputs that
+// a summarizer user-message template renders. Fields are
+// either primitive scalars (World, Day, StartDay, EndDay,
+// display names) or pointer-to-struct (NPCProfile,
+// Chronicle, State) — NEVER pre-rendered LLM-facing strings.
+// The template owns ALL formatting: headers, code fences,
+// day padding, YAML emission from NPCProfile fields, role
+// labels for Messages, and the final instruction line. The
+// Go side never touches LLM-facing text.
+//
+// LoreBody and CharacterMemoryBody stay as raw strings
+// because there is no ready-made structured type for
+// those file formats (lore.md is markdown with `## header`
+// + `- bullet` lines; memory.yaml is `data: [{section,
+// values}]` which the LLM emits back as YAML). When a
+// dedicated structure is added later these two fields
+// can become pointers too.
+//
+// Not every field is populated on every call. Each of the
+// 7 constructors (NewOldTurnsSummaryData etc.) fills only
+// the fields its method needs; the template uses {{ if }}
+// guards to skip nil pointers and empty values.
+type SummarizerData struct {
+	World    string
+	Day      int
+	StartDay int
+	EndDay   int
+	// NPCDisplayName is set for SummarizeNPC.
+	NPCDisplayName string
+	// CharacterDisplayName is set for
+	// SummarizeCharacterMemory.
+	CharacterDisplayName string
+	// NPCProfile is the structured NPC profile for
+	// SummarizeNPC. The template renders the YAML body
+	// from this struct via {{ range .NPCProfile.* }}.
+	// Nil for all other methods.
+	NPCProfile *NPCProfileData
+	// LoreBody is the raw markdown body for
+	// SummarizeLore. String (not a struct) because
+	// lore.md has no dedicated structured type.
+	LoreBody string
+	// CharacterMemoryBody is the raw YAML body for
+	// SummarizeCharacterMemory. String (not a struct)
+	// because memory.yaml's `data: [{section, values}]`
+	// shape is emitted back by the LLM as YAML; we feed
+	// it verbatim inside a fence.
+	CharacterMemoryBody string
+	// Chronicle is the structured chronicle (periods +
+	// days) used as context by NPC, Lore and
+	// CharacterMemory calls, and as the full body by
+	// SummarizeChronicle. Nil → the template's
+	// {{ if .Chronicle }} blocks emit nothing.
+	Chronicle *ChronicleData
+	// State is the structured world state for
+	// SummarizeEndOfDay and SummarizeLore. Nil →
+	// template skips the state block.
+	State *StateData
+	// Messages is the conversation turns for OldTurns,
+	// InPlace and EndOfDay. Empty slice (or nil) → the
+	// template's {{ range }} emits nothing.
+	Messages []MessageData
+}
+
+// MessageData is the template-facing shape of one
+// llm.Message. The projection from llm.Message to
+// MessageData happens in the Summarizer (it's data, not
+// LLM-facing text — Go-side projection is allowed). The
+// template decides how to render each role: [Игрок]: for
+// user, [GM]: for assistant, [→ <name>]: for tool. Empty
+// assistant bodies with ToolCalls are rendered as
+// "(вызвал tools: a,b)" by the template via {{ if .ToolCalls
+// }}.
+type MessageData struct {
+	Role      string
+	Content   string
+	Name      string
+	ToolCalls []string
+}
+
+// NewOldTurnsSummaryData builds the data-bag for
+// SummarizeOldTurns: only the conversation messages.
+func NewOldTurnsSummaryData(messages []MessageData) *SummarizerData {
+	return &SummarizerData{Messages: messages}
+}
+
+// NewInPlaceSummaryData builds the data-bag for
+// SummarizeInPlace: world, current day, conversation.
+func NewInPlaceSummaryData(world string, day int, messages []MessageData) *SummarizerData {
+	return &SummarizerData{World: world, Day: day, Messages: messages}
+}
+
+// NewEndOfDaySummaryData builds the data-bag for
+// SummarizeEndOfDay: world, closing day, conversation and
+// the structured world state at close time. state may be
+// nil — the template skips the state block.
+func NewEndOfDaySummaryData(world string, day int, messages []MessageData, state *StateData) *SummarizerData {
+	return &SummarizerData{World: world, Day: day, Messages: messages, State: state}
+}
+
+// NewNPCSummaryData builds the data-bag for SummarizeNPC:
+// world, NPC display name, structured NPC profile, and the
+// chronicle window as context. chronicle may be nil.
+func NewNPCSummaryData(world, displayName string, profile *NPCProfileData, chronicle *ChronicleData) *SummarizerData {
+	return &SummarizerData{World: world, NPCDisplayName: displayName, NPCProfile: profile, Chronicle: chronicle}
+}
+
+// NewLoreSummaryData builds the data-bag for SummarizeLore:
+// world, raw lore.md body, chronicle window and the
+// structured world state as context. chronicle / state
+// may be nil.
+func NewLoreSummaryData(world, loreBody string, chronicle *ChronicleData, state *StateData) *SummarizerData {
+	return &SummarizerData{World: world, LoreBody: loreBody, Chronicle: chronicle, State: state}
+}
+
+// NewChronicleSummaryData builds the data-bag for
+// SummarizeChronicle: world, the day window being
+// collapsed, and the whole structured chronicle (periods
+// + days) as context for cross-window dedup.
+func NewChronicleSummaryData(world string, startDay, endDay int, chronicle *ChronicleData) *SummarizerData {
+	return &SummarizerData{World: world, StartDay: startDay, EndDay: endDay, Chronicle: chronicle}
+}
+
+// NewCharacterMemorySummaryData builds the data-bag for
+// SummarizeCharacterMemory: world, character display name,
+// the raw memory.yaml body, and the chronicle window as
+// context. chronicle may be nil.
+func NewCharacterMemorySummaryData(world, character, memoryBody string, chronicle *ChronicleData) *SummarizerData {
+	return &SummarizerData{World: world, CharacterDisplayName: character, CharacterMemoryBody: memoryBody, Chronicle: chronicle}
 }
 
 func pickInt(got, def int) int {

@@ -273,6 +273,18 @@ func main() {
 			} else {
 				log.Warn().Err(err).Msg("character_memory_maintain.md.tmpl unreadable; end-of-day memory defrag will no-op")
 			}
+			if chroniclePrompt, err := renderSummarizerPrompt("chronicle_summary.md.tmpl", compactionSnap); err == nil && chroniclePrompt != "" {
+				summarizer.SetChronicleSummaryPrompt(chroniclePrompt)
+			} else {
+				log.Warn().Err(err).Msg("chronicle_summary.md.tmpl unreadable; chronicle window compression falls back to base summary prompt")
+			}
+			// Wire the compaction knobs (InPlaceSummaryWords*,
+			// EndOfDaySummary*, OldTurnsSummary*, LoreTarget*,
+			// MemoriseSentence*) so the summarizer user-message
+			// templates can reference {{ .Compaction.* }}
+			// instead of hard-coded magic numbers.
+			summarizerData := promptpkg.NewPromptData(compactionSnap, promptpkg.CharacterData{}, promptpkg.WorldData{})
+			summarizer.SetCompactionConfig(summarizerData.Compaction)
 		}
 	}
 

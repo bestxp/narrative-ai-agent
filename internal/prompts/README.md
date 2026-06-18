@@ -22,7 +22,14 @@ startup, not silently at runtime.
 | `character_memory_maintain.md.tmpl` | defrag character memory | same |
 | `npc_summary.md.tmpl` | defrag NPC profiles | same |
 | `lore_summary.md.tmpl` | defrag lore.md | same |
-| `memorise_summary.md.tmpl` | window compressor | same |
+| `chronicle_summary.md.tmpl` | chronicle window compressor system prompt | `usecase.Summarizer.SetChronicleSummaryPrompt` once at startup |
+| `summarizer_old_turns_user.md.tmpl` | OldTurns user message | `usecase.Summarizer.SummarizeOldTurns` per call |
+| `summarizer_inplace_user.md.tmpl` | InPlace user message | `usecase.Summarizer.SummarizeInPlace` per call |
+| `summarizer_eod_user.md.tmpl` | EndOfDay user message | `usecase.Summarizer.SummarizeEndOfDay` per call |
+| `summarizer_npc_user.md.tmpl` | NPC user message | `usecase.Summarizer.SummarizeNPC` per call |
+| `summarizer_lore_user.md.tmpl` | Lore user message | `usecase.Summarizer.SummarizeLore` per call |
+| `summarizer_chronicle_user.md.tmpl` | Chronicle user message | `usecase.Summarizer.SummarizeChronicle` per call |
+| `summarizer_charmem_user.md.tmpl` | CharacterMemory user message | `usecase.Summarizer.SummarizeCharacterMemory` per call |
 
 ## Data-bag
 
@@ -96,3 +103,50 @@ code, not data. There is no override-on-disk for
 the template files themselves; an operator
 experimenting with a prompt variant does so on a
 separate branch and ships a new binary.
+
+## Summarizer user-message templates
+
+The 7 summarizer methods in `internal/usecase/summarizer.go`
+template their **system prompt** through `Render` (one
+render at startup via `renderSummarizerPrompt`), and
+template their **user message** through the `Summarizer.renderSummary`
+helper (per-call) using the templates below. The Go side
+passes **only structured data** (`*NPCProfileData`,
+`*ChronicleData`, `*StateData`, `[]MessageData`) — never
+pre-rendered strings. The templates own ALL formatting: YAML
+emission from struct fields, markdown blocks, code fences,
+day padding, role labels, instruction lines. `projectMessages`,
+`projectChronicle`, `projectNPCProfile`, `projectState` are
+data-only projections (allowed on Go side — they produce
+data, not LLM-facing text).
+
+7 typed constructors replace the old 12-arg `NewSummarizerData`:
+`NewOldTurnsSummaryData`, `NewInPlaceSummaryData`,
+`NewEndOfDaySummaryData`, `NewNPCSummaryData`,
+`NewLoreSummaryData`, `NewChronicleSummaryData`,
+`NewCharacterMemorySummaryData`. Each takes only the fields
+its method needs.
+
+| File | Method | Struct fields used |
+|------|--------|--------------------|
+| `summarizer_old_turns_user.md.tmpl` | `SummarizeOldTurns` | `Messages` |
+| `summarizer_inplace_user.md.tmpl` | `SummarizeInPlace` | `World`, `Day`, `Messages` |
+| `summarizer_eod_user.md.tmpl` | `SummarizeEndOfDay` | `World`, `Day`, `Messages`, `State` |
+| `summarizer_npc_user.md.tmpl` | `SummarizeNPC` | `World`, `NPCDisplayName`, `NPCProfile`, `Chronicle` |
+| `summarizer_lore_user.md.tmpl` | `SummarizeLore` | `World`, `LoreBody`, `Chronicle`, `State` |
+| `summarizer_chronicle_user.md.tmpl` | `SummarizeChronicle` | `World`, `StartDay`, `EndDay`, `Chronicle` |
+| `summarizer_charmem_user.md.tmpl` | `SummarizeCharacterMemory` | `World`, `CharacterDisplayName`, `CharacterMemoryBody`, `Chronicle` |
+
+`LoreBody` and `CharacterMemoryBody` stay as raw strings
+because there is no ready-made structured type for those
+file formats (lore.md is markdown with `## header` +
+`- bullet`; memory.yaml is `data: [{section, values}]`
+emitted back as YAML by the LLM). When a dedicated
+structure is added later these can become pointers too.
+
+The summarizer user templates also reference
+`{{ .Compaction.* }}` knobs (InPlaceSummaryWordsMin/Max,
+EndOfDaySummaryWords*, OldTurnsSummaryTokens*,
+LoreTargetLines*, MemoriseSentence*) — these are wired via
+`Summarizer.SetCompactionConfig` at startup, so the
+templates never hard-code magic numbers.

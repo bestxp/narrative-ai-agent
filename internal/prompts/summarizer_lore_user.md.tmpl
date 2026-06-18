@@ -1,0 +1,27 @@
+{{ printf "# World: %s\n" .Summarizer.World -}}
+{{- printf "\n# Current lore.md\n```markdown\n%s\n```\n" .Summarizer.LoreBody -}}
+{{- if .Summarizer.Chronicle }}
+  {{- printf "\n# Полный chronicle (контекст хронологии, без обрезки)\n" -}}
+  {{- if .Summarizer.Chronicle.Periods }}periods:
+{{ range $pr := .Summarizer.Chronicle.Periods }}- from: {{ $pr.From }}
+  to: {{ $pr.To }}
+  memory: {{ $pr.Memory }}
+{{ end }}{{- else }}periods: []
+{{- end -}}
+  {{- if .Summarizer.Chronicle.Days }}days:
+{{ range $d := .Summarizer.Chronicle.Days }}  {{ $d.Number }}: {{ $d.Text }}
+{{ end }}{{- else }}days: {}
+{{- end -}}
+  {{- printf "\n```\n" }}
+{{- end -}}
+{{- if .Summarizer.State }}
+  {{- $st := .Summarizer.State -}}
+  {{- printf "\n# state на момент закрытия дня\n```\n# Состояние мира: %s\n" $st.World }}
+  {{- if $st.InFlight }}{{ printf "День %d (в процессе).\n" $st.Day }}{{- else }}{{ printf "День %d (завершён).\n" $st.Day }}{{- end -}}
+  {{- if $st.Location }}{{ printf "Локация: %s.\n" $st.Location }}{{- end -}}
+  {{- if $st.NPCs }}{{ printf "NPC: " }}{{ range $i, $npc := $st.NPCs }}{{ if $i }}, {{ end }}{{ $npc }}{{ end }}{{ printf ".\n" }}{{- end -}}
+  {{- if $st.Moment }}{{ printf "Момент: %s.\n" $st.Moment }}{{- end -}}
+  {{- if $st.Events }}{{ printf "\n## Хронология дня\n" }}{{ range $st.Events }}{{ printf "- %s\n" . }}{{ end }}{{- end -}}
+  {{- printf "\n```\n" }}
+{{- end -}}
+{{- printf "\nВерни сжатый lore.md. Только markdown, без обёрток." }}

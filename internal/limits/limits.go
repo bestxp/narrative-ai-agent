@@ -98,3 +98,71 @@ const ProtocolWindowDays = 2
 // the oldest day if either the day count OR this char
 // count grows past the cap.
 const ProtocolMaxChars = 5000
+
+// InPlaceSummaryWordsMin/Max is the word-count range
+// the in-place compaction prompt tells the LLM to aim
+// for when compressing the current day's dialog into
+// "## Хроника текущего дня". The range is soft; the
+// model is told "150-300 слов" verbatim via
+// {{ .Compaction.InPlaceSummaryWordsMin }}-{{ .Compaction.InPlaceSummaryWordsMax }}.
+const (
+	InPlaceSummaryWordsMin = 150
+	InPlaceSummaryWordsMax = 300
+)
+
+// EndOfDaySummaryWordsMin/Max is the word-count range
+// the end-of-day protocol prompt tells the LLM to aim
+// for when compressing a closed day into
+// "## Протокол прошедших дней". Referenced via
+// {{ .Compaction.EndOfDaySummaryWordsMin }}-{{ .Compaction.EndOfDaySummaryWordsMax }}.
+const (
+	EndOfDaySummaryWordsMin = 200
+	EndOfDaySummaryWordsMax = 400
+)
+
+// OldTurnsSummaryTokensMin/Max is the token-count
+// range the old-turns compaction prompt tells the LLM
+// to aim for when compressing dropped conversation
+// turns into a fact log appended to state.md. Referenced
+// via {{ .Compaction.OldTurnsSummaryTokensMin }}-{{ .Compaction.OldTurnsSummaryTokensMax }}.
+const (
+	OldTurnsSummaryTokensMin = 200
+	OldTurnsSummaryTokensMax = 400
+)
+
+// LoreTargetLinesMin/Max is the line-count range the
+// lore-summary prompt tells the LLM to compress lore.md
+// down to. The soft target is LoreTargetLines (250); the
+// range is the acceptable band around it. Referenced
+// via {{ .Compaction.LoreTargetLinesMin }}-{{ .Compaction.LoreTargetLinesMax }}.
+const (
+	LoreTargetLinesMin = 200
+	LoreTargetLinesMax = 300
+)
+
+// LoreSectionTargetMin/Max is the "примерно N-M секций"
+// range the lore-summary prompt mentions alongside the
+// line-count target. Referenced via
+// {{ .Compaction.LoreSectionTargetMin }}-{{ .Compaction.LoreSectionTargetMax }}.
+const (
+	LoreSectionTargetMin = 30
+	LoreSectionTargetMax = 50
+)
+
+// MemoriseSentenceMin/Max is the acceptable band around
+// MemoriseSentencesPer30Days (the soft target per 30-day
+// window). The memorise-summary prompt tells the LLM
+// that fewer than Min is "too thin" and more than Max is
+// "you didn't compress". Referenced via
+// {{ .Compaction.MemoriseSentenceMin }} / {{ .Compaction.MemoriseSentenceMax }}.
+const (
+	MemoriseSentenceMin = 6
+	MemoriseSentenceMax = 15
+)
+
+// NarrativeWordLimitFloor is the floor the narrative
+// prompt mentions as the lower bound of acceptable
+// narration length ("80-{{ .Narrative.WordLimit }} слов").
+// The ceiling is the operator-configured WordLimit; the
+// floor is a fixed hint that "under this is too short".
+const NarrativeWordLimitFloor = 80

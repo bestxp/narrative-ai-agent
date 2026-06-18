@@ -98,7 +98,12 @@ func getOrParse(name, src string) (*template.Template, error) {
 		Option("missingkey=error").
 		Funcs(template.FuncMap{
 			"add1": func(i int) int { return i + 1 },
+			"add":  func(a, b int) int { return a + b },
+			"sub":  func(a, b int) int { return a - b },
+			"mul":  func(a, b int) int { return a * b },
 			"join": strings.Join,
+			"trim": strings.TrimSpace,
+			"pad5": func(i int) string { return fmt.Sprintf("%05d", i) },
 		}).
 		Parse(src)
 	if err != nil {
@@ -116,4 +121,19 @@ func ResetTemplateCache() {
 		templateCache.Delete(k)
 		return true
 	})
+}
+
+// RenderSummarizerUser renders a summarizer user-message
+// template with ONLY the SummarizerData sub-struct
+// populated. Unlike Render (which takes a full PromptData
+// built from a NarrativeConfigSnapshot), this entry point
+// is for per-call user messages where the config-snapshot
+// is irrelevant — the user message depends on raw inputs
+// (world, day, file bodies, messages) that the Summarizer
+// collects at call time. The rest of PromptData is left
+// zero; the summarizer user templates only reference
+// {{ .Summarizer.* }}.
+func RenderSummarizerUser(name string, sum *SummarizerData) (string, error) {
+	data := PromptData{Summarizer: sum}
+	return Render(name, data)
 }

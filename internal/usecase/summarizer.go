@@ -3,13 +3,17 @@ package usecase
 import (
 	"context"
 	"fmt"
-	"strconv"
+	"sort"
 	"strings"
 
 	"github.com/rs/zerolog"
 
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/llm"
+	"github.com/bestxp/narrative-ai-agent/internal/chronicle"
+	"github.com/bestxp/narrative-ai-agent/internal/npcprofile"
+	"github.com/bestxp/narrative-ai-agent/internal/prompts"
 	"github.com/bestxp/narrative-ai-agent/internal/slowlog"
+	"github.com/bestxp/narrative-ai-agent/internal/usecase/tools/files"
 )
 
 // Summarizer compresses old conversation turns into a short
@@ -54,12 +58,28 @@ type Summarizer struct {
 	// call is the only thing skipped). Wired in
 	// main.go via SetCharacterMemoryPrompt.
 	characterMemoryPrompt string
-	slow                  *slowlog.Logger
-	log                   zerolog.Logger
+	// chronicleSummaryPrompt is the system prompt for
+	// SummarizeChronicle, loaded from
+	// prompts/chronicle_summary.md.tmpl. When empty,
+	// SummarizeChronicle falls back to s.prompt (the base
+	// summary.md prompt) for backward compat. Wired in
+	// main.go via SetChronicleSummaryPrompt.
+	chronicleSummaryPrompt string
+	slow                   *slowlog.Logger
+	log                    zerolog.Logger
 	// fallbackMode is true when this summarizer shares the
 	// narrative model. We use the same role config but with
 	// a small MaxTokens override to keep the response tight.
 	fallbackMode bool
+	// compaction is the config-derived compaction knobs
+	// (InPlaceSummaryWordsMin/Max, EndOfDay...,
+	// OldTurns..., LoreTargetLines..., Memorise...).
+	// Used by RenderSummarizerUser so the user-message
+	// templates can reference {{ .Compaction.* }} for
+	// the soft targets ("150-300 слов", "200-400 токенов",
+	// etc.) instead of hard-coded magic numbers. Wired
+	// in main.go via SetCompactionConfig.
+	compaction prompts.CompactionData
 }
 
 // NewSummarizer builds a Summarizer for the given role. The
@@ -141,7 +161,10 @@ func (s *Summarizer) SummarizeOldTurns(ctx context.Context, messages []llm.Messa
 	if len(messages) == 0 {
 		return SummaryResult{Source: "skipped"}, nil
 	}
-	userText := renderTurnsForSummary(messages)
+	userText, err := s.renderSummary("summarizer_old_turns_user.md.tmpl", prompts.NewOldTurnsSummaryData(projectMessages(messages)))
+	if err != nil {
+		return SummaryResult{}, fmt.Errorf("summarizer: render old-turns user: %w", err)
+	}
 	tokens := EstimateConversationTokens(messages, 0)
 	req := llm.ChatRequest{
 		Model: s.role.Model,
@@ -244,25 +267,10 @@ func (s *Summarizer) SummarizeNPC(ctx context.Context, displayName, world string
 		return res, nil
 	}
 
-	// Build the user prompt. The chronicle tail
-	// (last 20 days) gives the model the long-term
-	// context it needs to decide which facts are
-	// "key" vs "everyday". Without that context the
-	// model treats every fact as critical.
-	var userBuf strings.Builder
-	userBuf.WriteString("# World: ")
-	userBuf.WriteString(world)
-	userBuf.WriteString("\n\n# NPC: ")
-	userBuf.WriteString(displayName)
-	userBuf.WriteString("\n\n# Current profile (YAML)\n```yaml\n")
-	userBuf.Write(yamlBody)
-	userBuf.WriteString("\n```\n")
-	if len(chronicleTail) > 0 {
-		userBuf.WriteString("\n# Полный chronicle (контекст хронологии, без обрезки)\n```\n")
-		userBuf.Write(chronicleTail)
-		userBuf.WriteString("\n```\n")
+	userText, err := s.renderSummary("summarizer_npc_user.md.tmpl", prompts.NewNPCSummaryData(world, displayName, projectNPCProfile(yamlBody), projectChronicle(parseChronicleBytes(chronicleTail))))
+	if err != nil {
+		return res, fmt.Errorf("summarizer: render npc user: %w", err)
 	}
-	userBuf.WriteString("\nВерни сжатый YAML. Только YAML, без обёрток и комментариев.")
 
 	// Reuse the role config but bump MaxTokens — the
 	// compression output can be up to the input size
@@ -280,7 +288,7 @@ func (s *Summarizer) SummarizeNPC(ctx context.Context, displayName, world string
 		Model: role.Model,
 		Messages: []llm.Message{
 			{Role: "system", Content: s.prompt},
-			{Role: "user", Content: userBuf.String()},
+			{Role: "user", Content: userText},
 		},
 		Temperature: role.Temperature,
 		MaxTokens:   role.MaxTokens,
@@ -340,36 +348,124 @@ func stripYAMLFence(s string) string {
 	return strings.TrimSpace(s)
 }
 
-// renderTurnsForSummary flattens a slice of chat-completion
-// messages into a single user-role text buffer that the
-// summary role can consume. The format is intentionally
-// minimal — the summary role is told in its system prompt
-// what to look for, the body is just chronological feed.
-func renderTurnsForSummary(msgs []llm.Message) string {
-	var b strings.Builder
-	b.WriteString("# История диалога (хронологически)\n\n")
-	for i, m := range msgs {
-		switch m.Role {
-		case "user":
-			fmt.Fprintf(&b, "[Игрок]: %s\n", strings.TrimSpace(m.Content))
-		case "assistant":
-			body := strings.TrimSpace(m.Content)
-			if body == "" && len(m.ToolCalls) > 0 {
-				names := make([]string, 0, len(m.ToolCalls))
-				for _, tc := range m.ToolCalls {
-					names = append(names, tc.Function.Name)
-				}
-				body = "(вызвал tools: " + strings.Join(names, ",") + ")"
+// projectMessages converts []llm.Message into the
+// template-friendly []prompts.MessageData. This is data
+// projection only — all formatting ([Игрок]/[GM]/[→ tool]
+// labels, trimming, separator newlines) lives in the
+// summarizer_*_user.md.tmpl templates via {{ range }} and
+// the `trim`/`join` FuncMap helpers. The Go side never
+// touches LLM-facing text.
+func projectMessages(msgs []llm.Message) []prompts.MessageData {
+	out := make([]prompts.MessageData, 0, len(msgs))
+	for _, m := range msgs {
+		var toolCalls []string
+		if len(m.ToolCalls) > 0 {
+			toolCalls = make([]string, 0, len(m.ToolCalls))
+			for _, tc := range m.ToolCalls {
+				toolCalls = append(toolCalls, tc.Function.Name)
 			}
-			fmt.Fprintf(&b, "[GM]: %s\n", body)
-		case "tool":
-			fmt.Fprintf(&b, "  [→ %s]: %s\n", m.Name, strings.TrimSpace(m.Content))
 		}
-		if i < len(msgs)-1 {
-			b.WriteString("\n")
+		out = append(out, prompts.MessageData{
+			Role:      m.Role,
+			Content:   m.Content,
+			Name:      m.Name,
+			ToolCalls: toolCalls,
+		})
+	}
+	return out
+}
+
+// projectChronicle converts chronicle.Chronicle into the
+// template-friendly *prompts.ChronicleData. Data-only
+// projection: no formatting, no markdown. Returns nil for
+// a nil input so the template's {{ if .Chronicle }} guard
+// skips the block.
+func projectChronicle(c *chronicle.Chronicle) *prompts.ChronicleData {
+	if c == nil {
+		return nil
+	}
+	out := &prompts.ChronicleData{
+		Periods: make([]prompts.ChroniclePeriodData, len(c.Periods)),
+	}
+	for i, p := range c.Periods {
+		out.Periods[i] = prompts.ChroniclePeriodData{
+			From:   p.From,
+			To:     p.To,
+			Memory: p.Memory,
 		}
 	}
-	return b.String()
+	for n, txt := range c.Days {
+		out.Days = append(out.Days, prompts.ChronicleDayData{Number: n, Text: txt})
+	}
+	sort.Slice(out.Days, func(i, j int) bool { return out.Days[i].Number < out.Days[j].Number })
+	return out
+}
+
+// parseChronicleBytes parses a raw YAML chronicle body
+// into *chronicle.Chronicle. Returns nil on empty input or
+// parse error — the caller's template guard skips the
+// block. Data-only.
+func parseChronicleBytes(body []byte) *chronicle.Chronicle {
+	if len(body) == 0 {
+		return nil
+	}
+	c, err := chronicle.Load(string(body))
+	if err != nil {
+		return nil
+	}
+	return &c
+}
+
+// projectNPCProfile parses a YAML body into
+// npcprofile.Profile and projects it into the
+// template-friendly *prompts.NPCProfileData. Data-only:
+// the template renders the YAML/markdown from the struct.
+// Returns nil if the body fails to parse — the caller
+// should log and skip in that case.
+func projectNPCProfile(yamlBody []byte) *prompts.NPCProfileData {
+	if len(yamlBody) == 0 {
+		return nil
+	}
+	p, err := npcprofile.Load(string(yamlBody))
+	if err != nil {
+		return nil
+	}
+	rows := make([]prompts.NPCRelationRow, 0, len(p.RelationsNPCs))
+	for _, r := range p.RelationsNPCs {
+		rows = append(rows, prompts.NPCRelationRow{
+			Target: strings.TrimSpace(r.Target),
+			Note:   strings.TrimSpace(r.Note),
+		})
+	}
+	return prompts.NewNPCProfileDataFromFields(
+		strings.TrimSpace(p.DisplayName),
+		strings.TrimSpace(p.Temperament),
+		strings.TrimSpace(p.RelationsGG),
+		rows,
+		p.Abilities,
+		p.PersonalMemory,
+		p.CriticalKnowledge,
+		p.Nicknames,
+		strings.TrimSpace(p.CurrentStatus),
+		strings.TrimSpace(p.LastUpdate),
+	)
+}
+
+// projectState converts a raw state.md body into the
+// template-friendly *prompts.StateData via the existing
+// ParseStateMD helper. Data-only: the template renders
+// the markdown from the struct. Returns nil if parsing
+// yields nothing useful.
+func projectState(stateMD string) *prompts.StateData {
+	if strings.TrimSpace(stateMD) == "" {
+		return nil
+	}
+	snap := files.ParseStateMD(stateMD)
+	return prompts.NewStateData(
+		snap.World, snap.Day, snap.InFlight,
+		snap.Location, snap.Moment,
+		snap.NPCs, snap.Events,
+	)
 }
 
 // LoreSummaryResult is what SummarizeLore returns. Body
@@ -407,23 +503,10 @@ func (s *Summarizer) SummarizeLore(ctx context.Context, world string, loreBody, 
 		return res, nil
 	}
 
-	var userBuf strings.Builder
-	userBuf.WriteString("# World: ")
-	userBuf.WriteString(world)
-	userBuf.WriteString("\n\n# Current lore.md\n```markdown\n")
-	userBuf.Write(loreBody)
-	userBuf.WriteString("\n```\n")
-	if len(chronicleTail) > 0 {
-		userBuf.WriteString("\n# Полный chronicle (контекст хронологии, без обрезки)\n```\n")
-		userBuf.Write(chronicleTail)
-		userBuf.WriteString("\n```\n")
+	userText, err := s.renderSummary("summarizer_lore_user.md.tmpl", prompts.NewLoreSummaryData(world, string(loreBody), projectChronicle(parseChronicleBytes(chronicleTail)), projectState(string(stateMD))))
+	if err != nil {
+		return res, fmt.Errorf("summarizer: render lore user: %w", err)
 	}
-	if len(stateMD) > 0 {
-		userBuf.WriteString("\n# state.md (текущий момент)\n```\n")
-		userBuf.Write(stateMD)
-		userBuf.WriteString("\n```\n")
-	}
-	userBuf.WriteString("\nВерни сжатый lore.md. Только markdown, без обёрток.")
 
 	role := s.role
 	if role.MaxTokens < 4000 {
@@ -437,7 +520,7 @@ func (s *Summarizer) SummarizeLore(ctx context.Context, world string, loreBody, 
 		Model: role.Model,
 		Messages: []llm.Message{
 			{Role: "system", Content: s.prompt},
-			{Role: "user", Content: userBuf.String()},
+			{Role: "user", Content: userText},
 		},
 		Temperature: role.Temperature,
 		MaxTokens:   role.MaxTokens,
@@ -517,20 +600,10 @@ func (s *Summarizer) SummarizeCharacterMemory(ctx context.Context, world, charac
 		return res, nil
 	}
 
-	var userBuf strings.Builder
-	userBuf.WriteString("# World: ")
-	userBuf.WriteString(world)
-	userBuf.WriteString("\n\n# Character: ")
-	userBuf.WriteString(character)
-	userBuf.WriteString("\n\n# Current memory.yaml\n```yaml\n")
-	userBuf.Write(memoryBody)
-	userBuf.WriteString("\n```\n")
-	if len(chronicleTail) > 0 {
-		userBuf.WriteString("\n# Полный chronicle (контекст хронологии, без обрезки)\n```\n")
-		userBuf.Write(chronicleTail)
-		userBuf.WriteString("\n```\n")
+	userText, err := s.renderSummary("summarizer_charmem_user.md.tmpl", prompts.NewCharacterMemorySummaryData(world, character, string(memoryBody), projectChronicle(parseChronicleBytes(chronicleTail))))
+	if err != nil {
+		return res, fmt.Errorf("summarizer: render charmem user: %w", err)
 	}
-	userBuf.WriteString("\nВерни сжатый memory.yaml. Только YAML, без обёрток и комментариев.")
 
 	role := s.role
 	if role.MaxTokens < 4000 {
@@ -540,11 +613,18 @@ func (s *Summarizer) SummarizeCharacterMemory(ctx context.Context, world, charac
 		role.Temperature = 0.2
 	}
 
+	// Use the dedicated chronicle prompt when wired,
+	// otherwise fall back to the base summary prompt.
+	chronicleSys := s.chronicleSummaryPrompt
+	if chronicleSys == "" {
+		chronicleSys = s.prompt
+	}
+
 	req := llm.ChatRequest{
 		Model: role.Model,
 		Messages: []llm.Message{
-			{Role: "system", Content: s.characterMemoryPrompt},
-			{Role: "user", Content: userBuf.String()},
+			{Role: "system", Content: chronicleSys},
+			{Role: "user", Content: userText},
 		},
 		Temperature: role.Temperature,
 		MaxTokens:   role.MaxTokens,
@@ -635,20 +715,10 @@ func (s *Summarizer) SummarizeChronicle(ctx context.Context, world string, start
 		return res, fmt.Errorf("summarizer: chronicle window invalid: start=%d end=%d", startDay, endDay)
 	}
 
-	var userBuf strings.Builder
-	userBuf.WriteString("# World: ")
-	userBuf.WriteString(world)
-	userBuf.WriteString("\n\n# Сжимаемое окно: д")
-	userBuf.WriteString(fmt.Sprintf("%05d", startDay))
-	userBuf.WriteString(" — д")
-	userBuf.WriteString(fmt.Sprintf("%05d", endDay))
-	userBuf.WriteString(" (")
-	userBuf.WriteString(strconv.Itoa(endDay - startDay + 1))
-	userBuf.WriteString(" дней)\n")
-	userBuf.WriteString("\n# Полный chronicle.yaml (используй для контекста и дедупликации пересечений с предыдущими сводками)\n```\n")
-	userBuf.WriteString(fullChronicle)
-	userBuf.WriteString("\n```\n")
-	userBuf.WriteString("\nВерни ОДИН абзац distilled essence. Без обёрток, без markdown, без префикса.")
+	userText, err := s.renderSummary("summarizer_chronicle_user.md.tmpl", prompts.NewChronicleSummaryData(world, startDay, endDay, projectChronicle(parseChronicleBytes([]byte(fullChronicle)))))
+	if err != nil {
+		return res, fmt.Errorf("summarizer: render chronicle user: %w", err)
+	}
 
 	role := s.role
 	if role.MaxTokens < 2000 {
@@ -662,7 +732,7 @@ func (s *Summarizer) SummarizeChronicle(ctx context.Context, world string, start
 		Model: role.Model,
 		Messages: []llm.Message{
 			{Role: "system", Content: s.prompt},
-			{Role: "user", Content: userBuf.String()},
+			{Role: "user", Content: userText},
 		},
 		Temperature: role.Temperature,
 		MaxTokens:   role.MaxTokens,
@@ -728,6 +798,41 @@ func (s *Summarizer) SetCharacterMemoryPrompt(p string) {
 	s.characterMemoryPrompt = p
 }
 
+// SetChronicleSummaryPrompt wires the chronicle-window
+// summarizer system prompt (chronicle_summary.md.tmpl).
+// Called once at construction time from main.go. When not
+// wired, SummarizeChronicle falls back to the base
+// summary prompt (s.prompt) — this preserves backward
+// compat for tests that do not load the new template.
+func (s *Summarizer) SetChronicleSummaryPrompt(p string) {
+	s.chronicleSummaryPrompt = p
+}
+
+// SetCompactionConfig wires the config-derived compaction
+// knobs (InPlaceSummaryWordsMin/Max,
+// EndOfDaySummaryWordsMin/Max, OldTurnsSummaryTokensMin/Max,
+// LoreTargetLinesMin/Max, LoreSectionTargetMin/Max,
+// MemoriseSentenceMin/Max, plus the existing limits) so the
+// summarizer user-message templates can reference
+// {{ .Compaction.* }} instead of hard-coded magic numbers.
+// Called once at construction time from main.go after
+// NewSummarizer / NewFallbackSummarizer.
+func (s *Summarizer) SetCompactionConfig(c prompts.CompactionData) {
+	s.compaction = c
+}
+
+// renderSummary renders a summarizer user-message template
+// with the Summarizer's compaction config wired in, so the
+// template can reference {{ .Compaction.* }} for the soft
+// targets. Shorthand for
+// `prompts.RenderSummarizerUser` + config injection.
+func (s *Summarizer) renderSummary(name string, sum *prompts.SummarizerData) (string, error) {
+	return prompts.Render(name, prompts.PromptData{
+		Compaction: s.compaction,
+		Summarizer: sum,
+	})
+}
+
 // SummarizeInPlace compresses the current in-memory
 // conversation of day N into a 150-300 word narrative
 // that will be appended to index:1 as "## Хроника
@@ -751,18 +856,10 @@ func (s *Summarizer) SummarizeInPlace(ctx context.Context, world string, day int
 		return res, nil
 	}
 
-	userText := renderTurnsForSummary(messages)
-	var userBuf strings.Builder
-	userBuf.WriteString("# World: ")
-	userBuf.WriteString(world)
-	userBuf.WriteString("\n\n# Текущий день: д")
-	userBuf.WriteString(fmt.Sprintf("%05d", day))
-	userBuf.WriteString("\n\n# Диалог текущего дня (")
-	userBuf.WriteString(strconv.Itoa(len(messages)))
-	userBuf.WriteString(" сообщений)\n```\n")
-	userBuf.WriteString(userText)
-	userBuf.WriteString("\n```\n")
-	userBuf.WriteString("\nВерни ОДНУ запись [События текущего дня Д<N>] ... 150-300 слов.")
+	userText, err := s.renderSummary("summarizer_inplace_user.md.tmpl", prompts.NewInPlaceSummaryData(world, day, projectMessages(messages)))
+	if err != nil {
+		return res, fmt.Errorf("summarizer: render in-place user: %w", err)
+	}
 
 	role := s.role
 	if role.MaxTokens < 2000 {
@@ -776,7 +873,7 @@ func (s *Summarizer) SummarizeInPlace(ctx context.Context, world string, day int
 		Model: role.Model,
 		Messages: []llm.Message{
 			{Role: "system", Content: s.compactionInPlacePrompt},
-			{Role: "user", Content: userBuf.String()},
+			{Role: "user", Content: userText},
 		},
 		Temperature: role.Temperature,
 		MaxTokens:   role.MaxTokens,
@@ -838,23 +935,10 @@ func (s *Summarizer) SummarizeEndOfDay(ctx context.Context, world string, day in
 		return res, nil
 	}
 
-	userText := renderTurnsForSummary(messages)
-	var userBuf strings.Builder
-	userBuf.WriteString("# World: ")
-	userBuf.WriteString(world)
-	userBuf.WriteString("\n\n# Закрываемый день: д")
-	userBuf.WriteString(fmt.Sprintf("%05d", day))
-	userBuf.WriteString("\n\n# Диалог дня (")
-	userBuf.WriteString(strconv.Itoa(len(messages)))
-	userBuf.WriteString(" сообщений)\n```\n")
-	userBuf.WriteString(userText)
-	userBuf.WriteString("\n```\n")
-	if stateMD != "" {
-		userBuf.WriteString("\n# state.md на момент закрытия дня\n```\n")
-		userBuf.WriteString(stateMD)
-		userBuf.WriteString("\n```\n")
+	userText, err := s.renderSummary("summarizer_eod_user.md.tmpl", prompts.NewEndOfDaySummaryData(world, day, projectMessages(messages), projectState(stateMD)))
+	if err != nil {
+		return res, fmt.Errorf("summarizer: render eod user: %w", err)
 	}
-	userBuf.WriteString("\nВерни ОДНУ запись [События прошедшего дня Д<N>] ... 200-400 слов.")
 
 	role := s.role
 	if role.MaxTokens < 3000 {
@@ -868,7 +952,7 @@ func (s *Summarizer) SummarizeEndOfDay(ctx context.Context, world string, day in
 		Model: role.Model,
 		Messages: []llm.Message{
 			{Role: "system", Content: s.endOfDayPrompt},
-			{Role: "user", Content: userBuf.String()},
+			{Role: "user", Content: userText},
 		},
 		Temperature: role.Temperature,
 		MaxTokens:   role.MaxTokens,
