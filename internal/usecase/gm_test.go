@@ -868,8 +868,8 @@ func TestSearchNPC_ResolvesDisplayName(t *testing.T) {
 	// the tools (so the registry can find him).
 	require.NoError(t, g.fs.WriteRawAtomic("worlds/naruto/characters/kakashi.yaml",
 		"display_name: Какаши-сенсей\nfile_slug: kakashi\ntemperament: хладнокровный, методичный\ncurrent_status: на тренировочной площадке\n"))
-	require.NoError(t, g.fs.WriteRawAtomic("worlds/naruto/characters.md",
-		"# NPC: naruto\n| Имя | Файл | Прозвища |\n|-----|------|----------|\n| Какаши-сенсей | kakashi.yaml | Какаши |\n"))
+	require.NoError(t, g.fs.WriteRawAtomic("worlds/naruto/characters.yaml",
+		"npcs:\n  - slug: kakashi\n    display_name: Какаши-сенсей\n    nicknames: [Какаши]\n"))
 
 	res, errStr := g.dispatchOneTool(context.Background(), llm.ToolCall{
 		ID:   "t1",

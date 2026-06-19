@@ -36,7 +36,9 @@ func (e *fsErr) Error() string { return "fs: not found: " + e.rel }
 
 // TestLoadFromYAML covers the canonical case: a
 // world already has characters.yaml and the
-// registry loads it as-is, no bootstrap.
+// registry loads it as-is. There is no characters.md
+// fallback — the canonical roster is characters.yaml
+// and nothing else.
 func TestLoadFromYAML(t *testing.T) {
 	fs := &fakeFS{files: map[string]string{
 		"worlds/naruto/characters.yaml": `npcs:
@@ -59,49 +61,45 @@ func TestLoadFromYAML(t *testing.T) {
 	}
 }
 
-// TestBootstrapFromLegacyMarkdown covers the
-// migration path: an operator who has been
-// running on characters.md gets a characters.yaml
-// written on the first load. We do not delete the
-// markdown file — the operator may still want it
-// for human reference.
-func TestBootstrapFromLegacyMarkdown(t *testing.T) {
+// TestLoadEmpty covers a fresh world with no
+// characters.yaml yet: Load returns an empty
+// registry without an error. The first create_npc
+// call will seed it.
+func TestLoadEmpty(t *testing.T) {
+	fs := &fakeFS{files: map[string]string{}}
+	r, err := Load(fs, "naruto")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.entries) != 0 {
+		t.Fatalf("entries=%d, want 0", len(r.entries))
+	}
+}
+
+// TestNoMarkdownFallback ensures the loader does
+// NOT silently pick up a characters.md file: if the
+// canonical YAML is missing the result is an empty
+// registry. The legacy markdown path was removed
+// because it produced duplicate-NPC cases where one
+// registry listed a character that the other did
+// not.
+func TestNoMarkdownFallback(t *testing.T) {
 	fs := &fakeFS{files: map[string]string{
-		"worlds/naruto/characters.md": `# NPC: Наруто
+		"worlds/naruto/characters.md": `# NPC: naruto
 | Имя | Файл | Прозвища |
 |-----|------|----------|
-| Хината Хьюга | characters/hinata |  |
-| Наруто Узумаки | characters/naruto_uzumaki | Демон-лис, Блондинка |
-| Ирука-сенсей | characters/iruka | сенсей |
+| Хината Хьюга | hinata |  |
 `,
 	}}
 	r, err := Load(fs, "naruto")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(r.entries) != 3 {
-		t.Fatalf("entries=%d, want 3", len(r.entries))
+	if len(r.entries) != 0 {
+		t.Fatalf("entries=%d, want 0 (markdown must be ignored)", len(r.entries))
 	}
-	// The yaml file should have been written.
-	if _, ok := fs.files["worlds/naruto/characters.yaml"]; !ok {
-		t.Fatal("expected characters.yaml to be created on first load")
-	}
-	// Substring lookup (model writes "Хината",
-	// file has "Хината Хьюга") must resolve.
-	entry, ok := r.Lookup("Хината")
-	if !ok {
-		t.Fatal("substring lookup must hit")
-	}
-	if entry.Slug != "hinata" {
-		t.Errorf("slug = %q, want hinata", entry.Slug)
-	}
-	// Nickname lookup.
-	entry, ok = r.Lookup("сенсей")
-	if !ok {
-		t.Fatal("nickname lookup must hit")
-	}
-	if entry.Slug != "iruka" {
-		t.Errorf("nickname slug = %q, want iruka", entry.Slug)
+	if _, ok := fs.files["worlds/naruto/characters.yaml"]; ok {
+		t.Fatal("characters.yaml must NOT be created from a characters.md side-channel")
 	}
 }
 

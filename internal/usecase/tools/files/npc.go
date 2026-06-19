@@ -2,11 +2,11 @@ package files
 
 import (
 	"errors"
-	"regexp"
 	"strings"
 
 	"github.com/rs/zerolog"
 
+	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
 	"github.com/bestxp/narrative-ai-agent/internal/domain"
 	"github.com/bestxp/narrative-ai-agent/internal/npcprofile"
 	"github.com/bestxp/narrative-ai-agent/internal/repository/api"
@@ -20,19 +20,22 @@ import (
 // the knowledge-isolation helper that filters a
 // candidate reply down to what the active NPC may say.
 //
-// All persistent reads and writes go through
-// *api.Repositories (NPCProfileRepository for the
-// per-NPC YAML, NPCRegistryRepository for the
-// worlds/<w>/characters.md roster table).
+// Per-NPC files live under worlds/<w>/characters/<slug>.yaml.
+// The roster (worlds/<w>/characters.yaml) is read and
+// written through the worldregistry package — see
+// that package for the lookup rules (exact / nickname /
+// unambiguous substring).
 type NPC struct {
 	repos *api.Repositories
+	fs    *storage.FileStore
 	log   zerolog.Logger
 	slow  *slowlog.Logger
 }
 
-func newNPC(log zerolog.Logger, slow *slowlog.Logger, repos *api.Repositories) *NPC {
+func newNPC(log zerolog.Logger, slow *slowlog.Logger, repos *api.Repositories, fs *storage.FileStore) *NPC {
 	return &NPC{
 		repos: repos,
+		fs:    fs,
 		log:   log.With().Str("component", "npc").Logger(),
 		slow:  slow,
 	}
@@ -78,10 +81,46 @@ func sanitizeName(s string) string {
 	return out
 }
 
+// loadRegistry reads characters.yaml for world through the
+// worldregistry package. On any parse or read error it logs
+// and returns an empty registry — Load / UpdateNPC then
+// surface "npc not found" to the model, which is the
+// correct recovery path (model creates the NPC and retries).
+func (n *NPC) loadRegistry(world string) *worldregistry.Registry {
+	if n.fs == nil || world == "" {
+		return &worldregistry.Registry{}
+	}
+	r, err := worldregistry.Load(n.fs, world)
+	if err != nil {
+		n.log.Warn().Err(err).Str("world", world).Msg("npc: registry load failed; treating as empty")
+		return &worldregistry.Registry{}
+	}
+	return r
+}
+
+// saveRegistry persists the registry through the file
+// store. Save errors are logged; the caller may still
+// return success on the per-NPC file write so the rest
+// of create_npc proceeds (a stale roster is recoverable
+// on the next load).
+func (n *NPC) saveRegistry(world string, r *worldregistry.Registry) {
+	if n.fs == nil || world == "" {
+		return
+	}
+	body, err := r.Save()
+	if err != nil {
+		n.log.Warn().Err(err).Str("world", world).Msg("npc: registry marshal failed")
+		return
+	}
+	if err := n.fs.WriteRawAtomic("worlds/"+world+"/characters.yaml", body); err != nil {
+		n.log.Warn().Err(err).Str("world", world).Msg("npc: registry write failed")
+	}
+}
+
 // Create writes a new NPC profile to the world's
-// characters directory via repos.NPCProfile + the
-// registry. Returns ErrNPCExists if the slug is
-// already taken.
+// characters directory via repos.NPCProfile and adds
+// the entry to the YAML registry (characters.yaml).
+// Returns ErrNPCExists if the slug is already taken.
 func (n *NPC) Create(world string, p tools.NPCProfile) error {
 	slug := sanitizeName(p.DisplayName)
 	if slug == "" {
@@ -151,10 +190,25 @@ func (n *NPC) Create(world string, p tools.NPCProfile) error {
 		return err
 	}
 
-	// Append to the registry.
-	if err := n.repos.NPCRegistry.AppendEntry(world, slug, profile.DisplayName, profile.Nicknames); err != nil {
-		n.log.Warn().Err(err).Str("slug", slug).Msg("create_npc: registry append failed")
+	// Append to the YAML registry. We dedup on slug via
+	// Registry.Add (returns error on duplicate) so a
+	// stale per-NPC file + missing registry row (the
+	// case that creates "npc: file not found" today)
+	// is self-healing: create_npc just refreshes the
+	// registry row.
+	r := n.loadRegistry(world)
+	if err := r.Add(worldregistry.Entry{
+		Slug:        slug,
+		DisplayName: profile.DisplayName,
+		Nicknames:   profile.Nicknames,
+	}); err != nil {
+		// Slug already in registry (stale row from a
+		// prior run): reload after Add fails so the
+		// saved file still has the latest entry
+		// shape, then proceed.
+		n.log.Debug().Err(err).Str("slug", slug).Msg("create_npc: registry.Add duplicate; refreshing")
 	}
+	n.saveRegistry(world, r)
 
 	n.log.Info().
 		Str("world", world).
@@ -176,15 +230,14 @@ func (n *NPC) Load(world, npc string) (string, error) {
 // (every section); LODCompact = BuildCompact (drop
 // big arrays); LODOneLine = BuildOneLine (name +
 // 1-sentence temperament + status).
+//
+// The npc argument may be a slug, a display name, or a
+// nickname; the registry's Lookup handles the resolution
+// (exact match preferred, then unambiguous substring).
 func (n *NPC) LoadLOD(world, npc string, lod tools.NPCLOD) (string, error) {
-	slug := npc
-	// If the caller passed a display name, resolve to slug.
-	if !looksLikeSlug(npc) {
-		resolved, ok := n.findNPCSlug(world, npc)
-		if !ok {
-			return "", ErrNPCNotFound
-		}
-		slug = resolved
+	slug, err := n.resolveSlug(world, npc)
+	if err != nil {
+		return "", err
 	}
 	profile, err := n.repos.NPCProfile.Load(world, slug)
 	if err != nil {
@@ -215,13 +268,9 @@ func (n *NPC) LoadLOD(world, npc string, lod tools.NPCLOD) (string, error) {
 // UpdateNPC appends fresh facts to an existing NPC
 // profile via repos.NPCProfile.UpdateSection.
 func (n *NPC) UpdateNPC(world, npc, section, appendText string) error {
-	slug := npc
-	if !looksLikeSlug(npc) {
-		resolved, ok := n.findNPCSlug(world, npc)
-		if !ok {
-			return ErrNPCNotFound
-		}
-		slug = resolved
+	slug, err := n.resolveSlug(world, npc)
+	if err != nil {
+		return err
 	}
 	ok, err := n.repos.NPCProfile.UpdateSection(world, slug, section, appendText)
 	if err != nil {
@@ -268,99 +317,40 @@ func (n *NPC) Search(world, query string) (result *SearchResult, err error) {
 			err = nil
 		}
 	}()
-	slug, display, ok := n.findNPCSlugByQuery(world, query)
+	r := n.loadRegistry(world)
+	entry, ok := r.Lookup(query)
 	if !ok {
 		return nil, nil
 	}
-	profile, err := n.repos.NPCProfile.Load(world, slug)
+	profile, err := n.repos.NPCProfile.Load(world, entry.Slug)
 	if err != nil {
 		return nil, ErrNPCNotFound
 	}
 	return &SearchResult{
-		DisplayName:   display,
-		Slug:          slug,
+		DisplayName:   entry.DisplayName,
+		Slug:          entry.Slug,
 		Temperament:   profile.Temperament,
 		CurrentStatus: profile.CurrentStatus,
 		Source:        "yaml",
 	}, nil
 }
 
-// findNPCSlug resolves a display name to the file slug
-// via the NPC registry. Returns ("", "", false) when
-// the name is not found.
-func (n *NPC) findNPCSlug(world, displayName string) (string, bool) {
-	slug, _, ok := n.findNPCSlugByQuery(world, displayName)
-	return slug, ok
-}
-
-// findNPCSlugByQuery walks the registry table looking
-// for a row whose display name or nickname matches the
-// query (case-insensitive).
-func (n *NPC) findNPCSlugByQuery(world, query string) (slug, display string, ok bool) {
-	body, err := n.repos.NPCRegistry.Load(world)
-	if err != nil || body == "" {
-		return "", "", false
+// resolveSlug turns the model's NPC reference (display
+// name, nickname, or slug) into the on-disk slug via the
+// registry. Returns ErrNPCNotFound when the registry has
+// no match — the GM surfaces this to the model as a
+// prompt to call create_npc first.
+//
+// The model occasionally writes the slug directly
+// ("naruto_uzumaki"); the worldregistry.Lookup accepts
+// that case too.
+func (n *NPC) resolveSlug(world, name string) (string, error) {
+	r := n.loadRegistry(world)
+	entry, ok := r.Lookup(name)
+	if !ok {
+		return "", ErrNPCNotFound
 	}
-	query = strings.ToLower(strings.TrimSpace(query))
-	for _, line := range strings.Split(body, "\n") {
-		if !strings.HasPrefix(line, "|") {
-			continue
-		}
-		dn, sl, nicks, found := parseRegistryRow(line)
-		if !found {
-			continue
-		}
-		if strings.ToLower(dn) == query {
-			return sl, dn, true
-		}
-		for _, nick := range nicks {
-			if strings.ToLower(nick) == query {
-				return sl, dn, true
-			}
-		}
-	}
-	return "", "", false
-}
-
-// parseRegistryRow parses one row of the NPC registry
-// markdown table. Returns (displayName, slug, nicknames, ok).
-func parseRegistryRow(line string) (displayName, slug string, nicknames []string, ok bool) {
-	m := registryRowRe.FindStringSubmatch(line)
-	if m == nil {
-		return "", "", nil, false
-	}
-	displayName = strings.TrimSpace(m[1])
-	slugFile := strings.TrimSpace(m[2])
-	if strings.HasSuffix(slugFile, ".yaml") {
-		slug = strings.TrimSuffix(slugFile, ".yaml")
-	} else {
-		slug = slugFile
-	}
-	nickCol := strings.TrimSpace(m[3])
-	if nickCol != "" {
-		for _, nck := range strings.Split(nickCol, ",") {
-			if v := strings.TrimSpace(nck); v != "" {
-				nicknames = append(nicknames, v)
-			}
-		}
-	}
-	return displayName, slug, nicknames, true
-}
-
-// registryRowRe matches the per-NPC row written by
-// the registry's AppendEntry.
-var registryRowRe = regexp.MustCompile(`^\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|\s*([^|]*?)\s*\|$`)
-
-// looksLikeSlug returns true if the string looks like
-// a file slug (lowercase, hyphens, no spaces) rather
-// than a display name (mixed case, spaces).
-func looksLikeSlug(s string) bool {
-	if s == "" {
-		return false
-	}
-	hasSpace := strings.ContainsAny(s, " \t")
-	hasUpper := s != strings.ToLower(s)
-	return !hasSpace && !hasUpper
+	return entry.Slug, nil
 }
 
 // splitRelationText splits "Target: note" on the
@@ -374,13 +364,3 @@ func splitRelationText(s string) (string, string) {
 	}
 	return strings.TrimSpace(s), ""
 }
-
-// Ensure the NPC struct satisfies the NPCRegistry
-// consumer contract (registry rows are parsed via
-// parseRegistryRow, which mirrors the yaml
-// NPCRegistryYaml.AppendEntry format).
-var _ = worldregistry.Registry{}
-
-// Reference unused imports that are part of the public
-// interface but used only in edge-case paths.
-var _ = domain.Transliterate

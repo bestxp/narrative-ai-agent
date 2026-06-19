@@ -17,11 +17,13 @@
 // deterministic regardless of how the operator
 // chose to spell the file.
 //
-// The legacy `characters.md` table is honoured on
-// read: if characters.yaml is missing the loader
-// parses the markdown table, writes a fresh
-// characters.yaml, and returns the parsed data.
-// The operator never has to migrate by hand.
+// Earlier revisions kept a `characters.md` fallback
+// for worlds where the operator had hand-edited a
+// markdown table. That fallback was removed: it
+// produced duplicate-NPC cases where one registry
+// listed a character that the other did not. The
+// registry is now characters.yaml and nothing else;
+// create_npc is the only path that writes to it.
 //
 // If a name is not in the registry, Lookup returns
 // (slug="", ok=false) — the caller (UpdateNPC /
@@ -80,12 +82,13 @@ type registryFile struct {
 	NPCs []Entry `yaml:"npcs"`
 }
 
-// Load reads the registry for world from fs. If
-// the YAML file is missing, it tries to bootstrap
-// from the legacy characters.md table in the same
-// directory; if that is also missing it returns an
-// empty Registry (the first NPC to be created
-// will seed it).
+// Load reads the registry for world from fs.
+//
+// Only characters.yaml is read. There is no
+// characters.md fallback: the canonical roster is
+// one file, owned by this package, and an empty
+// world returns an empty Registry (the first NPC
+// to be created will seed it).
 func Load(fs interface {
 	ReadRaw(rel string) (string, error)
 	WriteRawAtomic(rel, body string) error
@@ -96,38 +99,16 @@ func Load(fs interface {
 	}
 	rel := "worlds/" + world + "/characters.yaml"
 	body, err := fs.ReadRaw(rel)
-	if err == nil && strings.TrimSpace(body) != "" {
-		var f registryFile
-		if uerr := yaml.Unmarshal([]byte(body), &f); uerr != nil {
-			return nil, fmt.Errorf("worldregistry: parse %s: %w", rel, uerr)
-		}
-		r := &Registry{entries: append([]Entry(nil), f.NPCs...)}
-		r.sort()
-		return r, nil
+	if err != nil || strings.TrimSpace(body) == "" {
+		return &Registry{}, nil
 	}
-	// Bootstrap from legacy characters.md if it
-	// exists. The operator's manual edits live
-	// there; we copy them into the new YAML and
-	// from now on write to the YAML.
-	mdRel := "worlds/" + world + "/characters.md"
-	if mdBody, mderr := fs.ReadRaw(mdRel); mderr == nil && strings.TrimSpace(mdBody) != "" {
-		r, perr := parseLegacyMarkdown(mdBody)
-		if perr != nil {
-			return nil, fmt.Errorf("worldregistry: parse %s: %w", mdRel, perr)
-		}
-		// Persist the migrated registry so the
-		// next read goes through the YAML path.
-		// If the write fails the in-memory
-		// registry is still usable for the
-		// current call; we just surface the
-		// error to the caller via the empty
-		// second return.
-		if body, err := r.Save(); err == nil {
-			_ = fs.WriteRawAtomic(rel, body)
-		}
-		return r, nil
+	var f registryFile
+	if uerr := yaml.Unmarshal([]byte(body), &f); uerr != nil {
+		return nil, fmt.Errorf("worldregistry: parse %s: %w", rel, uerr)
 	}
-	return &Registry{}, nil
+	r := &Registry{entries: append([]Entry(nil), f.NPCs...)}
+	r.sort()
+	return r, nil
 }
 
 // Save serialises the registry to YAML. The output
@@ -264,96 +245,4 @@ func matchAnyField(e Entry, want string) bool {
 		}
 	}
 	return false
-}
-
-// parseLegacyMarkdown reads the operator's old
-// `| Имя | Файл | Прозвища |` table and produces
-// the same set of entries. The file column is
-// "characters/<slug>" — we strip the directory
-// prefix and the optional extension. DisplayName
-// is the first column; Nicknames are the third
-// (split on ",").
-func parseLegacyMarkdown(body string) (*Registry, error) {
-	r := &Registry{}
-	for _, raw := range strings.Split(body, "\n") {
-		t := strings.TrimSpace(raw)
-		if t == "" || !strings.HasPrefix(t, "|") {
-			continue
-		}
-		cells := splitMarkdownRow(t)
-		if len(cells) < 2 {
-			continue
-		}
-		display := strings.TrimSpace(cells[0])
-		fileRef := strings.TrimSpace(cells[1])
-		if display == "" || fileRef == "" {
-			continue
-		}
-		low := strings.ToLower(display)
-		if low == "имя" || low == "name" || low == "display_name" {
-			// header row "| Имя | Файл | Прозвища |"
-			continue
-		}
-		// Separator row "|---|---|---|".
-		if strings.TrimSpace(strings.TrimLeft(display, "|")) == strings.Repeat("-", len(strings.TrimSpace(strings.TrimLeft(display, "|")))) {
-			continue
-		}
-		// First cell has no letters at all —
-		// another separator / decoration row.
-		letters := 0
-		for _, r := range display {
-			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
-				(r >= 0x0400 && r <= 0x04FF) {
-				letters++
-			}
-		}
-		if letters == 0 {
-			continue
-		}
-		slug := fileRef
-		if idx := strings.LastIndex(slug, "/"); idx >= 0 {
-			slug = slug[idx+1:]
-		}
-		slug = strings.TrimSuffix(slug, ".yaml")
-		slug = strings.TrimSuffix(slug, ".md")
-		entry := Entry{
-			Slug:       slug,
-			DisplayName: display,
-		}
-		if len(cells) >= 3 {
-			for _, n := range strings.Split(cells[2], ",") {
-				if t := strings.TrimSpace(n); t != "" {
-					entry.Nicknames = append(entry.Nicknames, t)
-				}
-			}
-		}
-		if err := r.Add(entry); err != nil {
-			// Duplicate slugs in a hand-edited
-			// markdown table: skip the second
-			// occurrence rather than abort the
-			// migration. The operator can
-			// reconcile later.
-			continue
-		}
-	}
-	return r, nil
-}
-
-// splitMarkdownRow tokenises "| a | b | c |" into
-// ["a", "b", "c"]. Trims each cell. Returns nil
-// for rows that do not start and end with "|".
-func splitMarkdownRow(line string) []string {
-	t := strings.TrimSpace(line)
-	if !strings.HasPrefix(t, "|") || !strings.HasSuffix(t, "|") {
-		return nil
-	}
-	t = t[1 : len(t)-1]
-	parts := strings.Split(t, "|")
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
-		if s := strings.TrimSpace(p); s != "" {
-			out = append(out, s)
-		}
-	}
-	return out
 }

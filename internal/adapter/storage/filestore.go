@@ -73,12 +73,6 @@ func (f *FileStore) WorldCanon(name string) string {
 func (f *FileStore) WorldNPCsDir(name string) string {
 	return f.WorldDir(name) + string(filepath.Separator) + "characters"
 }
-func (f *FileStore) WorldNPCRegistry(name string) string {
-	return f.WorldDir(name) + string(filepath.Separator) + "characters.md"
-}
-func (f *FileStore) WorldNPCFile(world, npc string) string {
-	return f.WorldNPCsDir(world) + string(filepath.Separator) + npc + ".md"
-}
 
 // CharacterSOUL/SKILL/Memory/Inventory return the
 // canonical on-disk paths for the player-character
@@ -99,22 +93,6 @@ func (f *FileStore) CharacterMemory(name string) string {
 }
 func (f *FileStore) CharacterInventory(name string) string {
 	return f.CharacterDir(name) + string(filepath.Separator) + "inventory.yaml"
-}
-
-// LegacyCharacterSOUL/SKILL/Memory return the
-// pre-refactor .md paths. The migration code in
-// usecase.firstlaunch uses them on first launch to
-// detect and convert legacy files. After a
-// successful migration the new YAML is canonical
-// and the .md is renamed to .bak.
-func (f *FileStore) LegacyCharacterSOUL(name string) string {
-	return f.CharacterDir(name) + string(filepath.Separator) + "SOUL.md"
-}
-func (f *FileStore) LegacyCharacterSKILL(name string) string {
-	return f.CharacterDir(name) + string(filepath.Separator) + "SKILL.md"
-}
-func (f *FileStore) LegacyCharacterMemory(name string) string {
-	return f.CharacterDir(name) + string(filepath.Separator) + "memory.md"
 }
 
 // Exists reports whether path (relative to root) is present.

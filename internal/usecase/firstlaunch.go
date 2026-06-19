@@ -206,8 +206,14 @@ func (f *FirstLaunch) writeWorld(dir string, w WorldSpec) error {
 	if err := f.fs.WriteRawAtomic(root+"/staging.yaml", defaultStaging(dir)); err != nil {
 		return err
 	}
-	reg := "# NPC: " + strings.TrimSpace(w.DisplayName) + "\n| Имя | Файл | Прозвища |\n|-----|------|----------|\n"
-	return f.fs.WriteRawAtomic(root+"/characters.md", reg)
+	// The NPC registry (characters.yaml) is NOT seeded
+	// here. It is created lazily on the first
+	// create_npc call via the worldregistry package —
+	// earlier revisions wrote an empty characters.md
+	// table on first launch which produced
+	// duplicate-NPC cases where one registry listed a
+	// character that the other did not.
+	return nil
 }
 
 // defaultStaging returns the canonical sandbox staging.yaml

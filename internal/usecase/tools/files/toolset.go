@@ -75,6 +75,11 @@ type Toolset struct {
 // (end-of-day pass). Pass nil to any of them to disable
 // the LLM path — the file backend will then log a warning
 // and skip.
+//
+// The NPC concern reads characters.yaml through the
+// FileStore (via the worldregistry package), so the
+// constructor takes fs alongside repos. fs is used only
+// by NPC; other concerns continue to read through repos.
 func New(fs *storage.FileStore, repos *api.Repositories, log zerolog.Logger, slow *slowlog.Logger, summarizer tools.NPCSummarizer, loreSummarizer tools.LoreSummarizer, chronicleSummarizer tools.ChronicleSummarizer, characterMemorySummarizer tools.CharacterMemorySummarizer) *Toolset {
 	mem := newMemory(log, summarizer, loreSummarizer, chronicleSummarizer, characterMemorySummarizer, repos)
 	st := newState(log, slow, repos)
@@ -88,7 +93,7 @@ func New(fs *storage.FileStore, repos *api.Repositories, log zerolog.Logger, slo
 		Memory:    mem,
 		World:     newWorld(log, repos),
 		Character: newCharacter(repos, log, slow),
-		NPC:       newNPC(log, slow, repos),
+		NPC:       newNPC(log, slow, repos, fs),
 		StageTool: newStage(log, repos),
 		repos:     repos,
 	}

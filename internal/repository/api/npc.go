@@ -4,6 +4,12 @@ import "github.com/bestxp/narrative-ai-agent/internal/npcprofile"
 
 // NPCProfileRepository owns a world's NPC files
 // (one YAML per NPC under worlds/<w>/characters/<slug>.yaml).
+//
+// The NPC registry (worlds/<w>/characters.yaml) is NOT
+// a repository: it lives in the worldregistry package
+// and is read/written directly through the file store.
+// The Toolset's NPC concern owns both the profile files
+// (this repository) and the registry (via worldregistry).
 type NPCProfileRepository interface {
 	// ListSlugs returns the slugs (filenames without
 	// .yaml) of every NPC under world's characters/
@@ -20,16 +26,4 @@ type NPCProfileRepository interface {
 	// update_npc with section + appendText; the repo
 	// handles dedup, replace, and relation upsert.
 	UpdateSection(world, slug, section, appendText string) (bool, error)
-}
-
-// NPCRegistryRepository owns the world's NPC registry
-// (worlds/<w>/characters.yaml) — a compact list of every
-// NPC known to the world (slug + display_name + nicknames)
-// used by gm.loadActiveNPCs.
-type NPCRegistryRepository interface {
-	Load(world string) (string, error)
-	Save(world, body string) error
-	// AppendEntry adds a new NPC to the registry. Used
-	// by create_npc after the per-NPC YAML is written.
-	AppendEntry(world, slug, displayName string, nicknames []string) error
 }

@@ -127,10 +127,11 @@ func (w *World) initialiseBlankWorld(dir string) error {
 	if err := w.repos.Chronicle.Save(dir, c); err != nil {
 		return err
 	}
-	// NPC registry — empty table.
-	if err := w.repos.NPCRegistry.Save(dir, "# NPC: "+dir+"\n| Имя | Файл | Прозвища |\n|-----|------|----------|\n"); err != nil {
-		return err
-	}
+	// NPC registry (worlds/<dir>/characters.yaml) is NOT
+	// seeded here — the registry is owned by the
+	// worldregistry package and is created lazily on the
+	// first create_npc call. An empty world has no
+	// characters until the GM introduces them.
 	// Plan — 3 default events.
 	return w.repos.Plan.ReplaceEvents(context.Background(), dir, []string{
 		"вводная сцена: знакомство с миром",

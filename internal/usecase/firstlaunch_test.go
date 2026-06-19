@@ -28,7 +28,6 @@ func TestFirstLaunch_CreatesSkeleton(t *testing.T) {
 		"worlds/naruto/lore.md",
 		"worlds/naruto/plan.md",
 		"worlds/naruto/chronicle.yaml",
-		"worlds/naruto/characters.md",
 		"worlds/naruto/characters",
 	} {
 		assert.True(t, fs.Exists(rel), "missing: %s", rel)

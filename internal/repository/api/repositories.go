@@ -18,19 +18,18 @@ import (
 // for each domain, then construct a sql.Repositories
 // with the same field types.
 type Repositories struct {
-	Info        InfoRepository
-	WorldState  WorldStateRepository
-	Plan        PlanRepository
-	Lore        LoreRepository
-	Canon       CanonRepository
-	Chronicle   ChronicleRepository
-	Soul        SoulRepository
-	Skill       SkillRepository
-	Memory      CharacterMemoryRepository
-	Inventory   InventoryRepository
-	NPCProfile  NPCProfileRepository
-	NPCRegistry NPCRegistryRepository
-	Staging     StagingRepository
+	Info       InfoRepository
+	WorldState WorldStateRepository
+	Plan       PlanRepository
+	Lore       LoreRepository
+	Canon      CanonRepository
+	Chronicle  ChronicleRepository
+	Soul       SoulRepository
+	Skill      SkillRepository
+	Memory     CharacterMemoryRepository
+	Inventory  InventoryRepository
+	NPCProfile NPCProfileRepository
+	Staging    StagingRepository
 }
 
 // NewYamlRepositories constructs the canonical
@@ -40,21 +39,30 @@ type Repositories struct {
 //
 // main.go is the only caller. Tests build their own
 // Repositories with mocks.
+//
+// Note: NPC registry is NOT a repository here. The
+// registry is worlds/<w>/characters.yaml and is owned
+// by the worldregistry package — the file backend reads
+// it directly through the FileStore so the lookup path
+// can use the full-featured Registry.Lookup (substring
+// matching, nickname lookup). A legacy characters.md
+// fallback used to live in the YAML repository; it was
+// removed because operators reported it conflicting
+// with characters.yaml.
 func NewYamlRepositories(store storage.Storage) *Repositories {
 	return &Repositories{
-		Info:        yaml.NewInfoYaml(store),
-		WorldState:  yaml.NewWorldStateYaml(store),
-		Plan:        yaml.NewPlanYaml(store),
-		Lore:        yaml.NewLoreYaml(store),
-		Canon:       yaml.NewCanonYaml(store),
-		Chronicle:   yaml.NewChronicleYaml(store),
-		Soul:        yaml.NewSoulYaml(store),
-		Skill:       yaml.NewSkillYaml(store),
-		Memory:      yaml.NewCharacterMemoryYaml(store),
-		Inventory:   yaml.NewInventoryYaml(store),
-		NPCProfile:  yaml.NewNPCProfileYaml(store),
-		NPCRegistry: yaml.NewNPCRegistryYaml(store),
-		Staging:     yaml.NewStagingYaml(store),
+		Info:       yaml.NewInfoYaml(store),
+		WorldState: yaml.NewWorldStateYaml(store),
+		Plan:       yaml.NewPlanYaml(store),
+		Lore:       yaml.NewLoreYaml(store),
+		Canon:      yaml.NewCanonYaml(store),
+		Chronicle:  yaml.NewChronicleYaml(store),
+		Soul:       yaml.NewSoulYaml(store),
+		Skill:      yaml.NewSkillYaml(store),
+		Memory:     yaml.NewCharacterMemoryYaml(store),
+		Inventory:  yaml.NewInventoryYaml(store),
+		NPCProfile: yaml.NewNPCProfileYaml(store),
+		Staging:    yaml.NewStagingYaml(store),
 	}
 }
 
@@ -81,6 +89,5 @@ var (
 	_ CharacterMemoryRepository = (*yaml.CharacterMemoryYaml)(nil)
 	_ InventoryRepository       = (*yaml.InventoryYaml)(nil)
 	_ NPCProfileRepository      = (*yaml.NPCProfileYaml)(nil)
-	_ NPCRegistryRepository     = (*yaml.NPCRegistryYaml)(nil)
 	_ StagingRepository         = (*yaml.StagingYaml)(nil)
 )

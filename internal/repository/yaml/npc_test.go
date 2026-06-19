@@ -9,8 +9,7 @@ import (
 	"github.com/bestxp/narrative-ai-agent/internal/npcprofile"
 )
 
-func (e *testEnv) newNPCProfileRepo() *NPCProfileYaml   { return NewNPCProfileYaml(e.store) }
-func (e *testEnv) newNPCRegistryRepo() *NPCRegistryYaml { return NewNPCRegistryYaml(e.store) }
+func (e *testEnv) newNPCProfileRepo() *NPCProfileYaml { return NewNPCProfileYaml(e.store) }
 
 func TestNPCProfileYaml_RoundTrip(t *testing.T) {
 	env := newTestEnv(t)
@@ -44,39 +43,4 @@ func TestNPCProfileYaml_UpdateSection(t *testing.T) {
 	assert.True(t, ok)
 	out, _ := env.newNPCProfileRepo().Load("naruto", "kakashi")
 	assert.Equal(t, []string{"Шаринган"}, out.Abilities)
-}
-
-func TestNPCRegistryYaml_AppendEntry(t *testing.T) {
-	env := newTestEnv(t)
-	require.NoError(t, env.newNPCRegistryRepo().AppendEntry("naruto", "kakashi", "Какаши Хатаке", []string{"Копирующий ниндзя"}))
-	require.NoError(t, env.newNPCRegistryRepo().AppendEntry("naruto", "iruka", "Ирука-сенсей", nil))
-	out, err := env.newNPCRegistryRepo().Load("naruto")
-	require.NoError(t, err)
-	assert.Contains(t, out, "Какаши Хатаке")
-	assert.Contains(t, out, "kakashi.yaml")
-	assert.Contains(t, out, "Копирующий ниндзя")
-	assert.Contains(t, out, "Ирука-сенсей")
-}
-
-func TestNPCRegistryYaml_AppendEntry_EmptyWorld(t *testing.T) {
-	env := newTestEnv(t)
-	// First entry on an empty world seeds the table
-	// header + the row.
-	require.NoError(t, env.newNPCRegistryRepo().AppendEntry("naruto", "kakashi", "Какаши", nil))
-	out, _ := env.newNPCRegistryRepo().Load("naruto")
-	assert.Contains(t, out, "# NPC: naruto")
-	assert.Contains(t, out, "| Имя | Файл | Прозвища |")
-	assert.Contains(t, out, "| Какаши |")
-}
-
-func TestParseRegistryRow(t *testing.T) {
-	displayName, slug, nicknames, ok := ParseRegistryRow("| Какаши | kakashi.yaml | Копирующий ниндзя, Сенсей |")
-	require.True(t, ok)
-	assert.Equal(t, "Какаши", displayName)
-	assert.Equal(t, "kakashi", slug)
-	assert.Equal(t, []string{"Копирующий ниндзя", "Сенсей"}, nicknames)
-
-	// Bad row: not a table line.
-	_, _, _, ok = ParseRegistryRow("not a table line")
-	assert.False(t, ok)
 }
