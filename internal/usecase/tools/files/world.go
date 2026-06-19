@@ -1,6 +1,7 @@
 package files
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strconv"
@@ -30,8 +31,7 @@ type World struct {
 	worldStateInvalidate func(reason string)
 }
 
-func newWorld(fs interface{}, log zerolog.Logger, repos *api.Repositories) *World {
-	_ = fs
+func newWorld(log zerolog.Logger, repos *api.Repositories) *World {
 	return &World{repos: repos, log: log.With().Str("component", "world").Logger()}
 }
 
@@ -111,16 +111,6 @@ func (w *World) switchActive(toWorld, character string) error {
 	return w.repos.Info.Save(info)
 }
 
-func without(xs []string, drop string) []string {
-	out := make([]string, 0, len(xs))
-	for _, x := range xs {
-		if x != drop {
-			out = append(out, x)
-		}
-	}
-	return out
-}
-
 func (w *World) initialiseBlankWorld(dir string) error {
 	// Canon.
 
@@ -142,7 +132,7 @@ func (w *World) initialiseBlankWorld(dir string) error {
 		return err
 	}
 	// Plan — 3 default events.
-	return w.repos.Plan.ReplaceEvents(nil, dir, []string{
+	return w.repos.Plan.ReplaceEvents(context.Background(), dir, []string{
 		"вводная сцена: знакомство с миром",
 		"первая зацепка / конфликт",
 		"первая развилка",

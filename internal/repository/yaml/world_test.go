@@ -131,7 +131,7 @@ func TestPlanYaml_RoundTrip(t *testing.T) {
 func TestPlanYaml_ReplaceEvents(t *testing.T) {
 	env := newTestEnv(t)
 	r := env.newPlanRepo()
-	require.NoError(t, r.ReplaceEvents(nil, "naruto", []string{"a", "b", "c"}))
+	require.NoError(t, r.ReplaceEvents(t.Context(), "naruto", []string{"a", "b", "c"}))
 	out, err := r.Load("naruto")
 	require.NoError(t, err)
 	assert.Equal(t, []string{"a", "b", "c"}, ParsePlanEvents(out))
@@ -140,9 +140,9 @@ func TestPlanYaml_ReplaceEvents(t *testing.T) {
 func TestPlanYaml_ReplaceEvents_OutOfRange(t *testing.T) {
 	env := newTestEnv(t)
 	r := env.newPlanRepo()
-	err := r.ReplaceEvents(nil, "naruto", []string{"a", "b"})
+	err := r.ReplaceEvents(t.Context(), "naruto", []string{"a", "b"})
 	assert.Error(t, err)
-	err = r.ReplaceEvents(nil, "naruto", []string{"a", "b", "c", "d", "e", "f"})
+	err = r.ReplaceEvents(t.Context(), "naruto", []string{"a", "b", "c", "d", "e", "f"})
 	assert.Error(t, err)
 }
 

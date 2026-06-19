@@ -111,7 +111,7 @@ func (d *Driver) Stream(ctx context.Context, req llm.ChatRequest, onChunk func(l
 	}
 
 	stream := d.client.Chat.Completions.NewStreaming(ctx, params)
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	acc := newToolAccumulator(d.log)
 	var rawTrace []string

@@ -32,28 +32,10 @@ type Character struct {
 	repos *api.Repositories
 	log   zerolog.Logger
 	slow  *slowlog.Logger
-	// store is kept for legacy raw-file access paths
-	// (/me snapshot reads the raw YAML body so the
-	// operator sees the canonical text; the repository
-	// layer is for writes). The repository layer is
-	// the canonical write path; store is a legacy
-	// read path.
-	store storageLike
 	// world returns the active world name. The
 	// indirection lets tests pass a custom resolver
 	// without re-constructing the toolset.
 	world func() string
-}
-
-// storageLike is the minimal subset of the storage
-// interface Character needs for raw-file access. It
-// is satisfied by *storage.FileStore in production
-// and by test helpers.
-type storageLike interface {
-	Read(key string) ([]byte, error)
-	Write(key string, data []byte) error
-	Exists(key string) (bool, error)
-	EnsureDir(key string) error
 }
 
 // SetWorldResolver wires a custom active-world
@@ -232,27 +214,19 @@ func (c *Character) RemoveCurrency(character, name string) error {
 // routes to the right Append* method based on
 // the file argument. file ∈ {SOUL, skill, memory}.
 func (c *Character) Append(character, file, section, value string) error {
-	var (
-		changed bool
-		err     error
-	)
 	switch strings.ToLower(file) {
 	case "soul":
-		changed, err = c.AppendSoul(character, section, value)
+		_, err := c.AppendSoul(character, section, value)
+		return err
 	case "skill":
-		changed, err = c.AppendSkill(character, section, value)
+		_, err := c.AppendSkill(character, section, value)
+		return err
 	case "memory":
-		changed, err = c.AppendMemorySection(character, section, value)
+		_, err := c.AppendMemorySection(character, section, value)
+		return err
 	default:
 		return ErrUnknownCharacterFile
 	}
-	if err != nil {
-		return err
-	}
-	if !changed {
-		_ = changed
-	}
-	return nil
 }
 
 // --- read / snapshot ---
@@ -302,7 +276,9 @@ func (c *Character) Read(activeChar, activeWorld string) (*tools.CharacterSnapsh
 	if activeWorld != "" {
 		if s, err := c.repos.WorldState.Load(activeWorld); err == nil {
 			snap.Day = s.Day
-			snap.State = renderWorldStateMarkdown(s)
+			if body, rerr := renderStateBody(s); rerr == nil {
+				snap.State = body
+			}
 		}
 	}
 	return snap, nil
@@ -408,17 +384,4 @@ func (c *Character) logEvent(character, fileLabel string) {
 			"file":      fileLabel,
 		})
 	}
-}
-
-// renderWorldStateMarkdown re-renders a StateSnapshot
-// through the canonical state.md.tmpl template.
-// Exposed here so the /me view matches what the LLM
-// actually sees in user[0] (cache-pointe stable).
-func renderWorldStateMarkdown(snap interface{}) string {
-	// We accept the round-trip cost — the
-	// repository layer owns the template, and the
-	// snapshot view should not duplicate the render
-	// logic.
-	body := renderWorldStateMarkdown(snap)
-	return body
 }

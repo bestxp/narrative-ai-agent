@@ -243,7 +243,7 @@ func splitForTelegram(text string) []string {
 		// in the rune-bounded head so a "\n\n" near
 		// the edge is still a real boundary, not
 		// a byte-coincidence.
-		cut := -1
+		var cut int
 		if i := strings.LastIndex(head, "\n\n"); i > 0 {
 			cut = i + len("\n\n")
 		} else if i := strings.LastIndex(head, "\n"); i > 0 {

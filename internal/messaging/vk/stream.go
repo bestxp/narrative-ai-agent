@@ -129,10 +129,8 @@ func (t *ThrottledStream) flush() {
 	if text == "" {
 		return
 	}
-	if err := t.inner.Append(context.Background(), text); err != nil {
-		// Silently drop — the operator sees the error in logs.
-		_ = err
-	}
+	// Best-effort flush; errors are logged by the inner stream.
+	_ = t.inner.Append(context.Background(), text)
 }
 
 func (t *ThrottledStream) Append(ctx context.Context, text string) error {

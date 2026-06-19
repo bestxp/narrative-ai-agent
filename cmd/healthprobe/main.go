@@ -29,7 +29,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "healthprobe: get:", err)
 		os.Exit(1)
 	}
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 	if r.StatusCode < 200 || r.StatusCode >= 400 {
 		fmt.Fprintf(os.Stderr, "healthprobe: status %d\n", r.StatusCode)
 		os.Exit(1)

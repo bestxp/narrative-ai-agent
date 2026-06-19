@@ -74,16 +74,6 @@ func captureSlowlog(t *testing.T) (*slowlog.Logger, func(kind string) []slowlog.
 	return logger, read
 }
 
-// readStateMdForTest reads the raw state.md body via
-// the underlying FileStore. Used by tests that need
-// byte-level assertions on the rendered markdown.
-// Use ts.State.repos.WorldState.Load for repository-level
-// assertions.
-func readStateMdForTest(t *testing.T, fs *storage.FileStore, world string) (string, error) {
-	t.Helper()
-	return fs.ReadRaw("worlds/" + world + "/state.md")
-}
-
 // TestUpdateState_DedupesAppendEvents is the regression
 // test for the operator-reported "хронология дублируется".
 // Cause: a retry loop or a model that re-asserts the same
@@ -94,7 +84,7 @@ func readStateMdForTest(t *testing.T, fs *storage.FileStore, world string) (stri
 func TestUpdateState_DedupesAppendEvents(t *testing.T) {
 	ts := newTestToolset(t)
 	// First call: seed the chronology with one event.
-	require.NoError(t, ts.State.UpdateState(tools.StateSnapshot{
+	require.NoError(t, ts.UpdateState(tools.StateSnapshot{
 		Day:      1,
 		InFlight: true,
 		Moment:   "m1",
@@ -105,7 +95,7 @@ func TestUpdateState_DedupesAppendEvents(t *testing.T) {
 	}))
 	// Second call: same world, same event, different
 	// capitalisation. Should be deduped, not appended.
-	require.NoError(t, ts.State.UpdateState(tools.StateSnapshot{
+	require.NoError(t, ts.UpdateState(tools.StateSnapshot{
 		Day:      1,
 		InFlight: true,
 		Moment:   "m2",
@@ -134,7 +124,7 @@ func TestUpdateState_DedupesAppendEvents(t *testing.T) {
 // "Ирука повёл" are different beats.
 func TestUpdateState_PreservesGenuineNarrativeVariation(t *testing.T) {
 	ts := newTestToolset(t)
-	require.NoError(t, ts.State.UpdateState(tools.StateSnapshot{
+	require.NoError(t, ts.UpdateState(tools.StateSnapshot{
 		Day:      1,
 		InFlight: true,
 		Moment:   "m",
@@ -143,7 +133,7 @@ func TestUpdateState_PreservesGenuineNarrativeVariation(t *testing.T) {
 			"Ирука привёл Маркуса в столовую",
 		},
 	}))
-	require.NoError(t, ts.State.UpdateState(tools.StateSnapshot{
+	require.NoError(t, ts.UpdateState(tools.StateSnapshot{
 		Day:      1,
 		InFlight: true,
 		Moment:   "m",
@@ -164,7 +154,7 @@ func TestUpdateState_PreservesGenuineNarrativeVariation(t *testing.T) {
 // normaliser drops empty events before the dedupe check.
 func TestUpdateState_EmptyEventIgnored(t *testing.T) {
 	ts := newTestToolset(t)
-	require.NoError(t, ts.State.UpdateState(tools.StateSnapshot{
+	require.NoError(t, ts.UpdateState(tools.StateSnapshot{
 		Day:      1,
 		InFlight: true,
 		Moment:   "m",
@@ -190,11 +180,11 @@ func TestUpdateState_EmptyEventIgnored(t *testing.T) {
 // "include all NPCs you mentioned" rule.
 func TestUpdateState_ReplacesNPCList(t *testing.T) {
 	ts := newTestToolset(t)
-	require.NoError(t, ts.State.UpdateState(tools.StateSnapshot{
+	require.NoError(t, ts.UpdateState(tools.StateSnapshot{
 		Day: 1, InFlight: true, Moment: "m",
 		NPCs: []string{"Ирука", "Хокаге"},
 	}))
-	require.NoError(t, ts.State.UpdateState(tools.StateSnapshot{
+	require.NoError(t, ts.UpdateState(tools.StateSnapshot{
 		Day: 1, InFlight: true, Moment: "m2",
 		NPCs: []string{"Ирука"}, // Хокаге walked away
 	}))
@@ -222,7 +212,7 @@ func newStateWithSlowlog(t *testing.T) (*State, func(kind string) []slowlog.Entr
 	require.NoError(t, err)
 	repos := api.NewYamlRepositories(yamlStore)
 	logger, read := captureSlowlog(t)
-	st := newState(fs, zerolog.Nop(), logger, repos)
+	st := newState(zerolog.Nop(), logger, repos)
 	return st, read
 }
 
@@ -279,7 +269,7 @@ func TestUpdateState_SlowlogNilSafe(t *testing.T) {
 	require.NoError(t, fs.EnsureDir("worlds/naruto/characters"))
 	yamlStore, _ := yamlfs.New(fs.Root())
 	repos := api.NewYamlRepositories(yamlStore)
-	st := newState(fs, zerolog.Nop(), nil, repos) // <-- nil slow
+	st := newState(zerolog.Nop(), nil, repos) // <-- nil slow
 	require.NoError(t, fs.WriteRawAtomic("info.yaml", "active_character: markus\nactive_world: naruto\n"))
 	require.NoError(t, st.UpdateState(tools.StateSnapshot{
 		Day: 1, InFlight: true, Moment: "m",

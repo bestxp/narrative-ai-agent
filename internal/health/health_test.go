@@ -41,7 +41,7 @@ func TestLiveAlwaysOK(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /healthz: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status: %d", resp.StatusCode)
 	}
@@ -64,7 +64,7 @@ func TestReadyzRequiresConnected(t *testing.T) {
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("expected 503, got %d", resp.StatusCode)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	r.set([]Report{
 		{Name: "telegram", State: StatusConnected},
@@ -74,7 +74,7 @@ func TestReadyzRequiresConnected(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var body map[string]any
 	_ = json.NewDecoder(resp.Body).Decode(&body)
 	if body["status"] != "ready" {
@@ -95,7 +95,7 @@ func TestHealthEndpointAlwaysReturnsJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /health: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
 		t.Fatalf("content-type = %q, want application/json", ct)
 	}
@@ -121,7 +121,7 @@ func TestShutdownDrains(t *testing.T) {
 	}
 	resp, err := http.Get("http://" + s.Addr() + "/healthz")
 	if err == nil {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		t.Fatal("expected connection error after Shutdown, got success")
 	}
 }

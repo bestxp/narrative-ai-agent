@@ -44,8 +44,7 @@ type Memory struct {
 	characterMemorySummarizer tools.CharacterMemorySummarizer
 }
 
-func newMemory(fs interface{}, log zerolog.Logger, summarizer tools.NPCSummarizer, loreSummarizer tools.LoreSummarizer, chronicleSummarizer tools.ChronicleSummarizer, characterMemorySummarizer tools.CharacterMemorySummarizer, repos *api.Repositories) *Memory {
-	_ = fs
+func newMemory(log zerolog.Logger, summarizer tools.NPCSummarizer, loreSummarizer tools.LoreSummarizer, chronicleSummarizer tools.ChronicleSummarizer, characterMemorySummarizer tools.CharacterMemorySummarizer, repos *api.Repositories) *Memory {
 	return &Memory{
 		repos:                     repos,
 		log:                       log.With().Str("component", "memory").Logger(),
@@ -476,16 +475,6 @@ func (m *Memory) MaintainCharacterMemory(ctx context.Context, world, character s
 // summarizer.
 func yamlMarshalChronicle(c chronicle.Chronicle) (string, error) {
 	return c.Save()
-}
-
-// truncateForLog keeps the slowlog readable when the
-// model emits a wall of text without the expected
-// shape.
-func truncateForLog(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "…"
 }
 
 // Reference imports that are part of the public

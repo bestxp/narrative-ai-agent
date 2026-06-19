@@ -26,7 +26,7 @@ func newMemoryTestEnv(t *testing.T) (*Memory, *storage.FileStore) {
 	yamlStore, err := yamlfs.New(fs.Root())
 	require.NoError(t, err)
 	repos := api.NewYamlRepositories(yamlStore)
-	return newMemory(fs, zerolog.Nop(), nil, nil, nil, nil, repos), fs
+	return newMemory(zerolog.Nop(), nil, nil, nil, nil, repos), fs
 }
 
 // writeLongNPC writes a profile with 50 personal_memory

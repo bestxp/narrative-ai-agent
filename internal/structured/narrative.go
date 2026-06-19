@@ -189,12 +189,13 @@ func extractFirstJSONObject(data []byte) []byte {
 		if inStr {
 			continue
 		}
-		if c == '{' {
+		switch c {
+		case '{':
 			if start < 0 {
 				start = i
 			}
 			depth++
-		} else if c == '}' {
+		case '}':
 			depth--
 			if depth == 0 && start >= 0 {
 				return data[start : i+1]

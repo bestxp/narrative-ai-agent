@@ -359,20 +359,6 @@ func createNpcTool() Tool {
 	}
 }
 
-func worldLeaveTool() Tool {
-	return Tool{
-		Type: "function",
-		Function: ToolFunctionSchema{
-			Name:        "leave_world",
-			Description: "Переключить активный мир, инициализировать новый при отсутствии.",
-			Parameters: Object(
-				Required("to_world", String("латинский slug нового мира")),
-				Optional("skip_note", String("Сколько прошло времени в старом мире; пусто = мгновение")),
-			),
-		},
-	}
-}
-
 // updateSoulTool appends a fact to a section in
 // characters/<active>/SOUL.yaml. The file holds
 // "who the GG is": identity, age, preferences,

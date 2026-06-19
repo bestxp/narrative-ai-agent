@@ -186,11 +186,7 @@ func (c Chronicle) Save() (string, error) {
 		Days:    map[int]string{},
 	}
 	for _, p := range c.Periods {
-		out.Periods = append(out.Periods, periodYAML{
-			From:   p.From,
-			To:     p.To,
-			Memory: p.Memory,
-		})
+		out.Periods = append(out.Periods, periodYAML(p))
 	}
 	for k, v := range c.Days {
 		out.Days[k] = v

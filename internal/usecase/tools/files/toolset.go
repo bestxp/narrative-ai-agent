@@ -76,8 +76,8 @@ type Toolset struct {
 // the LLM path — the file backend will then log a warning
 // and skip.
 func New(fs *storage.FileStore, repos *api.Repositories, log zerolog.Logger, slow *slowlog.Logger, summarizer tools.NPCSummarizer, loreSummarizer tools.LoreSummarizer, chronicleSummarizer tools.ChronicleSummarizer, characterMemorySummarizer tools.CharacterMemorySummarizer) *Toolset {
-	mem := newMemory(fs, log, summarizer, loreSummarizer, chronicleSummarizer, characterMemorySummarizer, repos)
-	st := newState(fs, log, slow, repos)
+	mem := newMemory(log, summarizer, loreSummarizer, chronicleSummarizer, characterMemorySummarizer, repos)
+	st := newState(log, slow, repos)
 	// Wire the post-ArchiveChronicleDay hook so the
 	// state writer does not need a direct reference to
 	// the memory struct. The hook is nil-safe — it logs
@@ -86,10 +86,10 @@ func New(fs *storage.FileStore, repos *api.Repositories, log zerolog.Logger, slo
 	return &Toolset{
 		State:     st,
 		Memory:    mem,
-		World:     newWorld(fs, log, repos),
+		World:     newWorld(log, repos),
 		Character: newCharacter(repos, log, slow),
-		NPC:       newNPC(fs, log, slow, repos),
-		StageTool: newStage(fs, log, repos),
+		NPC:       newNPC(log, slow, repos),
+		StageTool: newStage(log, repos),
 		repos:     repos,
 	}
 }
@@ -167,7 +167,7 @@ func (t *Toolset) SearchNPC(world, query string) (result *tools.NPCSearchResult,
 	if t.NPC == nil {
 		return nil, nil
 	}
-	res, e := t.NPC.Search(world, query)
+	res, e := t.Search(world, query)
 	if e != nil {
 		return nil, e
 	}

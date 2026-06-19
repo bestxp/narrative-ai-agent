@@ -1499,36 +1499,6 @@ func parseKeyValuePairs(s, sep string) map[string]string {
 	return out
 }
 
-// parseMixedPairs tries both separators and returns
-// whichever yields more recognised keys. Used for
-// update_character, where the prompt's recommended
-// form is comma-separated ("file=SOUL, section=внешность,
-// append=...") but older turns may have used the
-// semicolon form ("file=SOUL; section=внешность;
-// append=..."). Picking the side with more populated
-// keys avoids the trap where a single value contains
-// both separators (e.g. an "append" text with a
-// comma) and the wrong split eats the value. An
-// empty parse result never wins over a non-empty
-// one — otherwise a ";"-less body that contains
-// only "," would collapse to an empty semicolon
-// split (zero keys) and "beat" the comma split
-// (three keys) under a naive >= comparison.
-func parseMixedPairs(s string) map[string]string {
-	semi := parseSemicolonPairs(s)
-	comma := parseCommaPairs(s)
-	if len(semi) == 0 {
-		return comma
-	}
-	if len(comma) == 0 {
-		return semi
-	}
-	if len(semi) >= len(comma) {
-		return semi
-	}
-	return comma
-}
-
 // executeExtractedCommands runs every directive the parser
 // recovered. Errors are logged at warn level but do not
 // abort the turn — a malformed directive should not
@@ -1996,20 +1966,6 @@ func (g *GM) buildContext() (systemMsg, worldMsg string, err error) {
 	return builtSystem, builtWorld, nil
 }
 
-// buildContextPrompt is a thin wrapper kept for tests that
-// expect a single string back. It returns ONLY the system
-// prompt (Индекс 0). World state now lives in a separate
-// user message — see buildContext.
-//
-// Deprecated: prefer buildContext which returns (system,
-// world) so callers can wire the new [system, world, ...]
-// wire surface. This wrapper is used by tests that only
-// care about the system half.
-func (g *GM) buildContextPrompt() (string, error) {
-	sys, _, err := g.buildContext()
-	return sys, err
-}
-
 // invalidateWorldState drops the cached system prompt and
 // WorldState user message, forcing the next buildContext to
 // re-read from disk. Called on:
@@ -2057,26 +2013,6 @@ func (g *GM) invalidateWorldSnapshot(reason string) {
 // (dispatcher /reload, world.Leave hook, etc.).
 func (g *GM) InvalidateWorldState(reason string) {
 	g.invalidateWorldState(reason)
-}
-
-// sceneKeyOf returns the cache key the current session would
-// produce, without actually rebuilding. Exposed for tests.
-func (g *GM) sceneKeyOf() (string, error) {
-	if !g.fs.Exists(storage.InfoFile) {
-		return "", nil
-	}
-	sc, err := g.ss.Start()
-	if err != nil {
-		return "", err
-	}
-	key := sc.World + "|" + sc.Character + "|"
-	if stateBody, _ := g.fs.ReadRaw("worlds/" + sc.World + "/state.md"); stateBody != "" {
-		snap := files.ParseStateMD(stateBody)
-		key += strconv.Itoa(snap.Day) + "|" + strconv.FormatBool(snap.InFlight)
-	} else {
-		key += "0|false"
-	}
-	return key, nil
 }
 
 // shouldUseInPlaceCompaction reports whether this GM
@@ -3305,147 +3241,6 @@ func readCurrentDay(fs *storage.FileStore, world string) int {
 		return 1
 	}
 	return n
-}
-
-// retryEmptyOnce re-issues the LLM request that just
-// produced 0 content (and 0 surviving tool calls).
-// Two cases motivate this:
-//
-//  1. The cloud-Ollama deployment returning 4 chunks
-//     of `delta.content: ""` and then `finish_reason:
-//     stop` — recovers on the second attempt.
-//  2. minimax-m3:cloud emitting a native `tool_calls`
-//     round whose arguments are not valid JSON (Ollama
-//     double-wrap / truncation). The driver drops the
-//     broken calls, the GM is left with an empty
-//     content, and re-issuing the SAME prompt yields
-//     the same broken calls. We nudge the model by
-//     appending a synthetic user message asking it to
-//     skip tool calls and write the directives inline
-//     in the КОНТЕКСТ block instead — the parser picks
-//     them up the same way.
-//
-// Returned: the assistant text (may still be empty),
-// the token usage, the raw SSE trace (so the slowlog
-// can diagnose a second empty round), and the stream
-// error if any.
-func (g *GM) retryEmptyOnce(ctx context.Context, messages []llm.Message, timeoutSec int, nudgeToolCallsOff bool) (string, TokenUsage, []string, error) {
-	var (
-		buf          strings.Builder
-		usageFromAPI llm.Usage
-		gotUsage     bool
-		compChars    int
-		finishReason string
-		rawTrace     []string
-	)
-	totals := TokenUsage{}
-	if g.tracking == "" || g.tracking == "off" {
-		totals.Source = "off"
-	}
-	outMsgs := messages
-	if nudgeToolCallsOff {
-		// Append (do not replace) a synthetic user
-		// turn that asks the model to skip native
-		// tool calls on this retry. We add a
-		// distinct marker in the prompt so the
-		// model treats it as a one-shot hint rather
-		// than a system rule. The parser does not
-		// see this — it never touches a messages
-		// slice, only the rendered content.
-		hint := "[system note] Предыдущий вызов tool_calls не прошёл парсинг аргументов " +
-			"на стороне драйвера. На этой попытке НЕ используй native tool_calls — " +
-			"верни только текстовый ответ: 4-блочный markdown (Режим B) или JSON " +
-			"с полями narration/context/future/validation (Режим A). Если нужно " +
-			"обновить character-файлы — пиши маркеры в поле `context` или в блок " +
-			"**КОНТЕКСТ И ИЗМЕНЕНИЯ**: ⦁ update_soul: section=..., append=... " +
-			"(или update_skill / update_memory — по файлу, к которому относится факт)."
-		outMsgs = append(outMsgs, llm.Message{Role: "user", Content: hint})
-	}
-	streamErr := g.llm.Stream(ctx, llm.ChatRequest{
-		Model:          g.role.Model,
-		Messages:       outMsgs,
-		Tools:          g.toolSpecs,
-		Temperature:    g.role.Temperature,
-		MaxTokens:      g.role.MaxTokens,
-		TimeoutSeconds: timeoutSec,
-	}, func(ch llm.Chunk) error {
-		if len(ch.RawTrace) > 0 {
-			rawTrace = ch.RawTrace
-		}
-		if ch.Done {
-			return nil
-		}
-		if ch.Content != "" {
-			buf.WriteString(ch.Content)
-			compChars += len(ch.Content)
-		}
-		if ch.Finish != "" {
-			finishReason = ch.Finish
-		}
-		if ch.Usage.TotalTokens > 0 || ch.Usage.PromptTokens > 0 {
-			usageFromAPI = ch.Usage
-			gotUsage = true
-		}
-		return nil
-	})
-	if streamErr != nil {
-		return "", totals, rawTrace, streamErr
-	}
-	_ = compChars
-	_ = finishReason
-	if gotUsage {
-		totals = TokenUsage{
-			PromptTokens:     usageFromAPI.PromptTokens,
-			CompletionTokens: usageFromAPI.CompletionTokens,
-			TotalTokens:      usageFromAPI.TotalTokens,
-			Source:           "usage",
-		}
-	} else if g.tracking == "estimate" {
-		totals = TokenUsage{
-			PromptTokens:     llm.EstimateMessages(messages),
-			CompletionTokens: llm.EstimateTokens(buf.String()),
-			TotalTokens:      llm.EstimateMessages(messages) + llm.EstimateTokens(buf.String()),
-			Source:           "estimate",
-		}
-	}
-	return buf.String(), totals, rawTrace, nil
-}
-
-// formatMessagesForLog renders a messages slice into a list of
-// compact {role, content_len, content, tool_calls?} entries for
-// the slowlog "request_messages" field. The full content is
-// preserved (truncation loses the very information we need on a
-// format miss — was the system prompt / history cut by the
-// context window?). This payload is logged only on the
-// failing path; healthy rounds emit a 500-char preview instead.
-//
-// The output is intentionally a []map[string]any (not a
-// []llm.Message) so the slowlog JSON is decoupled from the
-// internal type — operators reading it in jq see exactly the
-// shape that left the GM, no Go struct tags.
-func formatMessagesForLog(messages []llm.Message) []map[string]any {
-	out := make([]map[string]any, 0, len(messages))
-	for _, m := range messages {
-		entry := map[string]any{
-			"role":        m.Role,
-			"content_len": len(m.Content),
-		}
-		if m.Content != "" {
-			entry["content"] = m.Content
-		}
-		if len(m.ToolCalls) > 0 {
-			calls := make([]map[string]any, 0, len(m.ToolCalls))
-			for _, c := range m.ToolCalls {
-				calls = append(calls, map[string]any{
-					"name": c.Function.Name,
-					"args": c.Function.Arguments,
-				})
-			}
-			entry["tool_calls"] = calls
-		}
-		out = append(out, entry)
-	}
-	return out
 }
 
 // formatToolsForLog renders a []llm.ToolSchema into a compact

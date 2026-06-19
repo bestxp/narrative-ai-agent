@@ -35,11 +35,13 @@ func TestNPC_LookupViaRegistry(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Write the registry so findNPCSlugByQuery can resolve.
-	fs.WriteRawAtomic("worlds/naruto/characters.md",
-		"# NPC: naruto\n| Имя | Файл | Прозвища |\n|-----|------|----------|\n| Хината Хьюга | hinata.yaml | Хината |\n")
+	if err := fs.WriteRawAtomic("worlds/naruto/characters.md",
+		"# NPC: naruto\n| Имя | Файл | Прозвища |\n|-----|------|----------|\n| Хината Хьюга | hinata.yaml | Хината |\n"); err != nil {
+		t.Fatal(err)
+	}
 	yamlStore, _ := yamlfs.New(fs.Root())
 	repos := api.NewYamlRepositories(yamlStore)
-	n := newNPC(fs, zerolog.Nop(), slowlog.Discard(), repos)
+	n := newNPC(zerolog.Nop(), slowlog.Discard(), repos)
 	slug, ok := n.findNPCSlug("naruto", "Хината")
 	if !ok {
 		t.Fatal("Хината should resolve to hinata.yaml via registry")
@@ -112,7 +114,7 @@ func TestNPC_NotFoundReturnsFalse(t *testing.T) {
 	_ = fs.EnsureDir("worlds/naruto/characters")
 	yamlStore, _ := yamlfs.New(fs.Root())
 	repos := api.NewYamlRepositories(yamlStore)
-	n := newNPC(fs, zerolog.Nop(), slowlog.Discard(), repos)
+	n := newNPC(zerolog.Nop(), slowlog.Discard(), repos)
 	_, ok := n.findNPCSlug("naruto", "Совершенно Незнакомый NPC")
 	if ok {
 		t.Fatal("unknown NPC must not resolve")
@@ -142,7 +144,7 @@ func TestNPC_UpdateNPC_Slowlog(t *testing.T) {
 	logger, read := captureSlowlog(t)
 	yamlStore2, _ := yamlfs.New(fs.Root())
 	repos2 := api.NewYamlRepositories(yamlStore2)
-	n := newNPC(fs, zerolog.Nop(), logger, repos2)
+	n := newNPC(zerolog.Nop(), logger, repos2)
 
 	require.NoError(t, n.UpdateNPC("naruto", "Инари", "Личная память/факты", "Встретил ГГ у моста"))
 

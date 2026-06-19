@@ -271,7 +271,7 @@ func (f *FileStore) PipeCat(rel string, w io.Writer) error {
 	if err != nil {
 		return err
 	}
-	defer fp.Close()
+	defer func() { _ = fp.Close() }()
 	_, err = io.Copy(w, fp)
 	return err
 }

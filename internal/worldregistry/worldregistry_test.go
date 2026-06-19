@@ -186,7 +186,7 @@ func TestSaveSortsBySlug(t *testing.T) {
 	if idxA < 0 || idxM < 0 || idxZ < 0 {
 		t.Fatalf("slugs missing from output:\n%s", out)
 	}
-	if !(idxA < idxM && idxM < idxZ) {
+	if idxA >= idxM || idxM >= idxZ {
 		t.Fatalf("not sorted: aaa=%d mmm=%d zzz=%d", idxA, idxM, idxZ)
 	}
 }

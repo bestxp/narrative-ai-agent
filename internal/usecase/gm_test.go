@@ -634,20 +634,6 @@ func TestGM_ToolResultUpdateState_ShortWithDelta(t *testing.T) {
 
 // --- in-place compaction tests -----------------------------
 
-// newGMTestEnvWithInPlace is a placeholder for future
-// end-to-end in-place compaction tests. Today the
-// in-place path requires a real Summarizer+LLM wiring
-// (production code path is exercised via Reply in the
-// full env), so we return the regular env and let
-// specific tests drill into the smaller unit
-// (appendChronicleEntry, prompt checks).
-func newGMTestEnvWithInPlace(t *testing.T, body string) (*GM, *storage.FileStore) {
-	t.Helper()
-	g, fs, _ := newGMTestEnv(t)
-	_ = body
-	return g, fs
-}
-
 // TestGM_AppendChronicleEntry_CreatesSection: first
 // in-place compaction creates the "## Хроника
 // текущего дня" section.

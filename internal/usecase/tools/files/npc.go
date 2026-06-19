@@ -30,8 +30,7 @@ type NPC struct {
 	slow  *slowlog.Logger
 }
 
-func newNPC(fs interface{}, log zerolog.Logger, slow *slowlog.Logger, repos *api.Repositories) *NPC {
-	_ = fs
+func newNPC(log zerolog.Logger, slow *slowlog.Logger, repos *api.Repositories) *NPC {
 	return &NPC{
 		repos: repos,
 		log:   log.With().Str("component", "npc").Logger(),

@@ -48,13 +48,7 @@ type State struct {
 	worldStateInvalidate func(reason string)
 }
 
-func newState(fs interface{}, log zerolog.Logger, slow *slowlog.Logger, repos *api.Repositories) *State {
-	// The legacy fs parameter is kept for API
-	// compatibility with the toolset wiring (which
-	// still passes *FileStore for legacy migration
-	// paths). The repository is the canonical write
-	// path; fs is unused here.
-	_ = fs
+func newState(log zerolog.Logger, slow *slowlog.Logger, repos *api.Repositories) *State {
 	return &State{
 		repos: repos,
 		log:   log.With().Str("component", "state").Logger(),

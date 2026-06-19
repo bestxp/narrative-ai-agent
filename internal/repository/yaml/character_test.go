@@ -125,7 +125,8 @@ func TestInventoryYaml_SetCurrency(t *testing.T) {
 
 func TestInventoryYaml_RemoveItem(t *testing.T) {
 	env := newTestEnv(t)
-	env.newInventoryRepo().AppendItem("markus", charprofile.Item{Name: "Кунай"})
+	_, err := env.newInventoryRepo().AppendItem("markus", charprofile.Item{Name: "Кунай"})
+	require.NoError(t, err)
 	require.NoError(t, env.newInventoryRepo().RemoveItem("markus", "Кунай"))
 	inv, _ := env.newInventoryRepo().Load("markus")
 	assert.Empty(t, inv.Items)

@@ -19,8 +19,7 @@ type StageTool struct {
 	log   zerolog.Logger
 }
 
-func newStage(fs interface{}, log zerolog.Logger, repos *api.Repositories) *StageTool {
-	_ = fs
+func newStage(log zerolog.Logger, repos *api.Repositories) *StageTool {
 	return &StageTool{repos: repos, log: log.With().Str("component", "stage").Logger()}
 }
 

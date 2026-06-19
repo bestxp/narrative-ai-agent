@@ -75,8 +75,12 @@ func TestExists(t *testing.T) {
 
 func TestWrite_Overwrites(t *testing.T) {
 	s, _ := New(t.TempDir())
-	s.Write("f.txt", []byte("first"))
-	s.Write("f.txt", []byte("second"))
+	if err := s.Write("f.txt", []byte("first")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Write("f.txt", []byte("second")); err != nil {
+		t.Fatal(err)
+	}
 	got, _ := s.Read("f.txt")
 	if string(got) != "second" {
 		t.Errorf("expected overwrite, got %q", got)
@@ -85,7 +89,9 @@ func TestWrite_Overwrites(t *testing.T) {
 
 func TestWrite_AtomicViaTmpRename(t *testing.T) {
 	s, _ := New(t.TempDir())
-	s.Write("a.txt", []byte("v1"))
+	if err := s.Write("a.txt", []byte("v1")); err != nil {
+		t.Fatal(err)
+	}
 	// During a successful Write there must not be a
 	// leftover .tmp file.
 	if _, err := os.Stat(filepath.Join(s.Root(), "a.txt.tmp")); !errors.Is(err, os.ErrNotExist) {
@@ -95,9 +101,15 @@ func TestWrite_AtomicViaTmpRename(t *testing.T) {
 
 func TestListChildren(t *testing.T) {
 	s, _ := New(t.TempDir())
-	s.Write("d/a.txt", []byte("x"))
-	s.Write("d/b.txt", []byte("y"))
-	s.Write("d/sub/c.txt", []byte("z"))
+	if err := s.Write("d/a.txt", []byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Write("d/b.txt", []byte("y")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Write("d/sub/c.txt", []byte("z")); err != nil {
+		t.Fatal(err)
+	}
 	got, err := s.ListChildren("d")
 	if err != nil {
 		t.Fatalf("ListChildren: %v", err)

@@ -7,10 +7,8 @@ import (
 	"io"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"text/template"
 	"time"
@@ -19,24 +17,16 @@ import (
 
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/gitops"
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/llm"
-	llmanthropic "github.com/bestxp/narrative-ai-agent/internal/adapter/llm/anthropic"
-	llmopenai "github.com/bestxp/narrative-ai-agent/internal/adapter/llm/openai"
-	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
 	"github.com/bestxp/narrative-ai-agent/internal/config"
 	"github.com/bestxp/narrative-ai-agent/internal/dispatcher"
 	"github.com/bestxp/narrative-ai-agent/internal/domain"
 	"github.com/bestxp/narrative-ai-agent/internal/health"
 	"github.com/bestxp/narrative-ai-agent/internal/logging"
 	"github.com/bestxp/narrative-ai-agent/internal/messaging"
-	"github.com/bestxp/narrative-ai-agent/internal/messaging/telegram"
-	vktransport "github.com/bestxp/narrative-ai-agent/internal/messaging/vk"
 	promptpkg "github.com/bestxp/narrative-ai-agent/internal/prompts"
-	"github.com/bestxp/narrative-ai-agent/internal/repository/api"
 	"github.com/bestxp/narrative-ai-agent/internal/slowlog"
-	yamlfs "github.com/bestxp/narrative-ai-agent/internal/storage/fs"
 	"github.com/bestxp/narrative-ai-agent/internal/structured"
 	"github.com/bestxp/narrative-ai-agent/internal/usecase"
-	"github.com/bestxp/narrative-ai-agent/internal/usecase/tools"
 )
 
 func main() {
@@ -61,24 +51,12 @@ func main() {
 
 	log.Info().Str("config", *cfgPath).Bool("no_llm", *disableLLM).Msg("starting lazy-universe bot")
 
-	absData, err := filepath.Abs(cfg.Paths.DataRoot)
-	if err != nil {
-		log.Fatal().Err(err).Msg("data root")
-	}
-	fs, err := storage.NewFileStoreWithLogger(absData, log)
-	if err != nil {
-		log.Fatal().Err(err).Msg("storage init")
-	}
+	fs, absData := buildStorage(cfg, log)
 
 	if !gitops.IsRepo(cfg.Paths.GitWorkdir) {
 		log.Warn().Str("workdir", cfg.Paths.GitWorkdir).Msg("not a git repo — commits will fail")
 	}
-	var gitOp *gitops.Operator
-	if cfg.Git.Disabled {
-		log.Info().Msg("git disabled (config: git.disabled=true)")
-	} else {
-		gitOp = gitops.NewWithLogger(cfg.Paths.GitWorkdir, cfg.Git.Remote, cfg.Git.Branch, cfg.Git.CommitAuthor, cfg.Git.CommitEmail, cfg.Git.RemoteDisabled, log)
-	}
+	gitOp := buildGit(cfg, log)
 
 	slow, slowWriter, err := buildSlowlog(cfg, log)
 	if err != nil {
@@ -86,29 +64,14 @@ func main() {
 	}
 	if cfg.Slowlog.Enabled {
 		log.Info().Str("path", cfg.Slowlog.File).Msg("slowlog enabled")
-		// Replace the logger with one that duplicates every
-		// JSON line into the slowlog file alongside the
-		// structured llm.request / llm.response events.
 		log = logging.NewWithSlowlog(logging.Config{Level: level, Pretty: *prettyLog}, slowWriter)
 	}
 
-	// role / systemPrompt / driver / summarizer must be
-	// wired BEFORE NewFileToolset: the file backend's
-	// memory concern now takes the LLM-driven summarizer
-	// so it can call back into a cheap model to compact
-	// overgrown NPC profiles. Without that wiring
-	// MaintainNPCs is a no-op and the legacy naive strip
-	// path stays in place (still safe, just less
-	// accurate).
 	role, ok := cfg.Role(config.NarrativeRole)
 	if !ok {
 		log.Fatal().Str("role", config.NarrativeRole).Msg("narrative role not configured")
 	}
 	log.Info().Strs("prompts", promptpkg.List()).Msg("bundled prompts")
-	// narrative.md.tmpl is rendered with the data-bag so
-	// word_limit and other config knobs are substituted at
-	// startup. Override-on-disk (if configured) still
-	// wins — see renderNarrativePrompt.
 	renderSnap := promptpkg.NarrativeConfigSnapshot{
 		WordLimit:                  cfg.Narrative.WordLimit,
 		Language:                   cfg.Narrative.Language,
@@ -116,236 +79,22 @@ func main() {
 		IncludeSystemStateInPrompt: cfg.Narrative.IncludeSystemStateInPrompt,
 		CompactionNotify:           cfg.Narrative.CompactionNotify,
 		CompactionNotifyVerbose:    cfg.Narrative.CompactionNotifyVerbose,
-		// Compaction knobs come from the new
-		// narrative.compaction section once the operator
-		// configures it. For now zero values mean "use
-		// the Go-side defaults" (see prompts.pickInt).
 	}
 	compactionSnap := renderSnap
 	systemPrompt, err := renderNarrativePrompt(role.SystemPromptPath, renderSnap)
 	if err != nil {
 		log.Fatal().Err(err).Str("path", role.SystemPromptPath).Msg("read system prompt")
 	}
-	// Build the LLM driver. Two implementations are
-	// supported (h4 hardcoded wire surface in both):
-	//   - "openai" (default): openai-go v3 SDK
-	//     (github.com/openai/openai-go/v3) over
-	//     /v1/chat/completions. response_format=json_object
-	//     + tool_choice=auto + strict_tools=true baked in.
-	//   - "anthropic": anthropic-sdk-go v1.48.0 over
-	//     /v1/messages. tool_choice=auto + strict_tools=true;
-	//     no response_format (the 4-field narrative shape is
-	//     described in the system prompt).
-	//
-	// The choice is per-process, not per-role: drivers
-	// are constructed at boot and serve every chat turn.
-	var driver llm.Driver
-	switch cfg.LLM.Driver {
-	case "", "openai":
-		driver = llmopenai.New(llm.RoleConfig{
-			APIURL:                   role.APIURL,
-			APIKey:                   role.APIKey,
-			Model:                    role.Model,
-			MaxTokens:                role.MaxTokens,
-			UsePrefillBracket:        role.UsePrefillBracket,
-			Temperature:              role.Temperature,
-			RequestTimeoutSeconds:    role.RequestTimeoutSeconds,
-			DisableThinking:          role.DisableThinking,
-			ReasoningEffort:          role.ReasoningEffort,
-			MaxEmptyRetries:          role.MaxEmptyRetries,
-			EmptyRetryTimeoutSeconds: role.EmptyRetryTimeoutSeconds,
-		}, log)
-		log.Info().Str("driver", "openai").Str("model", role.Model).Msg("llm driver ready")
-	case "anthropic":
-		driver = llmanthropic.NewWithSlowlog(llm.RoleConfig{
-			APIURL:                   role.APIURL,
-			APIKey:                   role.APIKey,
-			Model:                    role.Model,
-			MaxTokens:                role.MaxTokens,
-			UsePrefillBracket:        role.UsePrefillBracket,
-			Temperature:              role.Temperature,
-			RequestTimeoutSeconds:    role.RequestTimeoutSeconds,
-			DisableThinking:          role.DisableThinking,
-			ReasoningEffort:          role.ReasoningEffort,
-			MaxEmptyRetries:          role.MaxEmptyRetries,
-			EmptyRetryTimeoutSeconds: role.EmptyRetryTimeoutSeconds,
-		}, log, slow)
-		log.Info().Str("driver", "anthropic").Str("model", role.Model).Msg("llm driver ready")
-	default:
-		log.Fatal().Str("driver", cfg.LLM.Driver).Msg("unknown llm.driver; expected openai|anthropic")
-	}
-	// The usecase layer (gm, summarizer) depends on a
-	// narrow LLMClient interface that does not include
-	// Close. Wrap the driver in a tiny adapter that
-	// implements just the methods we need; this keeps
-	// the usecase surface stable while the driver
-	// contract grows (openai-go pooled resources live
-	// in main.go's responsibility).
-	llmCli := driverClient{driver: driver}
-	defer driver.Close()
 
-	// summarizer: reuses the same LLM SDK as the primary
-	// driver (openai or anthropic per cfg.LLM.Driver), but
-	// with a different system_prompt and lower max_tokens.
-	// We construct a fresh driver instance for the summary
-	// role so the per-call parameters (model, max_tokens,
-	// temperature) can differ from the GM's role.
-	var summarizer *usecase.Summarizer
-	{
-		var sumRole llm.RoleConfig
-		var sumPrompt string
-		var ok bool
-		if sumRoleCfg, hasSummary := cfg.Role("summary"); hasSummary {
-			sumRole = llm.RoleConfig{
-				APIURL:                   sumRoleCfg.APIURL,
-				APIKey:                   sumRoleCfg.APIKey,
-				Model:                    sumRoleCfg.Model,
-				MaxTokens:                sumRoleCfg.MaxTokens,
-				Temperature:              sumRoleCfg.Temperature,
-				RequestTimeoutSeconds:    sumRoleCfg.RequestTimeoutSeconds,
-				DisableThinking:          sumRoleCfg.DisableThinking,
-				ReasoningEffort:          sumRoleCfg.ReasoningEffort,
-				MaxEmptyRetries:          sumRoleCfg.MaxEmptyRetries,
-				EmptyRetryTimeoutSeconds: sumRoleCfg.EmptyRetryTimeoutSeconds,
-			}
-			sumPrompt, err = renderSummarizerPrompt("summary.md.tmpl", compactionSnap)
-			if err != nil {
-				log.Warn().Err(err).Str("path", sumRoleCfg.SystemPromptPath).Msg("summary prompt unreadable; dropping to fallback")
-			} else {
-				ok = true
-			}
-			log.Info().Str("model", sumRoleCfg.Model).Msg("summarizer: dedicated role")
-		}
-		if !ok {
-			sumRole = llm.RoleConfig{
-				APIURL:                role.APIURL,
-				APIKey:                role.APIKey,
-				Model:                 role.Model,
-				MaxTokens:             role.MaxTokens,
-				Temperature:           role.Temperature,
-				RequestTimeoutSeconds: role.RequestTimeoutSeconds,
-				DisableThinking:       role.DisableThinking,
-				ReasoningEffort:       role.ReasoningEffort,
-			}
-			sumPrompt, err = renderSummarizerPrompt("summary.md.tmpl", compactionSnap)
-			if err != nil || sumPrompt == "" {
-				log.Warn().Err(err).Msg("fallback summary prompt unreadable; compaction will be drop-only")
-			} else {
-				ok = true
-			}
-			log.Info().Str("model", role.Model).Msg("summarizer: fallback to narrative role (clamped)")
-		}
-		if ok {
-			var sumLLM llm.Driver
-			switch cfg.LLM.Driver {
-			case "anthropic":
-				sumLLM = llmanthropic.New(sumRole, log)
-			default:
-				sumLLM = llmopenai.New(sumRole, log)
-			}
-			if _, hasSummary := cfg.Role("summary"); hasSummary {
-				summarizer = usecase.NewSummarizer(sumLLM, sumRole, sumPrompt, slow, log)
-			} else {
-				summarizer = usecase.NewFallbackSummarizer(sumLLM, sumRole, sumPrompt, slow, log)
-			}
-			// Wire the in-place and end-of-day compaction
-			// prompts onto the same Summarizer. Both use
-			// the same model/role as the regular compaction
-			// path; the prompt differences (150-300 words,
-			// current-day vs 200-400 words, past-day) live
-			// in the .md files. All four are rendered
-			// against the data-bag (config knobs) so
-			// `{{ .Compaction.MemoriseSentencesPer30Days }}`
-			// and similar markers get the actual values
-			// from config.yaml.
-			if inPlacePrompt, err := renderSummarizerPrompt("compaction_in_place.md.tmpl", compactionSnap); err == nil && inPlacePrompt != "" {
-				summarizer.SetCompactionInPlacePrompt(inPlacePrompt)
-			} else {
-				log.Warn().Err(err).Msg("compaction_in_place.md.tmpl unreadable; in-place compaction will no-op")
-			}
-			if eodPrompt, err := renderSummarizerPrompt("end_of_day.md.tmpl", compactionSnap); err == nil && eodPrompt != "" {
-				summarizer.SetEndOfDayPrompt(eodPrompt)
-			} else {
-				log.Warn().Err(err).Msg("end_of_day.md.tmpl unreadable; end-of-day protocol will no-op")
-			}
-			if charMemPrompt, err := renderSummarizerPrompt("character_memory_maintain.md.tmpl", compactionSnap); err == nil && charMemPrompt != "" {
-				summarizer.SetCharacterMemoryPrompt(charMemPrompt)
-			} else {
-				log.Warn().Err(err).Msg("character_memory_maintain.md.tmpl unreadable; end-of-day memory defrag will no-op")
-			}
-			if chroniclePrompt, err := renderSummarizerPrompt("chronicle_summary.md.tmpl", compactionSnap); err == nil && chroniclePrompt != "" {
-				summarizer.SetChronicleSummaryPrompt(chroniclePrompt)
-			} else {
-				log.Warn().Err(err).Msg("chronicle_summary.md.tmpl unreadable; chronicle window compression falls back to base summary prompt")
-			}
-			// Wire the compaction knobs (InPlaceSummaryWords*,
-			// EndOfDaySummary*, OldTurnsSummary*, LoreTarget*,
-			// MemoriseSentence*) so the summarizer user-message
-			// templates can reference {{ .Compaction.* }}
-			// instead of hard-coded magic numbers.
-			summarizerData := promptpkg.NewPromptData(compactionSnap, promptpkg.CharacterData{}, promptpkg.WorldData{})
-			summarizer.SetCompactionConfig(summarizerData.Compaction)
-		}
-	}
+	driver, llmCli := buildLLMDriver(cfg, role, slow, log)
+	defer func() { _ = driver.Close() }()
 
-	ss := usecase.NewSessionStartWithLogger(fs, log)
-	fl := usecase.NewFirstLaunchWithLogger(fs, log)
-	sysSt := usecase.NewSystemState(fs, log, slow)
+	summarizer := buildSummarizer(cfg, role, compactionSnap, slow, log)
+	slots := buildSummarizerSlots(summarizer)
+	fileTools := buildFileToolset(fs, absData, slots, slow, log)
+	gm := buildGM(cfg, role, systemPrompt, fs, llmCli, fileTools, summarizer, slow, log)
+	disp := buildDispatcher(cfg, fs, gitOp, fileTools, slow, log)
 
-	// One Tool bundles every concern. main.go constructs it
-	// once, hands it to the dispatcher and the GM, and that's
-	// the entire wiring. The previous five-concrete-objects
-	// layout made it trivial to forget to wire one of them;
-	// the single Tool surface fails closed.
-	//
-	// summarizer is the LLM-driven compaction hook used for
-	// FOUR different compaction kinds: NPC profiles, lore.md,
-	// the 30-day memorise.md windows, and the active
-	// character's memory.yaml. The same *usecase.Summarizer
-	// implements all four; we pass the SAME adapter in all
-	// four slots so the production deployment gets the LLM
-	// path for every compaction. Pass nil to disable a slot
-	// (the file backend will log a warning and skip).
-	var npcSum tools.NPCSummarizer
-	var loreSum tools.LoreSummarizer
-	var chronicleSum tools.ChronicleSummarizer
-	var charMemSum tools.CharacterMemorySummarizer
-	if summarizer != nil {
-		adapter := summarizerAdapter{s: summarizer}
-		npcSum = adapter
-		loreSum = adapter
-		chronicleSum = adapter
-		charMemSum = adapter
-	}
-	yamlStore, _ := yamlfs.New(absData)
-	repos := api.NewYamlRepositories(yamlStore)
-	fileTools := usecase.NewFileToolset(fs, repos, log, slow, npcSum, loreSum, chronicleSum, charMemSum)
-	log.Info().Str("source", fileTools.Source()).Msg("file-backed toolset ready")
-	disp := dispatcher.New(cfg, fs, gitOp, fileTools, slow, log)
-
-	gm := usecase.NewGM(usecase.GMConfig{
-		Role: llm.RoleConfig{
-			Model:                    role.Model,
-			MaxTokens:                role.MaxTokens,
-			UsePrefillBracket:        role.UsePrefillBracket,
-			Temperature:              role.Temperature,
-			MaxEmptyRetries:          role.MaxEmptyRetries,
-			EmptyRetryTimeoutSeconds: role.EmptyRetryTimeoutSeconds,
-		},
-		SystemPrompt: string(systemPrompt),
-		Compaction: usecase.CompactionConfig{
-			ContextWindow: role.ContextWindow,
-			Threshold:     role.CompactionThreshold,
-			KeepRecent:    role.CompactionKeepRecent,
-		},
-	}, fs, llmCli, ss, fl, fileTools, summarizer, sysSt, slow, cfg.LLM.TokenTracking, cfg.LLM.IncludeInReply, log)
-	// Wire the worldStateInvalidate hook on the file-backed
-	// toolset so ArchiveDay (end_day) and Leave (leave_world)
-	// drop the cached WorldState in GM, forcing the next
-	// turn to rebuild index:1 from disk. /reload (dispatcher)
-	// calls gm.InvalidateWorldState directly — it does not
-	// go through the toolset.
-	fileTools.SetWorldStateInvalidate(gm.InvalidateWorldState)
 	if !*disableLLM {
 		disp.AttachGM(gm)
 		log.Info().Str("model", role.Model).Str("url", role.APIURL).Msg("gm attached")
@@ -353,47 +102,7 @@ func main() {
 		log.Warn().Msg("gm disabled via --no-llm; freeform will echo + validate only")
 	}
 
-	// Build the messaging client pool. Every configured transport
-	// gets its own client; they are fanned out by MultiClient.
-	var clients []messaging.Client
-
-	// --- Telegram ---
-	if cfg.Messaging.Telegram.IsConfigured() {
-		tgClient, err := telegram.New(telegram.Config{
-			Token:          cfg.Messaging.Telegram.Token,
-			PollingTimeout: cfg.Messaging.Telegram.PollingTimeout,
-			ParseMode:      cfg.Messaging.Telegram.ParseMode,
-			AllowedUserIDs: cfg.Messaging.Telegram.AllowedUserIDs,
-		}, log)
-		if err != nil {
-			log.Fatal().Err(err).Msg("telegram init")
-		}
-		clients = append(clients, tgClient)
-		commands := disp.Commands()
-		if err := tgClient.SetCommands(context.Background(), commands); err != nil {
-			log.Warn().Err(err).Msg("telegram: setMyCommands failed; native menu may be stale")
-		}
-	}
-
-	// --- VKontakte ---
-	if cfg.Messaging.VK.IsConfigured() {
-		vkClient, err := vktransport.New(vktransport.Config{
-			AccessToken:      cfg.Messaging.VK.AccessToken,
-			GroupID:          cfg.Messaging.VK.GroupID,
-			AllowedUserIDs:   cfg.Messaging.VK.AllowedUserIDs,
-			PollingWait:      cfg.Messaging.VK.PollingWait,
-			DisableStreaming: cfg.Messaging.VK.DisableStreaming,
-		}, log)
-		if err != nil {
-			log.Fatal().Err(err).Msg("vk init")
-		}
-		clients = append(clients, vkClient)
-	}
-
-	if len(clients) == 0 {
-		log.Fatal().Msg("no messaging transport configured")
-	}
-	pool := messaging.NewMultiClient(clients...)
+	pool, clients := buildMessagingPool(cfg, disp, log)
 
 	// Health server: k8s livenessProbe / readinessProbe targets.
 	hs := &healthServer{clients: clients}
@@ -426,21 +135,11 @@ func main() {
 		}
 	}()
 
-	if hs != nil && hs.srv != nil {
+	if hs.srv != nil {
 		hs.srv.MarkReady()
 	}
 
-	// auto-save: counter increments per freeform bot reply. When
-	// the threshold is reached the bot commits and pushes, and
-	// a separate Telegram message confirms the save.
-	var (
-		replyCount atomic.Int64
-		autoSave   = cfg.Git.AutoSave.AfterMessages
-	)
-	if autoSave < 0 {
-		autoSave = 0
-	}
-
+	autoSave := newAutoSaveState(cfg)
 	for _, c := range pool.All() {
 		c := c
 		wg.Add(1)
@@ -454,11 +153,6 @@ func main() {
 					if !ok {
 						return
 					}
-					// Per-transport settings: determine parse
-					// mode and reply-to behaviour from the
-					// client name. VK doesn't have a parse mode
-					// equivalent (VK messages are plain text by
-					// default) and always threads replies.
 					pm := cfg.Messaging.Telegram.ParseMode
 					rt := cfg.Messaging.Telegram.ReplyToUser
 					if c.Name() == "vk" {
@@ -473,25 +167,14 @@ func main() {
 						cfg.Narrative.CompactionNotify,
 						cfg.Narrative.CompactionNotifyVerbose,
 						msg)
-					// Auto-save counter increments on every
-					// freeform reply only — commands don't
-					// count because they're usually a quick
-					// /status or /me.
 					if msg.Command == "" {
-						if n := replyCount.Add(1); autoSave > 0 && int(n)%autoSave == 0 && gitOp != nil {
-							notify := runAutoSave(ctx, log, c, gitOp, msg.ChatID, cfg.Git.VerboseSave)
-							if notify != "" {
-								// Auto-save notify is its own bubble
-								// (ReplyToMessageID=0) so it appears
-								// as a meta-event, not as a reply
-								// to the player's last turn.
-								notifyPM := cfg.Messaging.Telegram.ParseMode
-								if c.Name() == "vk" {
-									notifyPM = ""
-								}
-								if err := c.Send(ctx, messaging.OutgoingMessage{ChatID: msg.ChatID, Text: notify, ParseMode: notifyPM}); err != nil {
-									log.Error().Err(err).Str("chat", msg.ChatID).Msg("auto-save notify failed")
-								}
+						if notify := autoSave.maybeAutoSave(ctx, log, c, gitOp, msg.ChatID, cfg.Git.VerboseSave); notify != "" {
+							notifyPM := cfg.Messaging.Telegram.ParseMode
+							if c.Name() == "vk" {
+								notifyPM = ""
+							}
+							if err := c.Send(ctx, messaging.OutgoingMessage{ChatID: msg.ChatID, Text: notify, ParseMode: notifyPM}); err != nil {
+								log.Error().Err(err).Str("chat", msg.ChatID).Msg("auto-save notify failed")
 							}
 						}
 					}
@@ -502,7 +185,7 @@ func main() {
 
 	wg.Wait()
 
-	if hs != nil && hs.srv != nil {
+	if hs.srv != nil {
 		shutCtx, shutCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		_ = hs.srv.Shutdown(shutCtx)
 		shutCancel()
@@ -565,10 +248,9 @@ func handleIncoming(ctx context.Context, log zerolog.Logger, c messaging.Client,
 
 	// Stream-capable transports (Telegram) get a throttled edit
 	// session. Others receive a single Send.
-	streamer, ok := c.(interface {
+	_, ok := c.(interface {
 		StartStream(ctx context.Context, chatID string, replyToMessageID int) (messaging.StreamSession, error)
 	})
-	_ = streamer
 	var session messaging.StreamSession
 	if ok {
 		s, err := c.StartStream(ctx, msg.ChatID, replyToID)

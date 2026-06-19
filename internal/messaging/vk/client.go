@@ -283,7 +283,7 @@ func splitForVK(text string) []string {
 	rest := string(runes)
 	for runeCount := len(runes); runeCount > maxVKMessageLen; runeCount = len([]rune(rest)) {
 		head := string([]rune(rest)[:maxVKMessageLen])
-		cut := -1
+		var cut int
 		if i := strings.LastIndex(head, "\n\n"); i > 0 {
 			cut = i + len("\n\n")
 		} else if i := strings.LastIndex(head, "\n"); i > 0 {
