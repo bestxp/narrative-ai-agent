@@ -3,6 +3,7 @@ package usecase
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -280,6 +281,92 @@ func (g *GM) ResetAllConversations() {
 	})
 }
 
+// RegenerateLast drops the trailing assistant turn (and any
+// tool-role messages that followed it) for the given chat and
+// re-runs runConversation so the model produces a fresh answer
+// to the last user message. This is the "resend" UX: the player
+// keeps their last message as-is and gets a new LLM response.
+//
+// Returns ErrNoLastUserTurn when the conversation has no
+// trailing user message to regenerate from.
+func (g *GM) RegenerateLast(ctx context.Context, chatID string, cb Callbacks) (TokenUsage, error) {
+	g.turnCounter++
+	conv := g.getConversation(chatID)
+	conv.mu.Lock()
+	trimmed := trimTrailingAssistant(conv.messages)
+	if len(trimmed) == len(conv.messages) {
+		conv.mu.Unlock()
+		return TokenUsage{}, ErrNoLastUserTurn
+	}
+	conv.messages = trimmed
+	conv.mu.Unlock()
+	if cb.OnStatus != nil {
+		cb.OnStatus("request_received", map[string]any{"text_len": 0, "regenerate": true})
+	}
+	return g.runConversation(ctx, chatID, cb)
+}
+
+// EditAndRegenerate replaces the last user message text with
+// newText, drops any trailing assistant turn, and re-runs
+// runConversation so the model produces a fresh answer to the
+// edited user message. This is the "edit" UX: the player fixes
+// a typo (or rewrites their intent) and the old LLM answer is
+// discarded.
+//
+// Returns ErrNoLastUserTurn when the conversation has no user
+// message to edit.
+func (g *GM) EditAndRegenerate(ctx context.Context, chatID, newText string, cb Callbacks) (TokenUsage, error) {
+	g.turnCounter++
+	conv := g.getConversation(chatID)
+	conv.mu.Lock()
+	trimmed := trimTrailingAssistant(conv.messages)
+	idx := lastUserIndex(trimmed)
+	if idx < 0 {
+		conv.mu.Unlock()
+		return TokenUsage{}, ErrNoLastUserTurn
+	}
+	trimmed[idx].Content = newText
+	trimmed = trimmed[:idx+1]
+	conv.messages = trimmed
+	conv.mu.Unlock()
+	if cb.OnStatus != nil {
+		cb.OnStatus("request_received", map[string]any{"text_len": len(newText), "edit": true})
+	}
+	return g.runConversation(ctx, chatID, cb)
+}
+
+// ErrNoLastUserTurn is returned by RegenerateLast / EditAndRegenerate
+// when the conversation has no user message to operate on.
+var ErrNoLastUserTurn = errors.New("gm: no last user turn to regenerate or edit")
+
+// trimTrailingAssistant drops trailing assistant and tool-role
+// messages so the conversation ends at the last user message.
+// Tool-role messages (role "tool") always belong to the
+// assistant turn they follow, so they are trimmed together.
+func trimTrailingAssistant(msgs []llm.Message) []llm.Message {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		role := msgs[i].Role
+		if role == "user" {
+			return msgs[:i+1]
+		}
+		if role == "system" {
+			return msgs[:i+1]
+		}
+	}
+	return msgs
+}
+
+// lastUserIndex returns the index of the last user-role message,
+// or -1 when none exists.
+func lastUserIndex(msgs []llm.Message) int {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == "user" {
+			return i
+		}
+	}
+	return -1
+}
+
 // Reply is the streaming entry point. It builds the prompt context,
 // calls the LLM, dispatches any tool calls, and pushes the resulting
 // text to the supplied callback. The callback returns an error to
@@ -304,12 +391,32 @@ func (g *GM) Reply(ctx context.Context, chatID, userText string, cb Callbacks) (
 	conv := g.getConversation(chatID)
 	conv.mu.Lock()
 	conv.messages = append(conv.messages, llm.Message{Role: "user", Content: userText})
-	history := append([]llm.Message(nil), conv.messages...)
 	conv.mu.Unlock()
 
 	if cb.OnStatus != nil {
 		cb.OnStatus("request_received", map[string]any{"text_len": len(userText)})
 	}
+
+	return g.runConversation(ctx, chatID, cb)
+}
+
+// runConversation runs the compaction preflight and the tool-call
+// loop on the current conversation history. It is the shared engine
+// between Reply (which appends a user turn first), EditAndRegenerate
+// (which replaces the last user turn) and RegenerateLast (which
+// drops the trailing assistant turn). Callers are responsible for
+// mutating conv.messages before invoking this; the loop itself only
+// reads and appends.
+func (g *GM) runConversation(ctx context.Context, chatID string, cb Callbacks) (TokenUsage, error) {
+	var totals TokenUsage
+	if g.tracking == "" || g.tracking == "off" {
+		totals.Source = "off"
+	}
+
+	conv := g.getConversation(chatID)
+	conv.mu.Lock()
+	history := append([]llm.Message(nil), conv.messages...)
+	conv.mu.Unlock()
 
 	// Compaction preflight: if the conversation history has
 	// grown past context_window * compaction_threshold, drop

@@ -60,6 +60,68 @@ type MessagingConfig struct {
 	// VK is the VKontakte messenger transport. Disabled when
 	// AccessToken or GroupID is empty.
 	VK VKConfig `yaml:"vk"`
+	// WSChat is the browser WebSocket chat used during development
+	// instead of VK/Telegram. It serves an embedded React app and
+	// a WebSocket endpoint on its own port. The wire protocol is
+	// JSON envelopes (type+payload) with bearer-token auth, designed
+	// to extend to a production WebSocket API.
+	WSChat WSChatConfig `yaml:"wschat"`
+}
+
+// WSChatConfig configures the browser WebSocket chat transport.
+// It runs on a separate port and is intended for development: the
+// operator opens the served page in a browser and chats with the
+// bot directly. Auth is a static bearer token (dev_token) checked
+// on the WebSocket upgrade and on the HTTP API endpoints. The
+// allowed_tokens list is the hook for a production deployment
+// where tokens are issued per-user; in dev a single dev_token is
+// enough.
+type WSChatConfig struct {
+	// Enabled turns the transport on. When false the wschat client
+	// is not constructed even if ListenAddr is set.
+	Enabled bool `yaml:"enabled"`
+	// ListenAddr is the bind address for the HTTP+WS server, e.g.
+	// ":8090" or "127.0.0.1:8090".
+	ListenAddr string `yaml:"listen_addr"`
+	// DevToken is the single bearer token accepted in dev. The
+	// browser client passes it as ?token=<dev_token> on the WS
+	// upgrade and as Authorization: Bearer on HTTP API calls. Treat
+	// as a secret; keep it in config.yaml (gitignored).
+	DevToken string `yaml:"dev_token"`
+	// AllowedTokens is the multi-token allow list for the
+	// production path. In dev it can stay empty (DevToken is
+	// enough); in prod each user gets their own token. A request
+	// is accepted when its token matches DevToken OR any entry in
+	// AllowedTokens.
+	AllowedTokens []string `yaml:"allowed_tokens"`
+	// ChatID is the logical chat id used by the wschat transport
+	// for the dev session. The GM keys conversation history on
+	// this id. "dev" is a sensible default.
+	ChatID string `yaml:"chat_id"`
+}
+
+// IsConfigured returns true when the wschat transport is enabled
+// and has a bind address.
+func (w WSChatConfig) IsConfigured() bool {
+	return w.Enabled && w.ListenAddr != ""
+}
+
+// IsAllowed reports whether the given bearer token is accepted by
+// the wschat transport. The token matches when it equals DevToken
+// or appears in AllowedTokens.
+func (w WSChatConfig) IsAllowed(token string) bool {
+	if token == "" {
+		return false
+	}
+	if w.DevToken != "" && token == w.DevToken {
+		return true
+	}
+	for _, t := range w.AllowedTokens {
+		if t == token {
+			return true
+		}
+	}
+	return false
 }
 
 // TelegramConfig is the per-transport configuration. Each transport
@@ -442,8 +504,9 @@ func (c *Config) Validate() error {
 	// At least one transport must be configured.
 	tgOK := c.Messaging.Telegram.IsConfigured()
 	vkOK := c.Messaging.VK.IsConfigured()
-	if !tgOK && !vkOK {
-		return errors.New("at least one messaging transport must be configured (telegram or vk)")
+	wsOK := c.Messaging.WSChat.IsConfigured()
+	if !tgOK && !vkOK && !wsOK {
+		return errors.New("at least one messaging transport must be configured (telegram, vk or wschat)")
 	}
 	if tgOK {
 		if c.Messaging.Telegram.Token == "REPLACE_WITH_BOTFATHER_TOKEN" {
@@ -459,6 +522,14 @@ func (c *Config) Validate() error {
 		}
 		if c.Messaging.VK.PollingWait == 0 {
 			c.Messaging.VK.PollingWait = 25
+		}
+	}
+	if wsOK {
+		if c.Messaging.WSChat.DevToken == "" && len(c.Messaging.WSChat.AllowedTokens) == 0 {
+			return errors.New("messaging.wschat.dev_token (or allowed_tokens) must be set when wschat is enabled")
+		}
+		if c.Messaging.WSChat.ChatID == "" {
+			c.Messaging.WSChat.ChatID = "dev"
 		}
 	}
 	if c.Paths.DataRoot == "" {

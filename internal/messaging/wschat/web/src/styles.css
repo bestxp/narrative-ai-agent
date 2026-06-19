@@ -1,0 +1,156 @@
+* { box-sizing: border-box; }
+html, body, #root { height: 100%; margin: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  background: #e9ecef;
+  color: #1c1e21;
+}
+
+/* Outer frame: leave breathing room around the chat column so the
+   composer does not stick to the very bottom of the viewport.
+   Centred column with max-width and side padding, full-height flex. */
+.app {
+  display: flex; flex-direction: column;
+  max-width: 800px; height: calc(100% - 24px);
+  margin: 12px auto;
+  background: #ffffff;
+  border: 1px solid #d0d7de;
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.06);
+  position: relative; /* anchor for the jump-to-bottom pill */
+}
+
+/* Header */
+.header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 16px; background: #f6f8fa; border-bottom: 1px solid #e1e4e8;
+  flex-shrink: 0;
+}
+.header h1 { font-size: 15px; margin: 0; font-weight: 600; }
+.header .status { font-size: 12px; color: #6a737d; }
+.header .status.connected { color: #1a7f37; }
+.header .status.disconnected { color: #cf222e; }
+
+/* Command bar */
+.command-bar {
+  display: flex; flex-wrap: wrap; gap: 6px;
+  padding: 8px 16px; background: #ffffff; border-bottom: 1px solid #e1e4e8;
+  flex-shrink: 0;
+}
+.command-bar button {
+  font-size: 12px; padding: 4px 10px; border: 1px solid #d1d5da;
+  border-radius: 12px; background: #f6f8fa; cursor: pointer; color: #24292e;
+}
+.command-bar button:hover { background: #eaecef; }
+.command-bar button .desc { color: #6a737d; margin-left: 6px; font-size: 11px; }
+
+/* Messages — scrollable middle area. min-height: 0 is the magic
+   that lets a flex child with overflow scroll correctly. */
+.messages {
+  flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px;
+  min-height: 0;
+  background: #ffffff;
+}
+.msg {
+  position: relative;
+  max-width: 78%; padding: 9px 14px; border-radius: 14px;
+  font-size: 14px; line-height: 1.5; word-wrap: break-word;
+}
+.msg.user { align-self: flex-end; background: #0969da; color: white; }
+.msg.assistant { align-self: flex-start; background: #f6f8fa; border: 1px solid #e1e4e8; }
+.msg.assistant p:first-child { margin-top: 0; }
+.msg.assistant p:last-child { margin-bottom: 0; }
+.msg.assistant pre { background: #ffffff; padding: 8px; border-radius: 6px; overflow-x: auto; font-size: 12px; border: 1px solid #e1e4e8; }
+.msg.assistant code { background: #eaeef2; padding: 1px 4px; border-radius: 3px; font-size: 12px; }
+.msg.assistant pre code { background: none; padding: 0; }
+.msg.assistant h1, .msg.assistant h2, .msg.assistant h3 { margin: 6px 0 4px; font-size: 15px; }
+.msg.assistant ul, .msg.assistant ol { margin: 4px 0; padding-left: 20px; }
+.msg.assistant a { color: #0969da; }
+
+/* Token footer: dim, right-aligned, small. Sits inside the
+   assistant bubble so the chat scroll stays tidy. */
+.msg.assistant .tokens {
+  margin-top: 6px; padding-top: 6px; border-top: 1px dashed #d1d5da;
+  font-size: 11px; color: #6a737d; text-align: right;
+}
+
+/* Action row under the most recent user message. Sits OUTSIDE
+   the bubble as its own flex row, anchored to the right edge so
+   it lines up under the right-aligned user bubble regardless of
+   bubble width or height. Always visible — chat UIs that hide
+   actions behind hover frustrate users on touch devices and in
+   dev sessions. */
+.msg-actions-row {
+  align-self: flex-end;
+  display: flex; gap: 4px; margin-top: -6px; margin-bottom: 4px;
+}
+.msg-actions-row button {
+  border: 1px solid #d1d5da; background: #ffffff; color: #57606a;
+  font-size: 11px; padding: 3px 8px; border-radius: 10px; cursor: pointer;
+  white-space: nowrap;
+}
+.msg-actions-row button:hover { background: #f6f8fa; color: #1c1e21; border-color: #afb8c1; }
+
+/* Streaming placeholder — visually identical to a final assistant
+   bubble (same background, border, padding) so the eye does not
+   see a "fake over real" layering when a new turn opens mid-
+   scroll. The only difference is a small pulsing dot in the
+   bottom-right corner to signal "still typing". The markdown
+   content streams in as plain text inside the same bubble. */
+.streaming-bubble { min-height: 1.5em; position: relative; }
+.streaming-bubble .status-text { color: #6a737d; font-style: italic; }
+.streaming-bubble::after {
+  content: ""; position: absolute; right: 12px; bottom: 10px;
+  width: 8px; height: 8px; background: #0969da; border-radius: 50%;
+  animation: pulse 1.2s ease-in-out infinite;
+}
+@keyframes pulse { 0%, 100% { opacity: 0.25; transform: scale(0.85); } 50% { opacity: 1; transform: scale(1); } }
+
+/* Jump-to-bottom pill — appears when the user has scrolled up
+   and a new turn is opening / streaming below. Click to scroll
+   back to the latest bubble. */
+.jump-to-bottom {
+  position: absolute; right: 24px; bottom: 110px;
+  border: 1px solid #d1d5da; background: #ffffff; color: #1c1e21;
+  border-radius: 18px; padding: 6px 14px; font-size: 12px; cursor: pointer;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.08); z-index: 10;
+}
+.jump-to-bottom:hover { background: #f6f8fa; border-color: #afb8c1; }
+
+/* Composer wrapper — pushes the composer slightly above the
+   bottom edge of the chat card so it does not feel glued to the
+   frame. The card has rounded corners; this gives them air. */
+.composer-wrap {
+  padding: 12px 16px 16px;
+  background: #ffffff;
+  border-top: 1px solid #e1e4e8;
+  flex-shrink: 0;
+}
+.composer {
+  display: flex; gap: 8px; align-items: flex-end;
+}
+.composer textarea {
+  flex: 1; resize: none; min-height: 38px; max-height: 160px;
+  padding: 9px 12px;
+  border: 1px solid #d1d5da; border-radius: 10px;
+  font-family: inherit; font-size: 14px; line-height: 1.4;
+  background: #ffffff;
+}
+.composer textarea:focus { outline: none; border-color: #0969da; box-shadow: 0 0 0 3px rgba(9,105,218,0.15); }
+.composer button {
+  border: none; background: #0969da; color: white; border-radius: 10px;
+  padding: 0 16px; height: 38px; font-size: 16px; cursor: pointer; font-weight: 500;
+}
+.composer button:disabled { background: #c8d1da; cursor: not-allowed; }
+
+/* Edit banner */
+.edit-banner {
+  background: #fff8c5; padding: 6px 16px; font-size: 12px; color: #5c4d00;
+  display: flex; justify-content: space-between; align-items: center;
+  flex-shrink: 0;
+}
+.edit-banner button {
+  border: none; background: transparent; color: #5c4d00; cursor: pointer; font-size: 12px;
+  text-decoration: underline;
+}

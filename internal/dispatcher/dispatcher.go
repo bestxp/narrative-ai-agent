@@ -148,6 +148,36 @@ func (d *Dispatcher) HandleStream(ctx context.Context, msg messaging.IncomingMes
 	return err
 }
 
+// ResendLast re-runs the GM on the last user message of the given
+// chat, discarding the previous LLM answer. The new answer streams
+// through cb the same way a normal HandleStream reply does. Returns
+// usecase.ErrNoLastUserTurn when the chat has no history yet.
+//
+// This is the dispatcher entry point for the "resend last" UX in
+// the wschat transport; it is transport-agnostic so any future
+// client (Telegram inline button, Discord slash command) can drive
+// the same path.
+func (d *Dispatcher) ResendLast(ctx context.Context, chatID string, cb usecase.Callbacks) error {
+	if d.gm == nil {
+		return errors.New("gm not wired")
+	}
+	_, err := d.gm.RegenerateLast(ctx, chatID, cb)
+	return err
+}
+
+// EditLast replaces the last user message in the given chat with
+// newText and re-runs the GM, discarding the previous LLM answer.
+// The new answer streams through cb. Returns
+// usecase.ErrNoLastUserTurn when the chat has no user message to
+// edit.
+func (d *Dispatcher) EditLast(ctx context.Context, chatID, newText string, cb usecase.Callbacks) error {
+	if d.gm == nil {
+		return errors.New("gm not wired")
+	}
+	_, err := d.gm.EditAndRegenerate(ctx, chatID, newText, cb)
+	return err
+}
+
 func (d *Dispatcher) commit(msg string) gitops.CommitResult {
 	if d.git == nil {
 		return gitops.CommitResult{}

@@ -155,7 +155,7 @@ func main() {
 					}
 					pm := cfg.Messaging.Telegram.ParseMode
 					rt := cfg.Messaging.Telegram.ReplyToUser
-					if c.Name() == "vk" {
+					if c.Name() == "vk" || c.Name() == "wschat" {
 						pm = ""
 						rt = true
 					}
@@ -170,7 +170,7 @@ func main() {
 					if msg.Command == "" {
 						if notify := autoSave.maybeAutoSave(ctx, log, c, gitOp, msg.ChatID, cfg.Git.VerboseSave); notify != "" {
 							notifyPM := cfg.Messaging.Telegram.ParseMode
-							if c.Name() == "vk" {
+							if c.Name() == "vk" || c.Name() == "wschat" {
 								notifyPM = ""
 							}
 							if err := c.Send(ctx, messaging.OutgoingMessage{ChatID: msg.ChatID, Text: notify, ParseMode: notifyPM}); err != nil {

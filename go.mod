@@ -15,6 +15,7 @@ require (
 
 require (
 	github.com/go-json-experiment/json v0.0.0-20260601182631-00ed12fed2a6 // indirect
+	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/klauspost/compress v1.18.4 // indirect
 	github.com/vmihailenco/msgpack/v5 v5.4.1 // indirect
 	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect

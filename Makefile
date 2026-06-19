@@ -2,17 +2,18 @@ APP        := bot
 BIN_DIR    := bin
 MAIN_PKG   := ./cmd/$(APP)
 LDFLAGS    := -s -w
+WEB_DIR    := internal/messaging/wschat/web
 
 PLATFORMS  := linux-amd64 linux-arm64 darwin-amd64 darwin-arm64 windows-amd64 windows-arm64
 
-.PHONY: help build build-all test test-race vet tidy clean $(addprefix build-,$(PLATFORMS))
+.PHONY: help build build-all test test-race vet tidy clean web web-dev $(addprefix build-,$(PLATFORMS))
 
 help: ## Show this help
 	@awk 'BEGIN {FS = ":.*##"; printf "Usage:\n  make \033[36m<target>\033[0m\n\nTargets:\n"} /^[a-zA-Z_-]+:.*?##/ { printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
 
 HOST_PLATFORM := $(shell uname -s | tr '[:upper:]' '[:lower:]')-$(shell uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
 
-build: build-$(HOST_PLATFORM) ## Build for the current host
+build: web build-$(HOST_PLATFORM) ## Build web assets + binary for the current host
 
 build-all: $(addprefix build-,$(PLATFORMS)) ## Build the full platform matrix
 
@@ -39,3 +40,9 @@ tidy: ## Sync go.mod / go.sum
 
 clean: ## Remove build artifacts
 	rm -rf $(BIN_DIR)
+
+web: ## Build the wschat React app into web/dist (embedded via go:embed)
+	cd $(WEB_DIR) && npm install --no-audit --no-fund && npm run build
+
+web-dev: ## Run the wschat React app in Vite dev mode (proxy to :8090)
+	cd $(WEB_DIR) && npm run dev

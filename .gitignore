@@ -13,3 +13,5 @@
 # Docker
 /.docker/
 /docker-compose.override.yml
+# wschat web build
+/internal/messaging/wschat/web/node_modules/

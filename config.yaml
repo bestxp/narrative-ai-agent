@@ -30,6 +30,22 @@ messaging:
     # Long-poll wait, секунды. VK рекомендует 25.
     polling_wait: 25
 
+  # WebSocket chat для разработки в браузере. Запускается на отдельном
+  # порту; встраиваемая React-страница + WS endpoint. Используется
+  # вместо VK/Telegram при локальной разработке. Протокол JSON-envelope
+  # (type+payload), bearer-token auth с заделом на production.
+  wschat:
+    enabled: true
+    # Адрес HTTP+WS сервера. ":8090" = все интерфейсы.
+    listen_addr: "127.0.0.1:8090"
+    # Dev bearer token. Браузер шлёт ?token=<dev_token> на WS-апгрейд
+    # и Authorization: Bearer на HTTP API. Хранить в секретах.
+    dev_token: "dev-secret-change-me"
+    # Multi-token allow list для production. В dev можно оставить пустым.
+    allowed_tokens: []
+    # Логический chat id для dev-сессии. GM ключит историю на нём.
+    chat_id: "dev"
+
 paths:
   data_root: "game-data"   # info.yaml, characters/, worlds/
   git_workdir: "."         # git add/commit/push

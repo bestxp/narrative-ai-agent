@@ -17,6 +17,7 @@ import (
 	"github.com/bestxp/narrative-ai-agent/internal/messaging"
 	"github.com/bestxp/narrative-ai-agent/internal/messaging/telegram"
 	vktransport "github.com/bestxp/narrative-ai-agent/internal/messaging/vk"
+	"github.com/bestxp/narrative-ai-agent/internal/messaging/wschat"
 	promptpkg "github.com/bestxp/narrative-ai-agent/internal/prompts"
 	"github.com/bestxp/narrative-ai-agent/internal/repository/api"
 	"github.com/bestxp/narrative-ai-agent/internal/slowlog"
@@ -294,6 +295,14 @@ func buildMessagingPool(cfg *config.Config, disp *dispatcher.Dispatcher, log zer
 			log.Fatal().Err(err).Msg("vk init")
 		}
 		clients = append(clients, vkClient)
+	}
+	if cfg.Messaging.WSChat.IsConfigured() {
+		wsClient, err := wschat.New(cfg.Messaging.WSChat, disp, disp.Commands(), log)
+		if err != nil {
+			log.Fatal().Err(err).Msg("wschat init")
+		}
+		clients = append(clients, wsClient)
+		log.Info().Str("addr", cfg.Messaging.WSChat.ListenAddr).Msg("wschat transport enabled")
 	}
 	if len(clients) == 0 {
 		log.Fatal().Msg("no messaging transport configured")
