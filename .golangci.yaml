@@ -1,0 +1,193 @@
+version: "2"
+run:
+  concurrency: 4
+  issues-exit-code: 1
+  allow-parallel-runners: true
+linters:
+  default: all
+  disable:
+    - depguard
+    - exhaustruct
+    - godox
+    - gomoddirectives
+    - mnd
+    - testableexamples
+    - varnamelen
+    - wsl  # deprecated, replaced by wsl_v5
+    - noinlineerr
+    - gomodguard # deprecated, replaced by gomodguard_v2
+    - goconst # disabled, for release
+  enable:
+    - wsl_v5
+  settings:
+    tagalign:
+      align: false
+      sort: false
+    cyclop:
+      max-complexity: 20
+      package-average: 0
+    exhaustive:
+      default-signifies-exhaustive: true
+    funlen:
+      lines: 70
+      statements: 40
+    govet:
+      settings:
+        printf:
+          funcs:
+            - debugf
+            - infof
+            - warnf
+            - errorf
+            - debug
+            - info
+            - warn
+            - error
+    ireturn:
+      allow:
+        - error
+        - empty
+        - stdlib
+    lll:
+      line-length: 130
+    mnd:
+      ignored-numbers:
+        - "2"
+        - "8"
+        - "0o400"
+        - "0o444"
+        - "0o600"
+        - "0o644"
+        - "0o666"
+        - "0o700"
+        - "0o755"
+        - "0o777"
+        - "1e3"
+        - "1e6"
+        - "1e9"
+        - "1e10"
+        - "1e12"
+    nlreturn:
+      block-size: 2
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+      allow-no-explanation:
+        - gochecknoglobals
+    tagliatelle:
+      case:
+        rules:
+          avro: snake
+          bson: camel
+          env: upperSnake
+          envconfig: upperSnake
+          json: kebab
+          mapstructure: kebab
+          xml: camel
+          yaml: kebab
+        use-field-name: true
+    wrapcheck:
+      ignore-sigs:
+        - .Errorf(
+        - errors.New(
+        - errors.Unwrap(
+        - .Wrap(
+        - .Wrapf(
+        - .WithMessage(
+        - .WithMessagef(
+        - .WithStack(
+        - (context.Context).Err()
+    wsl_v5:
+      allow-first-in-block: true
+      allow-whole-block: false
+      branch-max-lines: 2
+      enable:
+        - err
+      disable:
+        - assign
+        - decl
+    modernize:
+      disable:
+        - any
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      - linters:
+          - gocritic
+        text: 'commentFormatting: put a space between `//` and comment text'
+        source: //[/]+
+      - linters:
+          - godot
+        source: /[*]+/
+      - linters:
+          - goconst
+        text: string `(linux|windows|darwin)` has [0-9]+ occurrences
+      - linters:
+          - nonamedreturns
+        source: \) \(\w+, \w+ (?P<type>[a-zA-Z0-9.\[\]*]+)[^)]*\) \{$
+      - linters:
+          - nonamedreturns
+        source: \) \((\w+ (?P<type>[a-zA-Z0-9.\[\]*]+), ){2,}\w+ (?P<type2>[a-zA-Z0-9.\[\]*]+)\) \{$
+      - linters:
+          - nolintlint
+        text: is unused for linter "ireturn"
+      - linters:
+          - lll
+        source: ^\s+//\s+http\S+$
+      - linters:
+          - cyclop
+          - funlen
+          - gocognit
+          - maintidx
+        source: ^func Test|Benchmark|subtest
+      - linters:
+          - ireturn
+          - lll
+          - nlreturn
+          - wsl_v5
+          - dupl
+          - gci
+        path: .*_mock((_internal)?_test)?.go
+      - path: (.+)\.go$
+        text: do not define dynamic errors, use wrapped static errors instead
+      - path: (.+)_generated.go
+        linters:
+          - nlreturn
+          - gci
+          - wsl_v5
+      - path: .*_test.go
+        linters:
+          - goconst
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+      - vendor$
+issues:
+  max-issues-per-linter: 100
+formatters:
+  enable:
+    - gci
+    - gofmt
+    - gofumpt
+    - goimports
+  settings:
+    gci:
+      sections:
+        - standard
+        - default
+        - blank
+        - dot
+      custom-order: true
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+      - vendor$
