@@ -76,6 +76,7 @@ func (d *Dispatcher) Handle(ctx context.Context, msg messaging.IncomingMessage) 
 		if err := d.HandleStream(ctx, msg, cb); err != nil {
 			return "", err
 		}
+
 		return buf.String(), nil
 	}
 	switch msg.Command {
@@ -106,9 +107,11 @@ func (d *Dispatcher) Handle(ctx context.Context, msg messaging.IncomingMessage) 
 	case "help":
 		return d.cmdHelp()
 	}
+
 	return "", nil
 }
 
+// HandleStream is the callback-based entry point. It is used by
 // HandleStream is the callback-based entry point. It is used by
 // main.go to drive Telegram streaming — OnDelta is called for
 // every LLM text fragment, OnStatus rotates the "…" placeholder
@@ -149,6 +152,7 @@ func (d *Dispatcher) HandleStream(ctx context.Context, msg messaging.IncomingMes
 		})
 	}
 	_, err := d.gm.Reply(ctx, msg.ChatID, msg.Text, cb)
+
 	return fmt.Errorf("handle_stream: Reply failed: %w", err)
 }
 
@@ -261,7 +265,7 @@ func (d *Dispatcher) cmdMe() (string, error) {
 		return "Нет активного персонажа. /launch сначала.", nil
 	}
 	if parseErr != nil {
-		return "", parseErr
+		return "", fmt.Errorf("parse info: %w", parseErr)
 	}
 	snap, err := d.tools.Read(parsed.ActiveCharacter, parsed.ActiveWorld)
 	if err != nil {
@@ -320,12 +324,18 @@ func (d *Dispatcher) formatCommitResult(res gitops.CommitResult, verbose bool) s
 		return "нечего коммитить (no changes)."
 	}
 	if verbose {
-		out := "✅ сохранено: commit " + res.Hash + "\n"
-		out += "  файлов: " + itoa(len(res.FilesChanged)) + "\n"
+		var b strings.Builder
+		b.WriteString("✅ сохранено: commit ")
+		b.WriteString(res.Hash)
+		b.WriteString("\n  файлов: ")
+		b.WriteString(itoa(len(res.FilesChanged)))
+		b.WriteString("\n")
 		for _, f := range res.FilesChanged {
-			out += "  - " + f + "\n"
+			b.WriteString("  - ")
+			b.WriteString(f)
+			b.WriteString("\n")
 		}
-		return out
+		return b.String()
 	}
 	return "✅ сохранено: commit " + res.Hash
 }
@@ -360,7 +370,7 @@ func (d *Dispatcher) cmdPush() (string, error) {
 	return "git push выполнен.", nil
 }
 
-func (d *Dispatcher) cmdMaintenance(ctx context.Context) (string, error) {
+func (d *Dispatcher) cmdMaintenance(_ context.Context) (string, error) {
 	if !d.fs.Exists(storage.InfoFile) {
 		return "Нет активного мира.", nil
 	}
@@ -393,7 +403,7 @@ func (d *Dispatcher) cmdMaintenance(ctx context.Context) (string, error) {
 	return "Обслуживание выполнено. Выжимка NPC: не требуется.", nil
 }
 
-func (d *Dispatcher) cmdEndDay(ctx context.Context, msg messaging.IncomingMessage) (string, error) {
+func (d *Dispatcher) cmdEndDay(_ context.Context, msg messaging.IncomingMessage) (string, error) {
 	if len(msg.Args) < 2 {
 		return "Использование: /endday <номер_дня> <краткая_выжимка...>", nil
 	}

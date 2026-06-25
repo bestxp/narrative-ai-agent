@@ -150,7 +150,7 @@ func (n *NPC) Create(world string, p tools.NPCProfile) error {
 	if strings.TrimSpace(p.Relations) != "" {
 		// Legacy free-text relations — split by lines into
 		// the structured RelationsNPCs array.
-		for _, line := range strings.Split(p.Relations, "\n") {
+		for line := range strings.SplitSeq(p.Relations, "\n") {
 			line = strings.TrimSpace(line)
 			if line == "" {
 				continue
@@ -165,7 +165,7 @@ func (n *NPC) Create(world string, p tools.NPCProfile) error {
 		}
 	}
 	if strings.TrimSpace(p.PersonalMemory) != "" {
-		for _, line := range strings.Split(p.PersonalMemory, "\n") {
+		for line := range strings.SplitSeq(p.PersonalMemory, "\n") {
 			if t := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "- ")); t != "" {
 				profile.PersonalMemory = append(profile.PersonalMemory, t)
 			}
@@ -179,7 +179,7 @@ func (n *NPC) Create(world string, p tools.NPCProfile) error {
 		}
 	}
 	if strings.TrimSpace(p.CriticalKnowledge) != "" {
-		for _, line := range strings.Split(p.CriticalKnowledge, "\n") {
+		for line := range strings.SplitSeq(p.CriticalKnowledge, "\n") {
 			if t := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "- ")); t != "" {
 				profile.CriticalKnowledge = append(profile.CriticalKnowledge, t)
 			}
@@ -318,7 +318,7 @@ func (n *NPC) Search(world, query string) (*SearchResult, error) {
 	r := n.loadRegistry(world)
 	entry, ok := r.Lookup(query)
 	if !ok {
-		return nil, nil
+		return nil, ErrNPCNotFound
 	}
 	profile, err := n.repos.NPCProfile.Load(world, entry.Slug)
 	if err != nil {

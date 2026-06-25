@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -98,14 +99,7 @@ func (w *World) switchActive(toWorld, character string) error {
 		info.ActiveCharacter = character
 	}
 	info.ActiveWorld = toWorld
-	found := false
-	for _, x := range info.Worlds {
-		if x == toWorld {
-			found = true
-			break
-		}
-	}
-	if !found {
+	if !slices.Contains(info.Worlds, toWorld) {
 		info.Worlds = append(info.Worlds, toWorld)
 	}
 	return w.repos.Info.Save(info)

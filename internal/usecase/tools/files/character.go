@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/rs/zerolog"
@@ -53,6 +54,7 @@ func newCharacter(repos *api.Repositories, log zerolog.Logger, slow *slowlog.Log
 			if err != nil {
 				return ""
 			}
+
 			return info.ActiveWorld
 		},
 	}
@@ -94,6 +96,7 @@ func (c *Character) AppendSoul(character, section, value string) (bool, error) {
 	if ok {
 		c.logEvent(character, "SOUL.yaml")
 	}
+
 	return ok, nil
 }
 
@@ -121,6 +124,7 @@ func (c *Character) AppendSkill(character, section, value string) (bool, error) 
 	if ok {
 		c.logEvent(character, "skill.yaml")
 	}
+
 	return ok, nil
 }
 
@@ -146,6 +150,7 @@ func (c *Character) AppendMemorySection(character, section, value string) (bool,
 	if ok {
 		c.logEvent(character, "memory.yaml")
 	}
+
 	return ok, nil
 }
 
@@ -165,6 +170,7 @@ func (c *Character) AppendInventoryItem(character string, item charprofile.Item)
 	if ok {
 		c.logEvent(character, "inventory.yaml")
 	}
+
 	return ok, nil
 }
 
@@ -176,7 +182,12 @@ func (c *Character) RemoveInventoryItem(character, name string) error {
 	if strings.TrimSpace(name) == "" {
 		return ErrEmptySection
 	}
-	return c.repos.Inventory.RemoveItem(character, name)
+
+	if err := c.repos.Inventory.RemoveItem(character, name); err != nil {
+		return fmt.Errorf("remove_inventory_item: %w", err)
+	}
+
+	return nil
 }
 
 // SetCurrency REPLACES the count of a currency
@@ -361,12 +372,7 @@ func ExtractDayNumber(s string) (int, bool) {
 // avoid exporting the helper there — the file
 // toolset is the only caller.
 func enumContains(target string, list []string) bool {
-	for _, s := range list {
-		if s == target {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(list, target)
 }
 
 // logEvent emits a structured log entry + slowlog

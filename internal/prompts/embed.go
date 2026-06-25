@@ -1,24 +1,3 @@
-// Package prompts serves the bundled skill prompts. The source
-// files live in this directory; they are baked into the
-// binary at build time via //go:embed so the operator does not
-// have to ship them next to the executable.
-//
-// Why embed instead of a relative path at runtime:
-//
-//   - The skill files are *behaviour* of the bot, not data.
-//     A typo or a missing file would change how the GM
-//     reasons, silently, and the operator would have no clue
-//     which version of the prompt is actually in use.
-//   - Single-file deploys: `bot-windows-amd64.exe config.yaml`
-//     is enough. No need to remember to copy the prompts dir.
-//
-// If a future role needs its own prompt, add the .md.tmpl
-// file to this directory and call
-// `prompts.Render("<name>.md.tmpl", data)` — go:embed will
-// pick it up automatically thanks to the wildcard.
-//
-// Templates are *code*, not data — same lifecycle as .go:
-// a typo = a build-time error, never a silent runtime drift.
 package prompts
 
 import (
@@ -48,6 +27,7 @@ func List() []string {
 			out = append(out, e.Name())
 		}
 	}
+
 	return out
 }
 
@@ -57,7 +37,7 @@ func List() []string {
 // thing. Templates never change at runtime (they are
 // embedded and stable per process), so no invalidation
 // API is needed.
-var templateCache sync.Map // map[string]*template.Template
+var templateCache sync.Map //nolint:gochecknoglobals // process-wide memoisation cache for parsed templates // map[string]*template.Template
 
 // Render reads the named prompt from the embedded FS,
 // parses it as a Go template with missingkey=error,
@@ -85,6 +65,7 @@ func Render(name string, data PromptData) (string, error) {
 	if err := tpl.Execute(&b, data); err != nil {
 		return "", fmt.Errorf("prompts: render %q: %w", name, err)
 	}
+
 	return b.String(), nil
 }
 
@@ -96,6 +77,7 @@ func getOrParse(name, src string) (*template.Template, error) {
 		if !ok {
 			return nil, fmt.Errorf("prompts: cache for %q has unexpected type %T", name, v)
 		}
+
 		return tpl, nil
 	}
 	tpl, err := template.New(name).
@@ -114,6 +96,7 @@ func getOrParse(name, src string) (*template.Template, error) {
 		return nil, fmt.Errorf("prompts: parse %q: %w", name, err)
 	}
 	templateCache.Store(name, tpl)
+
 	return tpl, nil
 }
 

@@ -29,10 +29,12 @@ func main() {
 		fmt.Fprintln(os.Stderr, "healthprobe: get:", err)
 		os.Exit(1)
 	}
-	defer func() { _ = r.Body.Close() }()
-	if r.StatusCode < 200 || r.StatusCode >= 400 {
-		fmt.Fprintf(os.Stderr, "healthprobe: status %d\n", r.StatusCode)
-		os.Exit(1)
-	}
-	fmt.Printf("ok %d\n", r.StatusCode) //nolint:forbidigo // healthprobe stdout contract: "ok <code>"
+	func() {
+		defer func() { _ = r.Body.Close() }()
+		if r.StatusCode < 200 || r.StatusCode >= 400 {
+			fmt.Fprintf(os.Stderr, "healthprobe: status %d\n", r.StatusCode)
+			os.Exit(1)
+		}
+		fmt.Printf("ok %d\n", r.StatusCode) //nolint:forbidigo // healthprobe stdout contract: "ok <code>"
+	}()
 }

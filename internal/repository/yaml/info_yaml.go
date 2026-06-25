@@ -1,9 +1,9 @@
 package yaml
 
 import (
+	"fmt"
 	"strings"
 
-	"fmt"
 	"github.com/bestxp/narrative-ai-agent/internal/domain"
 	"github.com/bestxp/narrative-ai-agent/internal/storage"
 )

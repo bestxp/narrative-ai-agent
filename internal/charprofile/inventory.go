@@ -86,6 +86,7 @@ func LoadInventory(body string) (Inventory, error) {
 	if err := yaml.Unmarshal([]byte(body), &inv); err != nil {
 		return inv, fmt.Errorf("charprofile: inventory: yaml.Unmarshal: %w", err)
 	}
+
 	return inv, nil
 }
 
@@ -95,6 +96,7 @@ func (inv Inventory) Save() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("charprofile: inventory: yaml.Marshal: %w", err)
 	}
+
 	return string(out), nil
 }
 
@@ -121,10 +123,12 @@ func (inv *Inventory) AppendItem(item Item) bool {
 				inv.Items[i].Equip != item.Equip ||
 				inv.Items[i].Special != item.Special
 			inv.Items[i] = item
+
 			return changed
 		}
 	}
 	inv.Items = append(inv.Items, item)
+
 	return true
 }
 
@@ -140,9 +144,11 @@ func (inv *Inventory) RemoveItem(name string) error {
 	for i := range inv.Items {
 		if inv.Items[i].Name == name {
 			inv.Items = append(inv.Items[:i], inv.Items[i+1:]...)
+
 			return nil
 		}
 	}
+
 	return ErrItemNotFound
 }
 
@@ -175,10 +181,12 @@ func (inv *Inventory) SetCurrency(name string, count int) bool {
 				return false
 			}
 			inv.Currency[i].Count = count
+
 			return true
 		}
 	}
 	inv.Currency = append(inv.Currency, Currency{Name: name, Count: count})
+
 	return true
 }
 
@@ -193,8 +201,10 @@ func (inv *Inventory) RemoveCurrency(name string) error {
 	for i := range inv.Currency {
 		if inv.Currency[i].Name == name {
 			inv.Currency = append(inv.Currency[:i], inv.Currency[i+1:]...)
+
 			return nil
 		}
 	}
+
 	return ErrItemNotFound
 }

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 
 	"gopkg.in/yaml.v3"
 )
@@ -116,12 +117,8 @@ func (w WSChatConfig) IsAllowed(token string) bool {
 	if w.DevToken != "" && token == w.DevToken {
 		return true
 	}
-	for _, t := range w.AllowedTokens {
-		if t == token {
-			return true
-		}
-	}
-	return false
+
+	return slices.Contains(w.AllowedTokens, token)
 }
 
 // TelegramConfig is the per-transport configuration. Each transport
@@ -462,6 +459,7 @@ func (c *Config) Role(name string) (LLMRoleConfig, bool) {
 	if r, ok := c.LLM.Roles[name]; ok && r.Model != "" {
 		return r, true
 	}
+
 	return LLMRoleConfig{}, false
 }
 
@@ -473,6 +471,7 @@ func (c *Config) MustRole(name string) LLMRoleConfig {
 	if !ok {
 		panic("llm: role " + name + " is not configured")
 	}
+
 	return r
 }
 
@@ -494,6 +493,7 @@ func Load(path string) (*Config, error) {
 	}
 
 	cfg.resolveRelativePaths(filepath.Dir(path))
+
 	return &cfg, nil
 }
 
@@ -607,6 +607,7 @@ func (c *Config) Validate() error {
 	if narr.Model == "" {
 		return fmt.Errorf("llm.%s.model must be set", NarrativeRole)
 	}
+
 	return nil
 }
 
@@ -614,6 +615,7 @@ func nonEmpty(s, def string) string {
 	if s == "" {
 		return def
 	}
+
 	return s
 }
 
@@ -621,6 +623,7 @@ func nonZero(v, def int) int {
 	if v == 0 {
 		return def
 	}
+
 	return v
 }
 
@@ -628,6 +631,7 @@ func nonZeroFloat(v, def float64) float64 {
 	if v == 0 {
 		return def
 	}
+
 	return v
 }
 
@@ -652,12 +656,7 @@ func (c *Config) resolveRelativePaths(base string) {
 // TelegramIsAllowed checks the Telegram allow list. Per-transport
 // helpers live here; main.go can pick the right one.
 func (c *Config) TelegramIsAllowed(userID int) bool {
-	for _, id := range c.Messaging.Telegram.AllowedUserIDs {
-		if id == userID {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(c.Messaging.Telegram.AllowedUserIDs, userID)
 }
 
 // VKConfig is the per-transport configuration for VKontakte.

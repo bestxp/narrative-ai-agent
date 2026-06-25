@@ -87,6 +87,7 @@ func Parse(text string) (*Narrative, error) {
 				return &n3, nil
 			}
 		}
+
 		return nil, fmt.Errorf("structured: json.Unmarshal: input is not a valid Narrative object")
 	}
 	// The text does not start with '{', but may contain a
@@ -118,6 +119,7 @@ func Parse(text string) (*Narrative, error) {
 			return &n3, nil
 		}
 	}
+
 	return nil, ErrNotJSON
 }
 
@@ -136,6 +138,7 @@ func StripThinkingTags(data string) string {
 	if idx >= 0 {
 		return strings.TrimSpace(string(b[:idx]))
 	}
+
 	return data
 }
 
@@ -146,7 +149,7 @@ func stripThinkingTags(data []byte) []byte {
 func findOpeningBrace(data []byte) int {
 	inStr := false
 	escape := false
-	for i := 0; i < len(data); i++ {
+	for i := range data {
 		c := data[i]
 		if escape {
 			escape = false
@@ -164,6 +167,7 @@ func findOpeningBrace(data []byte) int {
 			return i
 		}
 	}
+
 	return -1
 }
 
@@ -172,7 +176,7 @@ func extractFirstJSONObject(data []byte) []byte {
 	depth := 0
 	inStr := false
 	escape := false
-	for i := 0; i < len(data); i++ {
+	for i := range data {
 		c := data[i]
 		if escape {
 			escape = false
@@ -202,6 +206,7 @@ func extractFirstJSONObject(data []byte) []byte {
 			}
 		}
 	}
+
 	return nil
 }
 
@@ -221,8 +226,7 @@ func sanitizeJSONQuotes(data []byte) []byte {
 	var out bytes.Buffer
 	inStr := false
 	escape := false
-	for i := 0; i < len(data); i++ {
-		c := data[i]
+	for i, c := range data {
 		if escape {
 			out.WriteByte(c)
 			escape = false
@@ -251,6 +255,7 @@ func sanitizeJSONQuotes(data []byte) []byte {
 		}
 		out.WriteByte(c)
 	}
+
 	return out.Bytes()
 }
 
@@ -262,6 +267,7 @@ func isJSONStructural(data []byte, idx int) bool {
 	case '{', '}', '[', ']', ':', ',', '\n', '\r', '\t', ' ':
 		return true
 	}
+
 	return false
 }
 
@@ -288,6 +294,7 @@ func looksLikeJSON(body []byte) bool {
 			return false
 		}
 	}
+
 	return false
 }
 
@@ -305,6 +312,7 @@ func stripFence(s string) []byte {
 	if idx := strings.LastIndex(s, "```"); idx >= 0 {
 		s = s[:idx]
 	}
+
 	return []byte(strings.TrimSpace(s))
 }
 
@@ -327,6 +335,7 @@ func (n *Narrative) MissingFields() []string {
 	if strings.TrimSpace(n.Validation) == "" {
 		missing = append(missing, "validation")
 	}
+
 	return missing
 }
 
@@ -372,5 +381,6 @@ func (n *Narrative) Render() string {
 	b.WriteString("**ВАЛИДАЦИЯ ПРАВИЛ**\n")
 	b.WriteString(strings.TrimSpace(n.Validation))
 	b.WriteString("\n")
+
 	return b.String()
 }

@@ -93,6 +93,7 @@ func (r *recordingStream) Append(_ context.Context, text string) error {
 	defer r.mu.Unlock()
 	r.appends++
 	r.events = append(r.events, "append:"+text)
+
 	return nil
 }
 
@@ -101,5 +102,6 @@ func (r *recordingStream) Final(_ context.Context, text string) error {
 	defer r.mu.Unlock()
 	r.finals++
 	r.events = append(r.events, "final:"+text)
+
 	return nil
 }

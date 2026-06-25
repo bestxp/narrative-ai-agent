@@ -833,10 +833,14 @@ func (s *Summarizer) SetCompactionConfig(c prompts.CompactionData) {
 // targets. Shorthand for
 // `prompts.RenderSummarizerUser` + config injection.
 func (s *Summarizer) renderSummary(name string, sum *prompts.SummarizerData) (string, error) {
-	return prompts.Render(name, prompts.PromptData{
+	out, err := prompts.Render(name, prompts.PromptData{
 		Compaction: s.compaction,
 		Summarizer: sum,
 	})
+	if err != nil {
+		return "", fmt.Errorf("render_summary %s: %w", name, err)
+	}
+	return out, nil
 }
 
 // SummarizeInPlace compresses the current in-memory

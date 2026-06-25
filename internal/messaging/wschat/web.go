@@ -24,6 +24,8 @@ var distFS embed.FS
 
 // distRoot returns the dist subtree rooted at web/dist. Built
 // lazily on first access so the package init stays side-effect free.
+//
+//nolint:gochecknoglobals // memoised lazy loader for the embedded FS
 var distRoot = sync.OnceValues(func() (fs.FS, error) {
 	return fs.Sub(distFS, "web/dist")
 })

@@ -86,7 +86,7 @@ func newGMTestEnv(t *testing.T) (*GM, *storage.FileStore, *fakeLLM) {
 	require.NoError(t, fs.WriteRawAtomic(storage.InfoFile, "active_character: markus\nactive_world: naruto\n"))
 	tools := NewFileToolset(fs, repos, discardLogger(), slowlog.Discard(), nil, nil, nil, nil)
 	fake := &fakeLLM{}
-	log, _ := newBufLogger()
+	log := newBufLogger()
 	g := NewGM(GMConfig{
 		Role: llm.RoleConfig{
 			Model:           "test",
@@ -105,6 +105,8 @@ func deltaOnly(s *strings.Builder) Callbacks {
 }
 
 func TestGM_StreamsReplyIntoCallback(t *testing.T) {
+	t.Parallel()
+	chatID := "chat-" + t.Name()
 	g, _, fake := newGMTestEnv(t)
 	fake.rounds = [][]fakeChunk{
 		{
@@ -114,14 +116,16 @@ func TestGM_StreamsReplyIntoCallback(t *testing.T) {
 		},
 	}
 	var got strings.Builder
-	_, err := g.Reply(context.Background(), "chat1", "я пришёл", deltaOnly(&got))
+	_, err := g.Reply(context.Background(), chatID, "я пришёл", deltaOnly(&got))
 	require.NoError(t, err)
 	assert.Equal(t, 1, fake.calls)
 	assert.Contains(t, got.String(), "Привет, путник.")
 }
 
 func TestGM_ToolRound_EndDay(t *testing.T) {
+	t.Parallel()
 	t.Skip("pending gm.go migration to repository pattern — see research_repository_pattern.md")
+	chatID := "chat-" + t.Name()
 	g, fs, fake := newGMTestEnv(t)
 	fake.rounds = [][]fakeChunk{
 		{
@@ -134,7 +138,7 @@ func TestGM_ToolRound_EndDay(t *testing.T) {
 		},
 	}
 	var got strings.Builder
-	_, err := g.Reply(context.Background(), "chat1", "конец дня", deltaOnly(&got))
+	_, err := g.Reply(context.Background(), chatID, "конец дня", deltaOnly(&got))
 	require.NoError(t, err)
 	mem, _ := fs.ReadRaw(fs.WorldChronicle("naruto"))
 	assert.Contains(t, mem, "первый день")
@@ -142,6 +146,8 @@ func TestGM_ToolRound_EndDay(t *testing.T) {
 }
 
 func TestGM_ToolRound_UpdateState(t *testing.T) {
+	t.Parallel()
+	chatID := "chat-" + t.Name()
 	g, fs, fake := newGMTestEnv(t)
 	fake.rounds = [][]fakeChunk{
 		{
@@ -152,7 +158,7 @@ func TestGM_ToolRound_UpdateState(t *testing.T) {
 		},
 		{{content: " ок.\n\n**диалоги и действия**\nобновляю ок.\n\n**КОНТЕКСТ И ИЗМЕНЕНИЯ**\nstate.md обновлён\n\n**БУДУЩЕЕ**\n- продолжение\n\n**ВАЛИДАЦИЯ ПРАВИЛ**\n- ok", finish: "stop"}},
 	}
-	_, err := g.Reply(context.Background(), "chat1", "идём в деревню", Callbacks{})
+	_, err := g.Reply(context.Background(), chatID, "идём в деревню", Callbacks{})
 	require.NoError(t, err)
 	state, _ := fs.ReadRaw("worlds/naruto/state.yaml")
 	// YAML format: moment is under `state.moment:`
@@ -161,6 +167,8 @@ func TestGM_ToolRound_UpdateState(t *testing.T) {
 }
 
 func TestGM_ToolRound_RotatePlan_RejectsBadRange(t *testing.T) {
+	t.Parallel()
+	chatID := "chat-" + t.Name()
 	g, _, fake := newGMTestEnv(t)
 	fake.rounds = [][]fakeChunk{
 		{
@@ -169,12 +177,14 @@ func TestGM_ToolRound_RotatePlan_RejectsBadRange(t *testing.T) {
 		},
 		{{content: "не вышло\n\n**диалоги и действия**\nне вышло\n\n**КОНТЕКСТ И ИЗМЕНЕНИЯ**\nбез изменений\n\n**БУДУЩЕЕ**\n- продолжение\n\n**ВАЛИДАЦИЯ ПРАВИЛ**\n- ok", finish: "stop"}},
 	}
-	_, err := g.Reply(context.Background(), "chat1", "x", Callbacks{})
+	_, err := g.Reply(context.Background(), chatID, "x", Callbacks{})
 	require.NoError(t, err)
 	assert.Equal(t, 2, fake.calls)
 }
 
 func TestGM_StopsAtMaxRounds(t *testing.T) {
+	t.Parallel()
+	chatID := "chat-" + t.Name()
 	g, _, fake := newGMTestEnv(t)
 	many := make([][]fakeChunk, maxToolRounds+1)
 	for i := range many {
@@ -184,12 +194,14 @@ func TestGM_StopsAtMaxRounds(t *testing.T) {
 		}}
 	}
 	fake.rounds = many
-	_, err := g.Reply(context.Background(), "chat1", "x", Callbacks{})
+	_, err := g.Reply(context.Background(), chatID, "x", Callbacks{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "exceeded")
 }
 
 func TestGM_StuckGuard_InjectsNudge(t *testing.T) {
+	t.Parallel()
+	chatID := "chat-" + t.Name()
 	g, _, fake := newGMTestEnv(t)
 	fake.rounds = [][]fakeChunk{
 		{{toolID: "c0", toolName: "update_npc", toolArgs: `{"npc":"Ино","section":"Личная память/факты","append":"test"}`, finish: "tool_calls"}},
@@ -197,9 +209,9 @@ func TestGM_StuckGuard_InjectsNudge(t *testing.T) {
 		{{toolID: "c2", toolName: "update_npc", toolArgs: `{"npc":"Чоджи","section":"Личная память/факты","append":"test"}`, finish: "tool_calls"}},
 		{{content: "**диалоги и действия**\nок\n\n**КОНТЕКСТ И ИЗМЕНЕНИЯ**\nбез изменений\n\n**БУДУЩЕЕ**\n- продолжение\n\n**ВАЛИДАЦИЯ ПРАВИЛ**\n- ok", finish: "stop"}},
 	}
-	_, err := g.Reply(context.Background(), "chat1", "рассказал легенду", Callbacks{})
+	_, err := g.Reply(context.Background(), chatID, "рассказал легенду", Callbacks{})
 	require.NoError(t, err)
-	conv := g.getConversation("chat1")
+	conv := g.getConversation(chatID)
 	var foundNudge bool
 	for _, m := range conv.messages {
 		if m.Role == "user" && strings.Contains(m.Content, "Не вызывай больше инструменты") {
@@ -210,23 +222,27 @@ func TestGM_StuckGuard_InjectsNudge(t *testing.T) {
 }
 
 func TestGM_ResetConversation(t *testing.T) {
+	t.Parallel()
+	chatID := "chat-" + t.Name()
 	g, _, fake := newGMTestEnv(t)
 	fake.rounds = [][]fakeChunk{
 		{{content: "hi", finish: "stop"}},
 	}
-	_, err := g.Reply(context.Background(), "chat1", "ping", Callbacks{})
+	_, err := g.Reply(context.Background(), chatID, "ping", Callbacks{})
 	require.NoError(t, err)
-	conv := g.getConversation("chat1")
+	conv := g.getConversation(chatID)
 	assert.NotEmpty(t, conv.messages)
 
-	g.ResetConversation("chat1")
-	conv2 := g.getConversation("chat1")
+	g.ResetConversation(chatID)
+	conv2 := g.getConversation(chatID)
 	assert.NotNil(t, conv2)
 	assert.Empty(t, conv2.messages)
 }
 
 func TestGM_BuildsContextWithNPCs(t *testing.T) {
+	t.Parallel()
 	t.Skip("pending gm.go migration to repository pattern — see research_repository_pattern.md")
+	chatID := "chat-" + t.Name()
 	g, _, _ := newGMTestEnv(t)
 	var captured llm.ChatRequest
 	captureLLM := &captureLLM{run: func(req llm.ChatRequest, onChunk func(llm.Chunk) error) error {
@@ -237,7 +253,7 @@ func TestGM_BuildsContextWithNPCs(t *testing.T) {
 		})
 	}}
 	g.llm = captureLLM
-	_, err := g.Reply(context.Background(), "chat1", "go", Callbacks{})
+	_, err := g.Reply(context.Background(), chatID, "go", Callbacks{})
 	require.NoError(t, err)
 	require.NotEmpty(t, captured.Messages)
 	// messages[0] is the system prompt (rules + character)
@@ -257,32 +273,37 @@ func TestGM_BuildsContextWithNPCs(t *testing.T) {
 }
 
 func TestGM_TokenUsage_Estimate(t *testing.T) {
+	t.Parallel()
+	chatID := "chat-" + t.Name()
 	g, _, fake := newGMTestEnv(t)
 	g.tracking = "estimate"
 	fake.rounds = [][]fakeChunk{
 		{{content: "Привет, мир.", finish: "stop"}},
 	}
 	var lastTok llm.Usage
-	_, err := g.Reply(context.Background(), "chat1", "ping", Callbacks{OnTokens: func(u llm.Usage) { lastTok = u }})
+	_, err := g.Reply(context.Background(), chatID, "ping", Callbacks{OnTokens: func(u llm.Usage) { lastTok = u }})
 	require.NoError(t, err)
 	assert.Greater(t, lastTok.PromptTokens, 0)
 	assert.Greater(t, lastTok.CompletionTokens, 0)
 }
 
 func TestGM_TokenUsage_Usage(t *testing.T) {
+	t.Parallel()
+	chatID := "chat-" + t.Name()
 	g, _, fake := newGMTestEnv(t)
 	g.tracking = "usage"
 	fake.rounds = [][]fakeChunk{
 		{{content: "ok", finish: "stop", usage: llm.Usage{PromptTokens: 12, CompletionTokens: 7, TotalTokens: 19}}},
 	}
 	var lastTok llm.Usage
-	totals, err := g.Reply(context.Background(), "chat1", "ping", Callbacks{OnTokens: func(u llm.Usage) { lastTok = u }})
+	totals, err := g.Reply(context.Background(), chatID, "ping", Callbacks{OnTokens: func(u llm.Usage) { lastTok = u }})
 	require.NoError(t, err)
 	assert.Equal(t, 12, lastTok.PromptTokens)
 	assert.Equal(t, 19, totals.TotalTokens)
 }
 
 func TestMergeToolCalls_FirstChunkStartsNew(t *testing.T) {
+	t.Parallel()
 	out := mergeToolCalls(nil, []llm.ToolCall{{
 		ID: "c1", Type: "function",
 		Function: llm.FunctionCall{Name: "end_day", Arguments: `{"day":1}`},
@@ -294,6 +315,7 @@ func TestMergeToolCalls_FirstChunkStartsNew(t *testing.T) {
 }
 
 func TestMergeToolCalls_ContinuationsAccumulate(t *testing.T) {
+	t.Parallel()
 	out := mergeToolCalls(nil, []llm.ToolCall{{
 		ID: "c1", Type: "function",
 		Function: llm.FunctionCall{Name: "end_day", Arguments: `{"day":`},
@@ -306,14 +328,16 @@ func TestMergeToolCalls_ContinuationsAccumulate(t *testing.T) {
 }
 
 func TestGM_CompactionFiresOnLongHistory(t *testing.T) {
+	t.Parallel()
+	chatID := "chat-" + t.Name()
 	g, _, fake := newGMTestEnv(t)
 	g.compaction = CompactionConfig{ContextWindow: 100, Threshold: 0.5, KeepRecent: 2}
 	// Inject a long history (60 messages) directly so the
 	// preflight sees ~5000 chars of input → ~1250 tokens,
 	// well past the 50-token threshold.
-	conv := g.getConversation("chat1")
+	conv := g.getConversation(chatID)
 	conv.mu.Lock()
-	for i := 0; i < 30; i++ {
+	for i := range 30 {
 		conv.messages = append(conv.messages,
 			llm.Message{Role: "user", Content: "user message " + string(rune('a'+i%26)) + " with extra padding to make this longer"},
 			llm.Message{Role: "assistant", Content: "assistant reply " + string(rune('a'+i%26)) + " with even more padding to push the count up"},
@@ -335,15 +359,17 @@ func TestGM_CompactionFiresOnLongHistory(t *testing.T) {
 			compactedMu.Unlock()
 		},
 	}
-	_, err := g.Reply(context.Background(), "chat1", "ping", cb)
+	_, err := g.Reply(context.Background(), chatID, "ping", cb)
 	require.NoError(t, err)
 	compactedMu.Lock()
 	defer compactedMu.Unlock()
 	assert.Greater(t, compacted.DroppedTurns, 0, "compaction should have fired on long history (got %d dropped, before=%d after=%d)", compacted.DroppedTurns, compacted.BeforeTokens, compacted.AfterTokens)
-	assert.LessOrEqual(t, len(g.getConversation("chat1").messages), 2*g.compaction.KeepRecent+2, "conv holds kept + (1 user, 1 assistant from final round)")
+	assert.LessOrEqual(t, len(g.getConversation(chatID).messages), 2*g.compaction.KeepRecent+2, "conv holds kept + (1 user, 1 assistant from final round)")
 }
 
 func TestGM_CompactionWithSummarizer_WritesToState(t *testing.T) {
+	t.Parallel()
+	chatID := "chat-" + t.Name()
 	g, fs, fake := newGMTestEnv(t)
 	g.compaction = CompactionConfig{ContextWindow: 100, Threshold: 0.5, KeepRecent: 2}
 	// Wire a summarizer that responds with a short fact list.
@@ -356,9 +382,9 @@ func TestGM_CompactionWithSummarizer_WritesToState(t *testing.T) {
 		"system-prompt", slowlog.Discard(), discardLogger())
 
 	// Long history.
-	conv := g.getConversation("chat1")
+	conv := g.getConversation(chatID)
 	conv.mu.Lock()
-	for i := 0; i < 30; i++ {
+	for i := range 30 {
 		conv.messages = append(conv.messages,
 			llm.Message{Role: "user", Content: "long user message " + string(rune('a'+i%26)) + " with padding"},
 			llm.Message{Role: "assistant", Content: "long assistant reply " + string(rune('a'+i%26)) + " with even more padding"},
@@ -367,7 +393,7 @@ func TestGM_CompactionWithSummarizer_WritesToState(t *testing.T) {
 	conv.mu.Unlock()
 
 	fake.rounds = [][]fakeChunk{{{content: "ok", finish: "stop"}}}
-	_, err := g.Reply(context.Background(), "chat1", "ping", Callbacks{OnDelta: func(s string) error { return nil }})
+	_, err := g.Reply(context.Background(), chatID, "ping", Callbacks{OnDelta: func(_ string) error { return nil }})
 	require.NoError(t, err)
 
 	// state.yaml should have the new history section appended.
@@ -395,6 +421,8 @@ func (c *captureLLM) Stream(_ context.Context, req llm.ChatRequest, onChunk func
 // hard error so the operator can see the broken state in
 // slowlog instead of silently cycling.
 func TestGM_BrokenToolCallsIsHardError(t *testing.T) {
+	t.Parallel()
+	chatID := "chat-" + t.Name()
 	g, _, fake := newGMTestEnv(t)
 	fake.rounds = [][]fakeChunk{
 		{
@@ -405,13 +433,13 @@ func TestGM_BrokenToolCallsIsHardError(t *testing.T) {
 		},
 	}
 	var got strings.Builder
-	_, err := g.Reply(context.Background(), "chat1", "ping", deltaOnly(&got))
+	_, err := g.Reply(context.Background(), chatID, "ping", deltaOnly(&got))
 	require.Error(t, err, "broken tool calls must propagate as a hard error under h4")
 	assert.Contains(t, err.Error(), "no tool_use and no content")
 	assert.Equal(t, 1, fake.calls, "no nudge-retry on broken tool calls; h4 is hard-error")
 	// The assistant turn must not be persisted (no half-broken
 	// state in history that would poison the next round).
-	conv := g.getConversation("chat1")
+	conv := g.getConversation(chatID)
 	conv.mu.Lock()
 	defer conv.mu.Unlock()
 	for _, m := range conv.messages {
@@ -432,6 +460,7 @@ func TestGM_BrokenToolCallsIsHardError(t *testing.T) {
 // Dispatching them as "unknown tool:" would just pollute
 // the conversation with garbage tool-role messages.
 func TestAllToolCallsBroken(t *testing.T) {
+	t.Parallel()
 	// Empty slice: not "broken" — there are simply no tool calls.
 	assert.False(t, allToolCallsBroken(nil))
 	assert.False(t, allToolCallsBroken([]llm.ToolCall{}))
@@ -464,12 +493,14 @@ func TestAllToolCallsBroken(t *testing.T) {
 // raw SSE event count so the operator has something to
 // debug via slowlog.
 func TestGM_EmptyContentIsHardError(t *testing.T) {
+	t.Parallel()
+	chatID := "chat-" + t.Name()
 	g, _, fake := newGMTestEnv(t)
 	fake.rounds = [][]fakeChunk{
 		{{finish: "stop"}}, // round 0: 0 chars, 0 tool calls
 	}
 	var got strings.Builder
-	_, err := g.Reply(context.Background(), "chat1", "ping", deltaOnly(&got))
+	_, err := g.Reply(context.Background(), chatID, "ping", deltaOnly(&got))
 	require.Error(t, err, "empty content must propagate as an error")
 	assert.Contains(t, err.Error(), "no tool_use and no content")
 	assert.Contains(t, err.Error(), "round=0")
@@ -486,12 +517,14 @@ func TestGM_EmptyContentIsHardError(t *testing.T) {
 // accumulator, no content was streamed. The bot returns
 // the same hard error as a fully empty round.
 func TestGM_EmptyWithToolCallsFinish_StillError(t *testing.T) {
+	t.Parallel()
+	chatID := "chat-" + t.Name()
 	g, _, fake := newGMTestEnv(t)
 	fake.rounds = [][]fakeChunk{
 		{{finish: "tool_calls"}}, // 0 chars, 0 surviving calls
 	}
 	var got strings.Builder
-	_, err := g.Reply(context.Background(), "chat1", "ping", deltaOnly(&got))
+	_, err := g.Reply(context.Background(), chatID, "ping", deltaOnly(&got))
 	require.Error(t, err)
 	assert.Equal(t, 1, fake.calls, "no retry on empty after tool_calls finish")
 	assert.Empty(t, got.String())
@@ -508,6 +541,7 @@ func TestGM_EmptyWithToolCallsFinish_StillError(t *testing.T) {
 // (world+NPCs) messages means both share the same sceneKey
 // cache and are rebuilt together.
 func TestGM_WorldStateSnapshot_StableAcrossTurns(t *testing.T) {
+	t.Parallel()
 	g, _, _ := newGMTestEnv(t)
 
 	firstSys, firstWorld, err := g.buildContext()
@@ -535,6 +569,7 @@ func TestGM_WorldStateSnapshot_StableAcrossTurns(t *testing.T) {
 // end_day — character and rules are stable across day
 // boundaries. Only the world block needs to be rebuilt.
 func TestGM_WorldStateSnapshot_InvalidatedOnEndDay(t *testing.T) {
+	t.Parallel()
 	g, _, _ := newGMTestEnv(t)
 
 	firstSys, firstWorld, err := g.buildContext()
@@ -564,6 +599,7 @@ func TestGM_WorldStateSnapshot_InvalidatedOnEndDay(t *testing.T) {
 // (tool) drops the snapshots via the worldStateInvalidate
 // hook wired in main.go.
 func TestGM_WorldStateSnapshot_InvalidatedOnLeave(t *testing.T) {
+	t.Parallel()
 	g, _, _ := newGMTestEnv(t)
 
 	_, _, err := g.buildContext()
@@ -580,6 +616,7 @@ func TestGM_WorldStateSnapshot_InvalidatedOnLeave(t *testing.T) {
 // TestGM_WorldStateSnapshot_InvalidatedOnReload: /reload
 // invalidates explicitly via GM.InvalidateWorldState.
 func TestGM_WorldStateSnapshot_InvalidatedOnReload(t *testing.T) {
+	t.Parallel()
 	g, _, _ := newGMTestEnv(t)
 	_, _, err := g.buildContext()
 	require.NoError(t, err)
@@ -602,6 +639,7 @@ func TestGM_WorldStateSnapshot_InvalidatedOnReload(t *testing.T) {
 // After dispatch BOTH snapshots (system + world) must
 // remain valid — the cache prefix is preserved.
 func TestGM_ToolResultUpdateState_ShortWithDelta(t *testing.T) {
+	t.Parallel()
 	g, _, _ := newGMTestEnv(t)
 
 	sys, world, err := g.buildContext()
@@ -638,6 +676,8 @@ func TestGM_ToolResultUpdateState_ShortWithDelta(t *testing.T) {
 
 // TestGM_ResetAllConversations_ClearsAll: ensure
 // all per-chat conversation entries are dropped.
+//
+//nolint:paralleltest // mutates the package-level `conversations sync.Map` and asserts on its global count.
 func TestGM_ResetAllConversations_ClearsAll(t *testing.T) {
 	g, _, _ := newGMTestEnv(t)
 	// Seed a couple of conversations.
@@ -668,6 +708,7 @@ func TestGM_ResetAllConversations_ClearsAll(t *testing.T) {
 // hand-edit (e.g. adding "Хината" to active NPCs)
 // must surface in the world-state user message.
 func TestGM_InvalidateWorldState_AfterReload(t *testing.T) {
+	t.Parallel()
 	g, fs, _ := newGMTestEnv(t)
 	_, firstWorld, err := g.buildContext()
 	require.NoError(t, err)
@@ -690,6 +731,7 @@ func TestGM_InvalidateWorldState_AfterReload(t *testing.T) {
 // profile, and returns the compact view (display_name
 // + temperament + current_status).
 func TestSearchNPC_ResolvesDisplayName(t *testing.T) {
+	t.Parallel()
 	g, _, _ := newGMTestEnv(t)
 	// Mark his world as a known NPC with extra data.
 	// First, write a longer profile for kakashi via
@@ -719,6 +761,7 @@ func TestSearchNPC_ResolvesDisplayName(t *testing.T) {
 // different query or call create_npc, not invent a
 // profile.
 func TestSearchNPC_NotFound(t *testing.T) {
+	t.Parallel()
 	g, _, _ := newGMTestEnv(t)
 	_, errStr := g.dispatchOneTool(context.Background(), llm.ToolCall{
 		ID:   "t1",
@@ -737,6 +780,7 @@ func TestSearchNPC_NotFound(t *testing.T) {
 // short window is rejected. A different query is
 // always allowed (the limit is per-query, not global).
 func TestSearchNPC_RateLimit(t *testing.T) {
+	t.Parallel()
 	t.Skip("pending gm.go migration to repository pattern — see research_repository_pattern.md")
 	g, _, _ := newGMTestEnv(t)
 	g.rateWindow = 5
@@ -793,6 +837,7 @@ func TestSearchNPC_RateLimit(t *testing.T) {
 // active roster is pruned to that list. NPCs not in
 // the list are dropped from state.yaml.
 func TestEndScene_PrunesRunesByExplicitList(t *testing.T) {
+	t.Parallel()
 	g, fs, _ := newGMTestEnv(t)
 	// Seed state with a 4-NPC roster. The YAML
 	// parser reads the npcs list under `state:` —
@@ -831,6 +876,7 @@ func TestEndScene_PrunesRunesByExplicitList(t *testing.T) {
 // world's state.yaml has no permanent party, the
 // roster is left as-is (safe default).
 func TestEndScene_NoPruneWhenListMissing(t *testing.T) {
+	t.Parallel()
 	g, fs, _ := newGMTestEnv(t)
 	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/state.yaml",
 		"state:\n  world: naruto\n  day: 1\n  in-flight: true\n  npcs:\n    - Какаши\n    - Хината\n"))
@@ -865,6 +911,7 @@ func TestEndScene_NoPruneWhenListMissing(t *testing.T) {
 // the project transliteration (which is exercised in
 // domain tests).
 func TestLoadActiveNPCs_LODTiers(t *testing.T) {
+	t.Parallel()
 	t.Skip("pending gm.go migration to repository pattern — see research_repository_pattern.md")
 	g, fs, _ := newGMTestEnv(t)
 	type n struct {
@@ -931,6 +978,7 @@ func TestLoadActiveNPCs_LODTiers(t *testing.T) {
 // is small enough to render all NPCs at LOD Full
 // regardless of cast size.
 func TestLoadActiveNPCs_SmallCastAllFull(t *testing.T) {
+	t.Parallel()
 	t.Skip("pending gm.go migration to repository pattern — see research_repository_pattern.md")
 	g, fs, _ := newGMTestEnv(t)
 	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/state.md",

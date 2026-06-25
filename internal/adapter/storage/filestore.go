@@ -36,6 +36,7 @@ func NewFileStoreWithLogger(root string, log zerolog.Logger) (*FileStore, error)
 	if err := os.MkdirAll(abs, 0o755); err != nil {
 		return nil, fmt.Errorf("mkdir root: %w", err)
 	}
+
 	return &FileStore{root: abs, log: log.With().Str("component", "filestore").Logger()}, nil
 }
 
@@ -111,6 +112,7 @@ func (f *FileStore) ReadRaw(rel string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("read_raw: ReadFile failed: %w", err)
 	}
+
 	return string(b), nil
 }
 
@@ -124,7 +126,11 @@ func (f *FileStore) WriteRaw(rel, content string) error {
 		return fmt.Errorf("write_raw: %w", err)
 	}
 	f.log.Debug().Str("path", rel).Int("bytes", len(clean)).Msg("write_raw")
-	return os.WriteFile(p, []byte(clean), 0o644)
+	if err := os.WriteFile(p, []byte(clean), 0o600); err != nil {
+		return fmt.Errorf("write_raw: os.WriteFile failed: %w", err)
+	}
+
+	return nil
 }
 
 // WriteRawAtomic writes via temp file + rename to avoid torn writes.
@@ -135,18 +141,25 @@ func (f *FileStore) WriteRawAtomic(rel, content string) error {
 		return fmt.Errorf("write_raw_atomic: %w", err)
 	}
 	tmp := p + ".tmp"
-	if err := os.WriteFile(tmp, []byte(clean), 0o644); err != nil {
+	if err := os.WriteFile(tmp, []byte(clean), 0o600); err != nil {
 		return fmt.Errorf("write_raw_atomic: %w", err)
 	}
 	f.log.Debug().Str("path", rel).Int("bytes", len(clean)).Msg("write_atomic")
-	return os.Rename(tmp, p)
+	if err := os.Rename(tmp, p); err != nil {
+		return fmt.Errorf("write_atomic: rename failed: %w", err)
+	}
+
+	return nil
 }
 
-// Patch replaces old with new exactly once. Returns ErrPatchNotFound
-// if old is missing or matches more than once.
+// ErrPatchNotFound: the file does not contain `old`.
 var ErrPatchNotFound = errors.New("patch: old string not found")
+
+// ErrPatchAmbiguous: the file contains `old` more than once.
 var ErrPatchAmbiguous = errors.New("patch: old string matched multiple times")
 
+// Patch replaces old with new exactly once. Returns ErrPatchNotFound
+// if old is missing or ErrPatchAmbiguous if it matches more than once.
 func (f *FileStore) Patch(rel, oldStr, newStr string) error {
 	current, err := f.ReadRaw(rel)
 	if err != nil {
@@ -162,6 +175,7 @@ func (f *FileStore) Patch(rel, oldStr, newStr string) error {
 		return ErrPatchAmbiguous
 	}
 	next := strings.Replace(current, oldStr, newStr, 1)
+
 	return f.WriteRawAtomic(rel, next)
 }
 
@@ -177,6 +191,7 @@ func (f *FileStore) AppendIfMissing(rel, line string) (bool, error) {
 	if current != "" && !strings.HasSuffix(current, "\n") {
 		current += "\n"
 	}
+
 	return true, f.WriteRawAtomic(rel, current+line+"\n")
 }
 
@@ -190,6 +205,7 @@ func (f *FileStore) CountLines(rel string) int {
 	if !strings.HasSuffix(current, "\n") {
 		n++
 	}
+
 	return n
 }
 
@@ -207,6 +223,7 @@ func (f *FileStore) ListChildren(rel string) ([]string, error) {
 	for _, e := range entries {
 		out = append(out, e.Name())
 	}
+
 	return out, nil
 }
 
@@ -215,6 +232,7 @@ func (f *FileStore) EnsureDir(rel string) error {
 	if err := os.MkdirAll(filepath.Join(f.root, rel), 0o755); err != nil {
 		return fmt.Errorf("ensure_dir: %w", err)
 	}
+
 	return nil
 }
 
@@ -240,6 +258,7 @@ func stripIndexPollution(s string) string {
 	if !strings.HasSuffix(s, "\n") && strings.HasSuffix(out, "\n") {
 		out = strings.TrimRight(out, "\n")
 	}
+
 	return out
 }
 
@@ -253,6 +272,9 @@ func (f *FileStore) PipeCat(rel string, w io.Writer) error {
 		return fmt.Errorf("pipe_cat: Open failed: %w", err)
 	}
 	defer func() { _ = fp.Close() }()
-	_, err = io.Copy(w, fp)
-	return err
+	if _, err = io.Copy(w, fp); err != nil {
+		return fmt.Errorf("pipe_cat: copy failed: %w", err)
+	}
+
+	return nil
 }

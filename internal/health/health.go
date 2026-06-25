@@ -87,6 +87,7 @@ func New(addr string, r Reporter) *Server {
 		WriteTimeout:      5 * time.Second,
 		IdleTimeout:       30 * time.Second,
 	}
+
 	return s
 }
 
@@ -98,6 +99,7 @@ func (s *Server) Addr() string {
 	if s.srv == nil || s.srv.Addr == "" {
 		return s.addr
 	}
+
 	return s.srv.Addr
 }
 
@@ -132,6 +134,7 @@ func (s *Server) Start() error {
 			fmt.Fprintf(os.Stderr, "health: serve: %v\n", err)
 		}
 	}()
+
 	return nil
 }
 
@@ -144,7 +147,11 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	if srv == nil {
 		return nil
 	}
-	return srv.Shutdown(ctx)
+	if err := srv.Shutdown(ctx); err != nil {
+		return fmt.Errorf("shutdown: %w", err)
+	}
+
+	return nil
 }
 
 func (s *Server) handleLive(w http.ResponseWriter, _ *http.Request) {
@@ -178,7 +185,7 @@ func (s *Server) handleReady(w http.ResponseWriter, _ *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(map[string]any{ //nolint:errchkjson
+	_ = json.NewEncoder(w).Encode(map[string]any{ //nolint:errchkjson // HTTP response stream is already started; encode errors are unobservable to the client
 		"status":    "ready",
 		"clients":   reports,
 		"connected": connected,
@@ -189,10 +196,11 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	if s.reporter == nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(map[string]any{ //nolint:errchkjson
+		_ = json.NewEncoder(w).Encode(map[string]any{ //nolint:errchkjson // HTTP response stream is already started; encode errors are unobservable to the client
 			"status":  "no clients configured",
 			"clients": []Report{},
 		})
+
 		return
 	}
 	reports := s.reporter.Reports()
@@ -210,11 +218,12 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 		body["status"] = "degraded"
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusServiceUnavailable)
-		_ = json.NewEncoder(w).Encode(body) //nolint:errchkjson
+		_ = json.NewEncoder(w).Encode(body) //nolint:errchkjson // HTTP response stream is already started; encode errors are unobservable to the client
+
 		return
 	}
 	body["status"] = "ready"
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(body) //nolint:errchkjson
+	_ = json.NewEncoder(w).Encode(body) //nolint:errchkjson // HTTP response stream is already started; encode errors are unobservable to the client
 }

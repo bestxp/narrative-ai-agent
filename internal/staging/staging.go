@@ -320,6 +320,7 @@ func (s *Staging) Render(characterName string) string {
 	if len(out) > MaxStageRenderBytes {
 		out = out[:MaxStageRenderBytes] + "\n..."
 	}
+
 	return out
 }
 
@@ -382,6 +383,7 @@ func buildStageMap(raw *stagingFile) map[string]Stage {
 			Next:        next,
 		}
 	}
+
 	return out
 }
 
@@ -484,11 +486,13 @@ func parseDaysRange(s string) (lo, hi int, err error) {
 		if lo > hi {
 			return 0, 0, errors.New("min > max")
 		}
+
 		return lo, hi, nil
 	}
 	n, err := strconv.Atoi(s)
 	if err != nil {
 		return 0, 0, fmt.Errorf("wrap: %w", err)
 	}
+
 	return n, n, nil
 }

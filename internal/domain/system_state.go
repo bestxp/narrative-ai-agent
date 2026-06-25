@@ -133,6 +133,7 @@ func (s SystemState) MarshalSystemState() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("system_state: marshal: %w", err)
 	}
+
 	return string(out), nil
 }
 
@@ -149,6 +150,7 @@ func ParseSystemState(content string) (SystemState, error) {
 	if err := yaml.Unmarshal([]byte(content), &s); err != nil {
 		return SystemState{}, fmt.Errorf("system_state.md: parse: %w", err)
 	}
+
 	return s, nil
 }
 

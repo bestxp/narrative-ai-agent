@@ -13,12 +13,13 @@ import (
 	"github.com/bestxp/narrative-ai-agent/internal/domain"
 )
 
-// newBufLogger returns a JSON zerolog logger that writes to the given
-// buffer. It is shared by every usecase test that needs to assert on
-// emitted log records.
-func newBufLogger() (zerolog.Logger, *strings.Builder) {
+// newBufLogger returns a JSON zerolog logger that writes to a
+// scratch buffer. It is shared by every usecase test that needs
+// to assert on emitted log records; the buffer is not exposed
+// because no usecase test currently inspects it directly.
+func newBufLogger() zerolog.Logger {
 	var buf strings.Builder
-	return zerolog.New(&buf), &buf
+	return zerolog.New(&buf)
 }
 
 // discardLogger returns a zerolog logger that drops everything. Use
@@ -45,8 +46,9 @@ func readWhole(path string) ([]byte, error) {
 // use a known starting point. It writes empty stubs for
 // every file the toolset may read; the tests then
 // populate what they need.
-func seedWorld(t *testing.T, fs *storage.FileStore, world string) {
+func seedWorld(t *testing.T, fs *storage.FileStore) {
 	t.Helper()
+	world := "naruto"
 	require.NoError(t, fs.EnsureDir("worlds/"+world+"/characters"))
 	require.NoError(t, fs.WriteRawAtomic(storage.InfoFile, domain.BuildInfo("markus", world, nil, nil)))
 	require.NoError(t, fs.WriteRawAtomic("worlds/"+world+"/state.md", ""))

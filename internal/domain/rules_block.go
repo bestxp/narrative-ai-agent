@@ -27,6 +27,7 @@ func StripRulesBlock(text string) string {
 		return text
 	}
 	out := text[:loc[0]]
+
 	return cleanTrailingWhitespace(out)
 }
 
@@ -34,5 +35,6 @@ func cleanTrailingWhitespace(s string) string {
 	for strings.Contains(s, "\n\n\n") {
 		s = strings.ReplaceAll(s, "\n\n\n", "\n\n")
 	}
+
 	return strings.TrimRight(s, "\n ")
 }

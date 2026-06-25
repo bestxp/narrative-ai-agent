@@ -1,11 +1,11 @@
 package usecase
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/rs/zerolog"
 
-	"fmt"
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
 	"github.com/bestxp/narrative-ai-agent/internal/domain"
 	"github.com/bestxp/narrative-ai-agent/internal/slowlog"

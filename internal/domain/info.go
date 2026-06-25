@@ -29,6 +29,7 @@ func (i Info) ActiveCharacterPointer() string {
 	if i.ActiveCharacter == "" {
 		return ""
 	}
+
 	return "characters/" + i.ActiveCharacter
 }
 
@@ -37,6 +38,7 @@ func (i Info) ActiveWorldPointer() string {
 	if i.ActiveWorld == "" {
 		return ""
 	}
+
 	return "worlds/" + i.ActiveWorld
 }
 
@@ -48,6 +50,7 @@ func (i Info) MarshalInfo() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("marshal info: %w", err)
 	}
+
 	return string(out), nil
 }
 
@@ -66,6 +69,7 @@ func ParseInfo(content string) (Info, error) {
 	if err := dec.Decode(&info); err != nil {
 		return Info{}, fmt.Errorf("parse info.yaml: %w", err)
 	}
+
 	return info, nil
 }
 
@@ -83,7 +87,8 @@ func BuildInfo(activeChar, activeWorld string, allChars, allWorlds []string) str
 		Worlds:          mergeUnique(allWorlds, activeWorld),
 	}
 	body, _ := info.MarshalInfo()
-	return string(body)
+
+	return body
 }
 
 func mergeUnique(extras []string, primary string) []string {
@@ -103,6 +108,7 @@ func mergeUnique(extras []string, primary string) []string {
 		if len(out) == 0 {
 			return nil
 		}
+
 		return out
 	}
 	seen := map[string]bool{primary: true}
@@ -114,5 +120,6 @@ func mergeUnique(extras []string, primary string) []string {
 		seen[e] = true
 		out = append(out, e)
 	}
+
 	return out
 }

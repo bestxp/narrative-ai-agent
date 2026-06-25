@@ -73,6 +73,8 @@ func looksLikePlayerOutput(s string) bool {
 
 // scanForbiddenForms flags any forbidden second-person constructions
 // that the GM should not use. These come from skill rule #1.
+//
+//nolint:gochecknoglobals // read-only forbidden-phrase table used by every GM turn
 var forbiddenForms = []string{
 	"ты усмехнулся",
 	"ты подумал",

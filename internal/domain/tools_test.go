@@ -14,6 +14,7 @@ func paramsJSON(t *testing.T, s Schema) map[string]any {
 	require.NoError(t, err)
 	var out map[string]any
 	require.NoError(t, json.Unmarshal(raw, &out))
+
 	return out
 }
 
@@ -66,10 +67,16 @@ func TestEndDayTool_Shape(t *testing.T) {
 	assert.Contains(t, tool.Function.Description, "chronicle")
 	assert.Contains(t, tool.Function.Description, "world state")
 	probe := paramsJSON(t, tool.Function.Parameters)
-	props := probe["properties"].(map[string]any)
-	assert.Equal(t, "integer", props["day"].(map[string]any)["type"])
-	assert.Equal(t, "string", props["summary"].(map[string]any)["type"])
-	req := probe["required"].([]any)
+	props, ok := probe["properties"].(map[string]any)
+	require.True(t, ok, "properties not a map")
+	dayProp, ok := props["day"].(map[string]any)
+	require.True(t, ok, "day prop not a map")
+	assert.Equal(t, "integer", dayProp["type"])
+	sumProp, ok := props["summary"].(map[string]any)
+	require.True(t, ok, "summary prop not a map")
+	assert.Equal(t, "string", sumProp["type"])
+	req, ok := probe["required"].([]any)
+	require.True(t, ok, "required not a slice")
 	assert.ElementsMatch(t, []any{"day", "summary"}, req)
 }
 
@@ -77,7 +84,14 @@ func TestRotatePlanTool_HasBounds(t *testing.T) {
 	t.Parallel()
 	tool := findTool(t, "rotate_plan")
 	probe := paramsJSON(t, tool.Function.Parameters)
-	events := probe["properties"].(map[string]any)["events"].(map[string]any)
+	props, ok := probe["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("properties missing or wrong type: %T", probe["properties"])
+	}
+	events, ok := props["events"].(map[string]any)
+	if !ok {
+		t.Fatalf("events property missing or wrong type: %T", props["events"])
+	}
 	assert.Equal(t, "array", events["type"])
 	assert.InDelta(t, float64(3), events["minItems"], 1e-9)
 	assert.InDelta(t, float64(5), events["maxItems"], 1e-9)
@@ -90,7 +104,14 @@ func TestUpdateSoulTool_SectionIsFreeString(t *testing.T) {
 	// invent new section names.
 	tool := findTool(t, "update_soul")
 	probe := paramsJSON(t, tool.Function.Parameters)
-	section := probe["properties"].(map[string]any)["section"].(map[string]any)
+	props, ok := probe["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("properties missing or wrong type: %T", probe["properties"])
+	}
+	section, ok := props["section"].(map[string]any)
+	if !ok {
+		t.Fatalf("section property missing or wrong type: %T", props["section"])
+	}
 	assert.Equal(t, "string", section["type"])
 	_, hasEnum := section["enum"]
 	assert.False(t, hasEnum, "SOUL section must NOT be an enum")
@@ -102,8 +123,18 @@ func TestUpdateSkillTool_SectionIsEnum(t *testing.T) {
 	// canonical list.
 	tool := findTool(t, "update_skill")
 	probe := paramsJSON(t, tool.Function.Parameters)
-	section := probe["properties"].(map[string]any)["section"].(map[string]any)
-	enum := section["enum"].([]any)
+	props, ok := probe["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("properties missing or wrong type: %T", probe["properties"])
+	}
+	section, ok := props["section"].(map[string]any)
+	if !ok {
+		t.Fatalf("section property missing or wrong type: %T", props["section"])
+	}
+	enum, ok := section["enum"].([]any)
+	if !ok {
+		t.Fatalf("enum missing or wrong type: %T", section["enum"])
+	}
 	// 9 fixed sections (Ранг, Оружие, Базовые способности,
 	// Фундаментальные стихии, Особые проявления,
 	// Универсальные навыки, Ограничения, Глаза, Доспех).
@@ -115,8 +146,18 @@ func TestUpdateMemoryTool_SectionIsEnum(t *testing.T) {
 	// memory.yaml: 4 canonical sections only.
 	tool := findTool(t, "update_memory")
 	probe := paramsJSON(t, tool.Function.Parameters)
-	section := probe["properties"].(map[string]any)["section"].(map[string]any)
-	enum := section["enum"].([]any)
+	props, ok := probe["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("properties missing or wrong type: %T", probe["properties"])
+	}
+	section, ok := props["section"].(map[string]any)
+	if !ok {
+		t.Fatalf("section property missing or wrong type: %T", props["section"])
+	}
+	enum, ok := section["enum"].([]any)
+	if !ok {
+		t.Fatalf("enum missing or wrong type: %T", section["enum"])
+	}
 	assert.ElementsMatch(t, []any{
 		"Яркие моменты", "Факты о мире", "Обещания и цели", "Важные люди",
 	}, enum)
@@ -126,8 +167,18 @@ func TestUpdateInventoryTool_TypeIsEnum(t *testing.T) {
 	t.Parallel()
 	tool := findTool(t, "update_inventory")
 	probe := paramsJSON(t, tool.Function.Parameters)
-	typ := probe["properties"].(map[string]any)["type"].(map[string]any)
-	enum := typ["enum"].([]any)
+	props, ok := probe["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("properties missing or wrong type: %T", probe["properties"])
+	}
+	typ, ok := props["type"].(map[string]any)
+	if !ok {
+		t.Fatalf("type property missing or wrong type: %T", props["type"])
+	}
+	enum, ok := typ["enum"].([]any)
+	if !ok {
+		t.Fatalf("enum missing or wrong type: %T", typ["enum"])
+	}
 	assert.ElementsMatch(t, []any{
 		"weapon", "armor", "accessory", "consumable",
 		"tool", "quest", "document", "material", "other",
@@ -138,7 +189,10 @@ func TestRemoveInventoryItemTool_HasName(t *testing.T) {
 	t.Parallel()
 	tool := findTool(t, "remove_inventory_item")
 	probe := paramsJSON(t, tool.Function.Parameters)
-	required := probe["required"].([]any)
+	required, ok := probe["required"].([]any)
+	if !ok {
+		t.Fatalf("required missing or wrong type: %T", probe["required"])
+	}
 	assert.Contains(t, required, "name")
 }
 
@@ -197,5 +251,6 @@ func findTool(t *testing.T, name string) Tool {
 		}
 	}
 	t.Fatalf("tool %q not found", name)
+
 	return Tool{}
 }

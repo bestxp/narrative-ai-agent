@@ -51,7 +51,7 @@ func (r *PlanYaml) Save(world, body string) error {
 // 3..5 — same constraint as the previous PlanRangeError
 // path. Returns nil for an empty events slice (used to
 // clear the plan during /leave).
-func (r *PlanYaml) ReplaceEvents(ctx context.Context, world string, events []string) error {
+func (r *PlanYaml) ReplaceEvents(_ context.Context, world string, events []string) error {
 	if len(events) > 0 && (len(events) < 3 || len(events) > 5) {
 		return fmt.Errorf("plan: must contain 3-5 events, got %d", len(events))
 	}
@@ -153,7 +153,7 @@ var planEventRe = regexp.MustCompile(`^\s*-\s+(.+?)\s*$`)
 // body. Used by tests + the /inspect command.
 func ParsePlanEvents(body string) []string {
 	var out []string
-	for _, line := range strings.Split(body, "\n") {
+	for line := range strings.SplitSeq(body, "\n") {
 		if m := planEventRe.FindStringSubmatch(line); m != nil {
 			out = append(out, m[1])
 		}

@@ -50,11 +50,9 @@ func TestFile_ConcurrentWrites(t *testing.T) {
 	require.NoError(t, err)
 	var wg sync.WaitGroup
 	for range 50 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			_ = l.WriteOK("concurrent", "")
-		}()
+		})
 	}
 	wg.Wait()
 	data, err := os.ReadFile(dir + "/slow.log")
@@ -95,6 +93,7 @@ func parseLine(t *testing.T, line []byte) entry {
 	t.Helper()
 	var e entry
 	require.NoError(t, json.Unmarshal(line, &e))
+
 	return e
 }
 
@@ -106,5 +105,6 @@ func splitNonEmpty(b []byte) [][]byte {
 			out = append(out, p)
 		}
 	}
+
 	return out
 }

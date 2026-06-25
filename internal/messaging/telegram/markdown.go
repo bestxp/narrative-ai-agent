@@ -1,20 +1,3 @@
-// Package telegram — markdown conversion is delegated to
-// eekstunt/telegramify-markdown-go, which produces Telegram
-// MessageEntity objects (the API's native formatting format)
-// from a Markdown source. Our wrapper walks those entities
-// and emits Telegram-flavoured HTML so we can drive both
-// sendMessage and editMessageText with parse_mode=HTML.
-//
-// The library handles all the edge cases we used to fight
-// manually:
-//
-//   - **bold**, *italic*, __underline__, ~~strikethrough~~
-//   - `inline code` and ```fenced``` code blocks (with language)
-//   - [text](url) → text_link
-//   - > blockquote
-//   - Stray MarkdownV2 special chars (()*._{}[]#+\-|!) that
-//     would otherwise break the wire format are stripped
-//     from the plain text automatically.
 package telegram
 
 import (
@@ -36,6 +19,7 @@ func markdownToHTML(s string) string {
 		return s
 	}
 	msg := tgmd.Convert(s)
+
 	return renderEntitiesToHTML(msg.Text, msg.Entities)
 }
 
@@ -67,10 +51,7 @@ func renderEntitiesToHTML(text string, ents []tgmd.Entity) string {
 		if e.Offset > cursor {
 			b.WriteString(utf16ToString(encoded[cursor:e.Offset]))
 		}
-		end := e.Offset + e.Length
-		if end > len(encoded) {
-			end = len(encoded)
-		}
+		end := min(e.Offset+e.Length, len(encoded))
 		inner := utf16ToString(encoded[e.Offset:end])
 		writeEntity(&b, e, inner)
 		cursor = end
@@ -78,6 +59,7 @@ func renderEntitiesToHTML(text string, ents []tgmd.Entity) string {
 	if cursor < len(encoded) {
 		b.WriteString(utf16ToString(encoded[cursor:]))
 	}
+
 	return b.String()
 }
 
@@ -139,6 +121,7 @@ func utf16ToString(encoded []uint16) string {
 	if len(encoded) == 0 {
 		return ""
 	}
+
 	return string(utf16.Decode(encoded))
 }
 
@@ -162,6 +145,7 @@ func htmlEscape(s string) string {
 			b.WriteRune(r)
 		}
 	}
+
 	return b.String()
 }
 
@@ -189,6 +173,7 @@ func isMessageNotModified(err error) bool {
 	if err == nil {
 		return false
 	}
+
 	return strings.Contains(err.Error(), "message is not modified")
 }
 
@@ -204,6 +189,7 @@ func isMessageTooLong(err error) bool {
 		return false
 	}
 	s := err.Error()
+
 	return strings.Contains(s, "MESSAGE_TOO_LONG") ||
 		strings.Contains(s, "message is too long")
 }
@@ -257,5 +243,6 @@ func splitForTelegram(text string) []string {
 	if rest != "" {
 		out = append(out, rest)
 	}
+
 	return out
 }

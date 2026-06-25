@@ -24,7 +24,6 @@ type fakeClient struct {
 }
 
 func (f *fakeClient) Name() string { return f.name }
-
 func (f *fakeClient) Run(ctx context.Context) error {
 	f.mu.Lock()
 	f.started = true
@@ -33,24 +32,26 @@ func (f *fakeClient) Run(ctx context.Context) error {
 	f.mu.Lock()
 	f.stopped = true
 	f.mu.Unlock()
+
 	return nil
 }
-
-func (f *fakeClient) Send(ctx context.Context, msg OutgoingMessage) error {
+func (f *fakeClient) Send(_ context.Context, _ OutgoingMessage) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.sendCount++
+
 	return nil
 }
 
-func (f *fakeClient) StartStream(ctx context.Context, chatID string, replyToMessageID int) (StreamSession, error) {
-	return nil, nil
+func (f *fakeClient) StartStream(_ context.Context, _ string, _ int) (StreamSession, error) {
+	return nil, ErrStreamingDisabled
 }
 
 func (f *fakeClient) IsAllowed(id string) bool { return f.allow[id] }
 
-func (f *fakeClient) SetCommands(ctx context.Context, cmds []BotCommand) error {
+func (f *fakeClient) SetCommands(_ context.Context, cmds []BotCommand) error {
 	f.commands = append(f.commands, cmds...)
+
 	return nil
 }
 
@@ -64,6 +65,7 @@ func (f *fakeClient) Health() HealthReport {
 	if f.started && f.stopped {
 		state = StateStopped
 	}
+
 	return HealthReport{Name: f.name, State: state}
 }
 

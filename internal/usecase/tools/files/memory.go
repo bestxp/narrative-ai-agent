@@ -176,10 +176,7 @@ func (m *Memory) chronicleCompressAfterArchive(ctx context.Context, world string
 	}
 	window := chronicle.WindowSize
 	for wEnd := startFrom + window - 1; wEnd <= endAt; wEnd += window {
-		wStart := wEnd - window + 1
-		if wStart < startFrom {
-			wStart = startFrom
-		}
+		wStart := max(wEnd-window+1, startFrom)
 		ok, err := m.ChronicleCompressWindow(ctx, world, wStart, wEnd)
 		if err != nil {
 			return err

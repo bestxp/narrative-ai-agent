@@ -29,6 +29,7 @@ func initRepo(t *testing.T) string {
 		out, err := cmd.CombinedOutput()
 		require.NoError(t, err, "%v: %s", c, out)
 	}
+
 	return dir
 }
 

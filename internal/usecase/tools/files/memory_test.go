@@ -103,7 +103,7 @@ func TestChronicleCompressWindow_Basic30Days(t *testing.T) {
 	t.Parallel()
 	m, _ := newMemoryTestEnv(t)
 	for i := 1; i <= 30; i++ {
-		require.NoError(t, appendDay(t, m, "naruto", i, "день "+itoa(i)))
+		require.NoError(t, appendDay(t, m, i, "день "+itoa(i)))
 	}
 	stub := &stubChronicleSummarizer{returnedMemory: "выжимка 30 дней"}
 	m.chronicleSummarizer = stub
@@ -124,7 +124,7 @@ func TestChronicleCompressWindow_NoSummarizerSkips(t *testing.T) {
 	t.Parallel()
 	m, _ := newMemoryTestEnv(t)
 	for i := 1; i <= 30; i++ {
-		require.NoError(t, appendDay(t, m, "naruto", i, "день "+itoa(i)))
+		require.NoError(t, appendDay(t, m, i, "день "+itoa(i)))
 	}
 	ok, err := m.ChronicleCompressWindow(context.Background(), "naruto", 1, 30)
 	require.NoError(t, err)
@@ -135,7 +135,7 @@ func TestChronicleCompressWindow_BadOutputSkips(t *testing.T) {
 	t.Parallel()
 	m, _ := newMemoryTestEnv(t)
 	for i := 1; i <= 30; i++ {
-		require.NoError(t, appendDay(t, m, "naruto", i, "день "+itoa(i)))
+		require.NoError(t, appendDay(t, m, i, "день "+itoa(i)))
 	}
 	stub := &stubChronicleSummarizer{skipOutput: true}
 	m.chronicleSummarizer = stub
@@ -152,7 +152,7 @@ func TestChronicleCompressWindow_TooThinSkips(t *testing.T) {
 	t.Parallel()
 	m, _ := newMemoryTestEnv(t)
 	for _, d := range []int{1} {
-		require.NoError(t, appendDay(t, m, "naruto", d, "факт"))
+		require.NoError(t, appendDay(t, m, d, "факт"))
 	}
 	stub := &stubChronicleSummarizer{returnedMemory: "should not be called"}
 	m.chronicleSummarizer = stub
@@ -190,9 +190,12 @@ func TestChronicleCompressWindow_KeepsEarlierSummaries(t *testing.T) {
 
 // appendDay writes a raw day entry to the chronicle
 // using the repository API. Bypasses ArchiveChronicleDay
-// so the test can pre-stage a 30-day window.
-func appendDay(t *testing.T, m *Memory, world string, day int, text string) error {
+// so the test can pre-stage a 30-day window. The world
+// is hard-coded to "naruto" because every test in this
+// file operates on that fixture.
+func appendDay(t *testing.T, m *Memory, day int, text string) error {
 	t.Helper()
+	world := "naruto"
 	c, err := m.repos.Chronicle.Load(world)
 	if err != nil {
 		return fmt.Errorf("appendDay: Chronicle.Load failed: %w", err)
@@ -216,7 +219,7 @@ type stubChronicleSummarizer struct {
 	err            error
 }
 
-func (s *stubChronicleSummarizer) SummarizeChronicle(ctx context.Context, world string, startDay, endDay int, fullChronicle string) ([]byte, error) {
+func (s *stubChronicleSummarizer) SummarizeChronicle(_ context.Context, _ string, startDay, endDay int, _ string) ([]byte, error) {
 	s.calls++
 	if s.calls == 1 {
 		s.firstFrom = startDay

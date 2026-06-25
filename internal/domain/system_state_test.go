@@ -67,7 +67,7 @@ func TestParseSystemState_BadYAMLErrors(t *testing.T) {
 func TestCompactionLog_AppendEvictsOldest(t *testing.T) {
 	t.Parallel()
 	c := &CompactionLog{}
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		c.AppendCompactionEvent(CompactionEvent{At: time.Unix(int64(i), 0), KeptRecent: i}, 3)
 	}
 	assert.Len(t, c.History, 3, "history should be capped at 3")

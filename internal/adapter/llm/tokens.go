@@ -11,6 +11,7 @@ func EstimateTokens(text string) int {
 	if text == "" {
 		return 0
 	}
+
 	return (len(text) + 3) / 4
 }
 
@@ -30,5 +31,6 @@ func EstimateMessages(msgs []Message) int {
 			total += EstimateTokens(tc.Function.Name) + EstimateTokens(tc.Function.Arguments)
 		}
 	}
+
 	return total
 }

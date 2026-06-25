@@ -59,7 +59,7 @@ func writeChronicleDays(t *testing.T, fs *storage.FileStore, world string, days 
 func TestSessionStart_OK(t *testing.T) {
 	t.Parallel()
 	fs, _ := storage.NewFileStore(t.TempDir())
-	seedWorld(t, fs, "naruto")
+	seedWorld(t, fs)
 	require.NoError(t, fs.WriteRawAtomic(storage.InfoFile, domain.BuildInfo("markus", "naruto", nil, nil)))
 	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/state.md", "День 3 (в процессе).\nЧто-то происходит.\n"))
 	writeChronicleDays(t, fs, "naruto", map[int]string{1: "a", 2: "b"})
@@ -74,7 +74,7 @@ func TestSessionStart_OK(t *testing.T) {
 func TestSessionStart_DetectsStateAhead(t *testing.T) {
 	t.Parallel()
 	fs, _ := storage.NewFileStore(t.TempDir())
-	seedWorld(t, fs, "naruto")
+	seedWorld(t, fs)
 	require.NoError(t, fs.WriteRawAtomic(storage.InfoFile, domain.BuildInfo("markus", "naruto", nil, nil)))
 	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/state.md", "День 5 (в процессе).\n"))
 	writeChronicleDays(t, fs, "naruto", map[int]string{1: "a", 2: "b"})
@@ -86,7 +86,7 @@ func TestSessionStart_DetectsStateAhead(t *testing.T) {
 func TestSessionStart_DetectsChronicleAhead(t *testing.T) {
 	t.Parallel()
 	fs, _ := storage.NewFileStore(t.TempDir())
-	seedWorld(t, fs, "naruto")
+	seedWorld(t, fs)
 	require.NoError(t, fs.WriteRawAtomic(storage.InfoFile, domain.BuildInfo("markus", "naruto", nil, nil)))
 	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/state.md", "День 1 (в процессе).\n"))
 	writeChronicleDays(t, fs, "naruto", map[int]string{1: "a", 5: "b"})
@@ -98,7 +98,7 @@ func TestSessionStart_DetectsChronicleAhead(t *testing.T) {
 func TestSessionStart_PopulatesStateString(t *testing.T) {
 	t.Parallel()
 	fs, _ := storage.NewFileStore(t.TempDir())
-	seedWorld(t, fs, "naruto")
+	seedWorld(t, fs)
 	require.NoError(t, fs.WriteRawAtomic(storage.InfoFile, domain.BuildInfo("markus", "naruto", nil, nil)))
 	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/state.md", "День 7 (в процессе).\nNPC: Какаши\n"))
 	s := NewSessionStart(fs)

@@ -1,9 +1,9 @@
 package yaml
 
 import (
+	"fmt"
 	"strings"
 
-	"fmt"
 	"github.com/bestxp/narrative-ai-agent/internal/npcprofile"
 	"github.com/bestxp/narrative-ai-agent/internal/storage"
 )
@@ -44,8 +44,7 @@ func (r *NPCProfileYaml) ListSlugs(world string) ([]string, error) {
 	}
 	out := make([]string, 0, len(entries))
 	for _, name := range entries {
-		if strings.HasSuffix(name, ".yaml") {
-			slug := strings.TrimSuffix(name, ".yaml")
+		if slug, ok := strings.CutSuffix(name, ".yaml"); ok {
 			out = append(out, slug)
 		}
 	}

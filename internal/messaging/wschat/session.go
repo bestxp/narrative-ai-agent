@@ -77,6 +77,7 @@ func (s *wsSession) run(ctx context.Context, srv *Server) {
 			if !websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
 				s.log.Debug().Err(err).Msg("ws read ended")
 			}
+
 			return
 		}
 		var f Frame
@@ -154,6 +155,7 @@ func (s *wsSession) startTurn(id string) bool {
 	s.tokensMtx.Lock()
 	s.tokens = TokenUsage{}
 	s.tokensMtx.Unlock()
+
 	return true
 }
 
@@ -169,6 +171,7 @@ func (s *wsSession) endTurn() {
 func (s *wsSession) currentID() string {
 	s.turnMtx.Lock()
 	defer s.turnMtx.Unlock()
+
 	return s.currentTurnID
 }
 
@@ -203,6 +206,7 @@ func (s *wsSession) recordTokens(prompt, completion, total int, source string) {
 func (s *wsSession) currentTokens() TokenUsage {
 	s.tokensMtx.Lock()
 	defer s.tokensMtx.Unlock()
+
 	return s.tokens
 }
 
@@ -223,6 +227,7 @@ func (s *wsSession) accumulateDelta(delta string) {
 func (s *wsSession) currentText() string {
 	s.bufMtx.Lock()
 	defer s.bufMtx.Unlock()
+
 	return s.buf.String()
 }
 
@@ -231,6 +236,7 @@ func (s *wsSession) currentText() string {
 func (s *wsSession) isJSONMode() bool {
 	s.bufMtx.Lock()
 	defer s.bufMtx.Unlock()
+
 	return s.jsonMode
 }
 
@@ -239,6 +245,7 @@ func (s *wsSession) isJSONMode() bool {
 func (s *wsSession) hasText() bool {
 	s.bufMtx.Lock()
 	defer s.bufMtx.Unlock()
+
 	return s.textSeen
 }
 
@@ -257,5 +264,6 @@ func (s *wsSession) finalText() string {
 			return n.Render()
 		}
 	}
+
 	return raw
 }

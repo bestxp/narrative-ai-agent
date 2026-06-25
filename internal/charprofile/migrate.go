@@ -3,6 +3,7 @@ package charprofile
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -70,10 +71,12 @@ func MigrateFromMarkdown(kind string, body, fileSlug string) (any, error) {
 			s.Name = fileSlug
 		}
 		parseMarkdownSections(body, &s.Data, false)
+
 		return s, nil
 	case "skill":
 		var s Skill
 		parseMarkdownSections(body, &s.Data, true)
+
 		return s, nil
 	case "memory":
 		var m Memory
@@ -81,8 +84,10 @@ func MigrateFromMarkdown(kind string, body, fileSlug string) (any, error) {
 		// if the name is not on MemoryFixedSections.
 		// See the data-preservation contract above.
 		parseMarkdownSections(body, &m.Data, false)
+
 		return m, nil
 	}
+
 	return nil, fmt.Errorf("%w: %s", ErrUnknownFile, kind)
 }
 
@@ -167,6 +172,7 @@ func findSection(data *[]Section, name string) int {
 			return i
 		}
 	}
+
 	return -1
 }
 
@@ -175,12 +181,13 @@ func findSection(data *[]Section, name string) int {
 // by MigrateFromMarkdown to seed the Soul.Name from
 // the legacy free-form title.
 func extractH1(body string) string {
-	for _, line := range strings.Split(body, "\n") {
+	for line := range strings.SplitSeq(body, "\n") {
 		t := strings.TrimSpace(line)
 		if strings.HasPrefix(t, "# ") && !strings.HasPrefix(t, "## ") {
 			return strings.TrimSpace(t[2:])
 		}
 	}
+
 	return ""
 }
 
@@ -189,17 +196,7 @@ func extractH1(body string) string {
 // Used by the strict migration path: a section
 // not on the union is dropped.
 func isCanonicalSection(name string) bool {
-	for _, s := range SkillFixedSections {
-		if s == name {
-			return true
-		}
-	}
-	for _, s := range MemoryFixedSections {
-		if s == name {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(SkillFixedSections, name) || slices.Contains(MemoryFixedSections, name)
 }
 
 // stripNumberedListPrefix drops a leading "N. "
@@ -219,5 +216,6 @@ func stripNumberedListPrefix(s string) string {
 	}
 	rest := s[dot+1:]
 	rest = strings.TrimPrefix(rest, " ")
+
 	return rest
 }

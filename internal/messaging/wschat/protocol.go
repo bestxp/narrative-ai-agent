@@ -42,38 +42,43 @@ type Frame struct {
 // browser issues) and server→client (the events the server pushes
 // back). Unknown types MUST be ignored.
 const (
-	// Client→server: send a freeform message or a /command. Payload
-	// is SendPayload.
+	// FrameSend: client→server, send a freeform message or a /command.
+	// Payload is SendPayload.
 	FrameSend = "send"
-	// Client→server: edit the last user message and regenerate the
-	// LLM answer. Payload is EditPayload.
+	// FrameEditLast: client→server, edit the last user message and
+	// regenerate the LLM answer. Payload is EditPayload.
 	FrameEditLast = "edit_last"
-	// Client→server: resend the last user message (discard the last
-	// LLM answer and generate a fresh one). Payload is empty.
+	// FrameResendLast: client→server, resend the last user message
+	// (discard the last LLM answer and generate a fresh one).
+	// Payload is empty.
 	FrameResendLast = "resend_last"
-	// Client→server: request the command list. The server replies
-	// with a FrameCommandList. Payload is empty.
+	// FrameCommandListRequest: client→server, request the command
+	// list. The server replies with a FrameCommandList. Payload
+	// is empty.
 	FrameCommandListRequest = "command_list_request"
 
-	// Server→client: ack for a send / edit / resend. Payload is
-	// AckPayload. The ID matches the originating client frame.
+	// FrameAck: server→client, ack for a send / edit / resend.
+	// Payload is AckPayload. The ID matches the originating
+	// client frame.
 	FrameAck = "ack"
-	// Server→client: an error for a previously-acked operation.
-	// Payload is ErrorPayload. The ID matches the originating frame
-	// when applicable.
+	// FrameError: server→client, an error for a previously-acked
+	// operation. Payload is ErrorPayload. The ID matches the
+	// originating frame when applicable.
 	FrameError = "error"
-	// Server→client: a chat message (user or assistant) that is now
-	// considered final. Payload is MessagePayload.
+	// FrameMessage: server→client, a chat message (user or
+	// assistant) that is now considered final. Payload is
+	// MessagePayload.
 	FrameMessage = "message"
-	// Server→client: a streaming delta — partial assistant text. The
-	// client replaces the in-progress assistant bubble's text with
-	// the payload text (not append). Payload is DeltaPayload.
+	// FrameDelta: server→client, a streaming delta — partial
+	// assistant text. The client replaces the in-progress
+	// assistant bubble's text with the payload text (not append).
+	// Payload is DeltaPayload.
 	FrameDelta = "delta"
-	// Server→client: a status rotation ("…принял", "…собираю
-	// контекст"). Payload is StatusPayload.
+	// FrameStatus: server→client, a status rotation ("…принял",
+	// "…собираю контекст"). Payload is StatusPayload.
 	FrameStatus = "status"
-	// Server→client: the command list reply. Payload is
-	// CommandListPayload.
+	// FrameCommandList: server→client, the command list reply.
+	// Payload is CommandListPayload.
 	FrameCommandList = "command_list"
 )
 

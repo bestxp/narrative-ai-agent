@@ -62,7 +62,7 @@ func captureSlowlog(t *testing.T) (*slowlog.Logger, func(kind string) []slowlog.
 			return nil
 		}
 		var out []slowlog.Entry
-		for _, line := range strings.Split(strings.TrimRight(string(data), "\n"), "\n") {
+		for line := range strings.SplitSeq(strings.TrimRight(string(data), "\n"), "\n") {
 			if line == "" {
 				continue
 			}

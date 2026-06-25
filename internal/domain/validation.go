@@ -15,6 +15,7 @@ var (
 
 var nonLatin = regexp.MustCompile(`[^A-Za-z0-9_\-]`)
 
+//nolint:gochecknoglobals // read-only Cyrillic-to-Latin transliteration table
 var translitMap = map[string]string{
 	"а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "yo",
 	"ж": "zh", "з": "z", "и": "i", "й": "y", "к": "k", "л": "l", "м": "m",
@@ -39,6 +40,7 @@ func Transliterate(s string) string {
 			}
 		}
 	}
+
 	return b.String()
 }
 
@@ -56,6 +58,7 @@ func SanitizeName(name string) (string, error) {
 	if cleaned == "" {
 		return "", ErrInvalidName
 	}
+
 	return strings.ToLower(cleaned), nil
 }
 
@@ -65,6 +68,7 @@ func hasCyrillic(s string) bool {
 			return true
 		}
 	}
+
 	return false
 }
 
@@ -79,5 +83,6 @@ func ValidateWorldDir(dir string) error {
 	if hasCyrillic(dir) {
 		return fmt.Errorf("world dir %q contains cyrillic characters: %w", dir, ErrInvalidName)
 	}
+
 	return nil
 }

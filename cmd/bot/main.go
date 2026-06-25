@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -109,7 +110,11 @@ func main() {
 	if cfg.Health.ListenAddr != "" {
 		srv := health.New(cfg.Health.ListenAddr, hs)
 		if err := srv.Start(); err != nil {
-			log.Fatal().Err(err).Str("addr", cfg.Health.ListenAddr).Msg("health server bind failed")
+			// Defer on line 91 closes the LLM driver; os.Exit is
+			// intentional here — there is nothing to clean up yet
+			// and we want to fail fast before opening more sockets.
+			log.Error().Err(err).Str("addr", cfg.Health.ListenAddr).Msg("health server bind failed")
+			os.Exit(1)
 		}
 		hs.srv = srv
 		log.Info().Str("addr", srv.Addr()).Msg("health server ready")
@@ -141,9 +146,7 @@ func main() {
 
 	autoSave := newAutoSaveState(cfg)
 	for _, c := range pool.All() {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for {
 				select {
 				case <-ctx.Done():
@@ -179,7 +182,7 @@ func main() {
 					}
 				}
 			}
-		}()
+		})
 	}
 
 	wg.Wait()
@@ -195,6 +198,12 @@ func main() {
 // from the same player — or from a Telegram + Discord client
 // pointing at the same logical chat — are processed strictly
 // one at a time. The map is grown on demand; load is atomic.
+// chatMu is the per-chat mutex cache. Concurrent messages
+// from the same player — or from a Telegram + Discord client
+// pointing at the same logical chat — are processed strictly
+// one at a time. The map is grown on demand; load is atomic.
+//
+//nolint:gochecknoglobals // process-wide mutex pool keyed by chatID
 var chatMu sync.Map // map[chatID]*sync.Mutex
 
 func chatLock(chatID string) *sync.Mutex {
@@ -253,7 +262,9 @@ func handleIncoming(ctx context.Context, log zerolog.Logger, c messaging.Client,
 	var session messaging.StreamSession
 	if ok {
 		s, err := c.StartStream(ctx, msg.ChatID, replyToID)
-		if err != nil {
+		if errors.Is(err, messaging.ErrStreamingDisabled) {
+			log.Debug().Str("chat", msg.ChatID).Msg("stream disabled, using Send")
+		} else if err != nil {
 			log.Warn().Err(err).Str("chat", msg.ChatID).Msg("stream start failed, falling back to Send")
 		} else {
 			session = s
@@ -494,13 +505,18 @@ func runAutoSave(ctx context.Context, log zerolog.Logger, c messaging.Client, op
 	if res.Empty {
 		return ""
 	}
-	body := "✅ сохранено: commit " + res.Hash
+	var b strings.Builder
+	b.WriteString("✅ сохранено: commit ")
+	b.WriteString(res.Hash)
 	if verbose {
-		body += "\n  файлов: " + itoa(len(res.FilesChanged))
+		b.WriteString("\n  файлов: ")
+		b.WriteString(itoa(len(res.FilesChanged)))
 		for _, f := range res.FilesChanged {
-			body += "\n  - " + f
+			b.WriteString("\n  - ")
+			b.WriteString(f)
 		}
 	}
+	body := b.String()
 	if op.RemoteDisabled() {
 		return body + "\n(push пропущен: remote_disabled=true)"
 	}

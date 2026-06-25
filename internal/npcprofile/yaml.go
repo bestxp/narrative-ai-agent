@@ -26,6 +26,7 @@ package npcprofile
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -213,10 +214,15 @@ func (p Profile) BuildMarkdown() (string, error) {
 		strings.TrimSpace(p.CurrentStatus),
 		strings.TrimSpace(p.LastUpdate),
 	)
-	return prompts.Render("npc_profile.md.tmpl", prompts.PromptData{
+
+	out, err := prompts.Render("npc_profile.md.tmpl", prompts.PromptData{
 		NPCProfile: data,
 	})
+	if err != nil {
+		return "", fmt.Errorf("build_markdown: %w", err)
+	}
 
+	return out, nil
 }
 
 // BuildCompact renders a medium-detail view of the
@@ -264,6 +270,7 @@ func (p Profile) BuildCompact() string {
 	if s := strings.TrimSpace(p.LastUpdate); s != "" {
 		fmt.Fprintf(&b, "Свежее: %s\n", s)
 	}
+
 	return strings.TrimSpace(b.String())
 }
 
@@ -291,6 +298,7 @@ func (p Profile) BuildOneLine() string {
 	if s := strings.TrimSpace(p.CurrentStatus); s != "" {
 		fmt.Fprintf(&b, "\nСейчас: %s", truncateRune(s, 120))
 	}
+
 	return strings.TrimSpace(b.String())
 }
 
@@ -298,15 +306,16 @@ func (p Profile) BuildOneLine() string {
 // appends an ellipsis if the cut happened. The LLM
 // reads these strings as UTF-8; slicing by byte
 // would risk splitting a multi-byte codepoint.
-func truncateRune(s string, max int) string {
-	if max <= 0 {
+func truncateRune(s string, maxRunes int) string {
+	if maxRunes <= 0 {
 		return ""
 	}
 	runes := []rune(s)
-	if len(runes) <= max {
+	if len(runes) <= maxRunes {
 		return s
 	}
-	return string(runes[:max]) + "…"
+
+	return string(runes[:maxRunes]) + "…"
 }
 
 // SectionKind enumerates the section names the
@@ -356,6 +365,7 @@ func (k SectionKind) CanonicalSectionName() string {
 	case SectionUnknown:
 		return ""
 	}
+
 	return ""
 }
 
@@ -387,6 +397,7 @@ func MatchSection(name string) SectionKind {
 	case "последнее обновление", "last update", "last_update", "обновление", "update":
 		return SectionLastUpdate
 	}
+
 	return SectionUnknown
 }
 
@@ -432,24 +443,28 @@ func (p *Profile) UpdateSection(kind SectionKind, text string) bool {
 			return false
 		}
 		p.Temperament = text
+
 		return true
 	case SectionRelationsGG:
 		if text == "" || p.RelationsGG == text {
 			return false
 		}
 		p.RelationsGG = text
+
 		return true
 	case SectionCurrentStatus:
 		if text == "" || p.CurrentStatus == text {
 			return false
 		}
 		p.CurrentStatus = text
+
 		return true
 	case SectionLastUpdate:
 		if text == "" || p.LastUpdate == text {
 			return false
 		}
 		p.LastUpdate = text
+
 		return true
 	case SectionAbilities:
 		return appendUnique(&p.Abilities, text)
@@ -468,16 +483,20 @@ func (p *Profile) UpdateSection(kind SectionKind, text string) bool {
 			}
 		}
 		p.PersonalMemory = append(p.PersonalMemory, text)
+
 		return true
 	case SectionCriticalKnowledge:
 		return appendUnique(&p.CriticalKnowledge, text)
+
 	case SectionNicknames:
 		return appendUnique(&p.Nicknames, text)
+
 	case SectionRelationsNPCs:
 		return p.updateRelation(text)
 	case SectionUnknown:
 		return false
 	}
+
 	return false
 }
 
@@ -500,10 +519,13 @@ func (p *Profile) updateRelation(text string) bool {
 				return false
 			}
 			p.RelationsNPCs[i].Note = note
+
 			return true
 		}
 	}
+
 	p.RelationsNPCs = append(p.RelationsNPCs, Relation{Target: target, Note: note})
+
 	return true
 }
 
@@ -516,6 +538,7 @@ func joinNonEmpty(lines []string) string {
 			parts = append(parts, t)
 		}
 	}
+
 	return strings.Join(parts, " ")
 }
 
@@ -527,6 +550,7 @@ func splitRelationText(s string) (string, string) {
 			return strings.TrimSpace(s[:i]), strings.TrimSpace(s[i+1:])
 		}
 	}
+
 	return strings.TrimSpace(s), ""
 }
 
@@ -539,12 +563,11 @@ func appendUnique(field *[]string, text string) bool {
 	if text == "" {
 		return false
 	}
-	for _, existing := range *field {
-		if existing == text {
-			return false
-		}
+	if slices.Contains(*field, text) {
+		return false
 	}
 	*field = append(*field, text)
+
 	return true
 }
 
@@ -668,13 +691,14 @@ func MigrateFromMarkdown(body, fileSlug string) (Profile, error) {
 	if p.DisplayName == "" {
 		p.DisplayName = fileSlug
 	}
+
 	return p, nil
 }
 
 // sawSection is set inside the parser when any
 // "## " header is encountered. The legacy "name +
 // free text" files do not have any.
-var sawSection bool
+var sawSection bool //nolint:gochecknoglobals // parser output latch shared by the markdown→yaml migration helpers
 
 // SortedKeys returns the names of every section that
 // has data, alphabetically sorted. Used by the
@@ -710,5 +734,6 @@ func (p Profile) SortedKeys() []string {
 		keys = append(keys, SectionLastUpdate.CanonicalSectionName())
 	}
 	sort.Strings(keys)
+
 	return keys
 }

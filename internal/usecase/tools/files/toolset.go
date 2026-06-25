@@ -15,6 +15,7 @@ package files
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -156,6 +157,13 @@ func (t *Toolset) MaintainCharacterMemory(ctx context.Context, world, character 
 	return t.Memory.MaintainCharacterMemory(ctx, world, character)
 }
 
+// ErrNPCModuleUnavailable is returned by SearchNPC when
+// the file-backed toolset was constructed without an NPC
+// submodule (nil t.NPC). The /maintenance tool runs are
+// the only callers that hit this branch today; the
+// dispatcher's GM path always boots the full toolset.
+var ErrNPCModuleUnavailable = errors.New("npc: module not configured in toolset")
+
 // SearchNPC resolves a free-form query against the
 // world's NPC registry and returns a compact
 // description. The Tool interface returns a
@@ -167,7 +175,7 @@ func (t *Toolset) SearchNPC(world, query string) (*tools.NPCSearchResult, error)
 		_ = recover()
 	}()
 	if t.NPC == nil {
-		return nil, nil
+		return nil, ErrNPCModuleUnavailable
 	}
 	res, e := t.Search(world, query)
 	if e != nil {

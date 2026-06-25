@@ -38,6 +38,7 @@ package charprofile
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -161,6 +162,8 @@ type Memory struct {
 // package (Soul sections are free-form); the model
 // gets it via the prompt and the operator can add
 // new entries without changing code.
+//
+//nolint:gochecknoglobals // canonical fixed-section catalogue read by prompt + parser
 var SoulFixedSections = []string{
 	"Истинная сущность",
 	"Предпочтения",
@@ -175,6 +178,8 @@ var SoulFixedSections = []string{
 //
 // "permanent party" is here for back-compat; see
 // the Skill doc comment.
+//
+//nolint:gochecknoglobals // canonical fixed-section catalogue read by prompt + parser
 var SkillFixedSections = []string{
 	"Ранг",
 	"Оружие",
@@ -191,6 +196,8 @@ var SkillFixedSections = []string{
 // MemoryFixedSections is the strict enum of
 // memory.yaml section names. Append rejects any
 // section not on this list.
+//
+//nolint:gochecknoglobals // canonical fixed-section catalogue read by prompt + parser
 var MemoryFixedSections = []string{
 	"Яркие моменты",
 	"Факты о мире",
@@ -323,6 +330,7 @@ func appendIntoSections(data *[]Section, section, value string, strict bool) boo
 				return false
 			}
 			(*data)[i].Values = append((*data)[i].Values, value)
+
 			return true
 		}
 	}
@@ -351,9 +359,11 @@ func replaceSectionInto(data *[]Section, section, value string, strict ...bool) 
 				return false
 			}
 			(*data)[i].Values = []string{value}
+
 			return true
 		}
 	}
+
 	return false
 }
 
@@ -366,6 +376,7 @@ func containsString(haystack []string, needle string) bool {
 			return true
 		}
 	}
+
 	return false
 }
 
@@ -373,12 +384,7 @@ func containsString(haystack []string, needle string) bool {
 // fixed-enum slice. Case-sensitive (the enum names
 // are part of the project contract).
 func enumContains(target string, list []string) bool {
-	for _, s := range list {
-		if s == target {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(list, target)
 }
 
 // SortedSectionNames returns the names of every
@@ -393,6 +399,7 @@ func (s *Soul) SortedSectionNames() []string {
 		keys = append(keys, sec.Name)
 	}
 	sort.Strings(keys)
+
 	return keys
 }
 
@@ -402,6 +409,7 @@ func (s *Skill) SortedSectionNames() []string {
 		keys = append(keys, sec.Name)
 	}
 	sort.Strings(keys)
+
 	return keys
 }
 
@@ -411,5 +419,6 @@ func (s *Memory) SortedSectionNames() []string {
 		keys = append(keys, sec.Name)
 	}
 	sort.Strings(keys)
+
 	return keys
 }

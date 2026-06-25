@@ -58,6 +58,7 @@ func (o *Operator) run(args ...string) (string, error) {
 		o.log.Debug().Strs("args", args).Str("output", combined).Err(err).Msg("git cmd failed")
 		return combined, fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, combined)
 	}
+
 	return combined, nil
 }
 
@@ -93,8 +94,10 @@ func (o *Operator) CommitAll(message string) (CommitResult, error) {
 		// "nothing to commit" should not be fatal
 		if strings.Contains(err.Error(), "nothing to commit") || strings.Contains(err.Error(), "no changes added") {
 			o.log.Debug().Msg("nothing to commit")
+
 			return CommitResult{Empty: true}, nil
 		}
+
 		return CommitResult{}, err
 	}
 	hash, herr := o.run("rev-parse", "--short", "HEAD")
@@ -106,13 +109,14 @@ func (o *Operator) CommitAll(message string) (CommitResult, error) {
 	}
 	files, _ := o.run("show", "--name-only", "--pretty=format:")
 	res := CommitResult{Hash: strings.TrimSpace(hash)}
-	for _, ln := range strings.Split(files, "\n") {
+	for ln := range strings.SplitSeq(files, "\n") {
 		ln = strings.TrimSpace(ln)
 		if ln != "" {
 			res.FilesChanged = append(res.FilesChanged, ln)
 		}
 	}
 	o.log.Info().Str("message", message).Str("hash", res.Hash).Int("files", len(res.FilesChanged)).Msg("git commit")
+
 	return res, nil
 }
 
@@ -159,6 +163,7 @@ func (o *Operator) SyncRebase() error {
 		return fmt.Errorf("push after rebase: %w", perr)
 	}
 	o.log.Info().Msg("git push ok after rebase")
+
 	return nil
 }
 
@@ -171,6 +176,7 @@ func (o *Operator) Status() (string, error) {
 func IsRepo(workdir string) bool {
 	cmd := exec.Command("git", "rev-parse", "--git-dir")
 	cmd.Dir = workdir
+
 	return cmd.Run() == nil
 }
 

@@ -70,13 +70,14 @@ func NewServer(addr, chatID string, auth AuthConfig, disp *dispatcher.Dispatcher
 			// from the same host:port so this is not a hole in
 			// practice; tightening per-origin is a production
 			// concern.
-			CheckOrigin: func(r *http.Request) bool { return true },
+			CheckOrigin: func(_ *http.Request) bool { return true },
 		},
 	}
 	s.health = messaging.HealthReport{
 		Name:  "wschat",
 		State: messaging.StateStarting,
 	}
+
 	return s
 }
 
@@ -120,6 +121,7 @@ func (s *Server) Run(ctx context.Context) error {
 		_ = s.httpSrv.Shutdown(shutCtx)
 		s.closeSession()
 		s.setHealth(messaging.HealthReport{Name: "wschat", State: messaging.StateStopped})
+
 		return nil
 	case err := <-listenErr:
 		s.setHealth(messaging.HealthReport{Name: "wschat", State: messaging.StateStopped, Message: "bind failed"})
@@ -132,6 +134,7 @@ func (s *Server) Run(ctx context.Context) error {
 func (s *Server) Health() messaging.HealthReport {
 	s.healthMtx.Lock()
 	defer s.healthMtx.Unlock()
+
 	return s.health
 }
 
@@ -220,6 +223,7 @@ func (s *Server) closeSession() {
 func (s *Server) activeSession() *wsSession {
 	s.sessionMtx.Lock()
 	defer s.sessionMtx.Unlock()
+
 	return s.session
 }
 
@@ -264,19 +268,22 @@ func (s *Server) sendDelta(text string) {
 
 // sendStatus pushes a FrameStatus.
 func (s *Server) sendStatus(phase string, details map[string]any) {
-	payload, _ := json.Marshal(StatusPayload{Phase: phase, Details: details}) //nolint:errchkjson
+	payload, _ := json.Marshal(StatusPayload{Phase: phase, Details: details}) //nolint:errchkjson // wire frame for fixed-shape struct; marshal cannot fail
 	s.sendFrame(Frame{Type: FrameStatus, Payload: payload})
 }
 
 // sendError pushes a FrameError with an optional correlation id.
 func (s *Server) sendError(id, code, msg string) {
-	payload, _ := json.Marshal(ErrorPayload{Code: code, Message: msg}) //nolint:errchkjson
+	payload, _ := json.Marshal(ErrorPayload{Code: code, Message: msg}) //nolint:errchkjson // wire frame for fixed-shape struct; marshal cannot fail
 	s.sendFrame(Frame{Type: FrameError, ID: id, Payload: payload})
 }
 
 // sendAck pushes a FrameAck with an optional correlation id.
-func (s *Server) sendAck(id string, ok bool, msg string) {
-	payload, _ := json.Marshal(AckPayload{OK: ok, Message: msg})
+// The payload's OK field is reserved for future NACK frames;
+// today every ack is positive and carries no message so we
+// hard-code both here.
+func (s *Server) sendAck(id string) {
+	payload, _ := json.Marshal(AckPayload{OK: true}) //nolint:errchkjson // wire frame for fixed-shape struct; marshal cannot fail
 	s.sendFrame(Frame{Type: FrameAck, ID: id, Payload: payload})
 }
 
@@ -310,7 +317,7 @@ func (s *Server) handleClientFrame(ctx context.Context, sess *wsSession, f Frame
 		for _, c := range cmds {
 			out.Commands = append(out.Commands, CommandDesc{Command: c.Command, Description: c.Description})
 		}
-		payload, _ := json.Marshal(out)
+		payload, _ := json.Marshal(out) //nolint:errchkjson // wire frame for fixed-shape struct; marshal cannot fail
 		sess.send(Frame{Type: FrameCommandList, ID: f.ID, Payload: payload})
 	default:
 		// Unknown type: ignore (forward-compat).
@@ -354,10 +361,11 @@ func (s *Server) handleSend(ctx context.Context, sess *wsSession, id string, p S
 			s.sendError(id, "command_error", err.Error())
 			return
 		}
-		s.sendAck(id, true, "")
+		s.sendAck(id)
 		if reply != "" {
 			s.sendMessage("assistant", reply, "")
 		}
+
 		return
 	}
 
@@ -368,7 +376,7 @@ func (s *Server) handleSend(ctx context.Context, sess *wsSession, id string, p S
 	}
 	s.sendMessage("user", p.Text, "")
 	s.lastUserText = p.Text
-	s.sendAck(id, true, "")
+	s.sendAck(id)
 
 	cb := s.callbacks(sess)
 	msg := messaging.IncomingMessage{
@@ -404,15 +412,17 @@ func (s *Server) handleEditLast(sess *wsSession, id, newText string) {
 		return
 	}
 	s.lastUserText = newText
-	s.sendAck(id, true, "")
+	s.sendAck(id)
 
 	cb := s.callbacks(sess)
 	if err := s.disp.EditLast(context.Background(), s.chatID, newText, cb); err != nil {
 		if errors.Is(err, usecase.ErrNoLastUserTurn) {
 			s.sendError(id, "no_last_user", err.Error())
+
 			return
 		}
 		s.sendError(id, "llm_error", err.Error())
+
 		return
 	}
 	final := sess.finalText()
@@ -433,14 +443,16 @@ func (s *Server) handleResendLast(sess *wsSession, id string) {
 	}
 	defer sess.endTurn()
 
-	s.sendAck(id, true, "")
+	s.sendAck(id)
 	cb := s.callbacks(sess)
 	if err := s.disp.ResendLast(context.Background(), s.chatID, cb); err != nil {
 		if errors.Is(err, usecase.ErrNoLastUserTurn) {
 			s.sendError(id, "no_last_user", err.Error())
+
 			return
 		}
 		s.sendError(id, "llm_error", err.Error())
+
 		return
 	}
 	final := sess.finalText()
@@ -461,6 +473,7 @@ func (s *Server) callbacks(sess *wsSession) usecase.Callbacks {
 			// Replace the assistant bubble's visible text with the
 			// full current buffer (replace semantics, not append).
 			s.sendDelta(sess.currentText())
+
 			return nil
 		},
 		OnStatus: func(phase string, details map[string]any) {

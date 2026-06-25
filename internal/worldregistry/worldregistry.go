@@ -93,7 +93,8 @@ func Load(fs interface {
 	ReadRaw(rel string) (string, error)
 	WriteRawAtomic(rel, body string) error
 	Exists(rel string) bool
-}, world string) (*Registry, error) {
+}, world string,
+) (*Registry, error) {
 	if world == "" {
 		return nil, errors.New("worldregistry: world is empty")
 	}
@@ -111,6 +112,7 @@ func Load(fs interface {
 	}
 	r := &Registry{entries: append([]Entry(nil), f.NPCs...)}
 	r.sort()
+
 	return r, nil
 }
 
@@ -123,6 +125,7 @@ func (r *Registry) Save() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("worldregistry: marshal: %w", err)
 	}
+
 	return string(out), nil
 }
 
@@ -187,6 +190,7 @@ func (r *Registry) Lookup(name string) (Entry, bool) {
 	if hit.Slug != "" && !ambiguous {
 		return hit, true
 	}
+
 	return Entry{}, false
 }
 
@@ -205,6 +209,7 @@ func (r *Registry) Add(e Entry) error {
 	}
 	r.entries = append(r.entries, e)
 	r.sort()
+
 	return nil
 }
 
@@ -216,6 +221,7 @@ func (r *Registry) Add(e Entry) error {
 func (r *Registry) All() []Entry {
 	out := make([]Entry, len(r.entries))
 	copy(out, r.entries)
+
 	return out
 }
 
@@ -247,5 +253,6 @@ func matchAnyField(e Entry, want string) bool {
 			return true
 		}
 	}
+
 	return false
 }

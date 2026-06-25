@@ -56,12 +56,15 @@ func (s *stream) Append(ctx context.Context, text string) error {
 		if strings.Contains(err.Error(), "message is not modified") || strings.Contains(err.Error(), "same message") {
 			s.lastSent = text
 			s.client.log.Debug().Str("chat", s.chatID).Int("msg_id", s.msgID).Msg("vk: stream edit: no-op (content unchanged)")
+
 			return nil
 		}
 		s.client.log.Error().Err(err).Str("chat", s.chatID).Int("msg_id", s.msgID).Msg("vk: stream edit failed")
-		return err
+
+		return fmt.Errorf("vk: stream edit: %w", err)
 	}
 	s.lastSent = text
+
 	return nil
 }
 
@@ -77,6 +80,7 @@ func (s *stream) Final(ctx context.Context, text string) error {
 	s.client.mu.Lock()
 	delete(s.client.activeStreams, s.chatID)
 	s.client.mu.Unlock()
+
 	return nil
 }
 
@@ -92,19 +96,18 @@ type ThrottledStream struct {
 	ticker   *time.Ticker
 	stop     chan struct{}
 	wg       sync.WaitGroup
-	ctx      context.Context
 }
 
-func NewThrottledStream(ctx context.Context, inner messaging.StreamSession) *ThrottledStream {
+func NewThrottledStream(inner messaging.StreamSession) *ThrottledStream {
 	t := &ThrottledStream{
 		inner:    inner,
 		minDelay: 700 * time.Millisecond,
 		stop:     make(chan struct{}),
-		ctx:      ctx,
 	}
 	t.ticker = time.NewTicker(t.minDelay)
 	t.wg.Add(1)
 	go t.loop()
+
 	return t
 }
 
@@ -132,7 +135,7 @@ func (t *ThrottledStream) flush() {
 		return
 	}
 	// Best-effort flush; errors are logged by the inner stream.
-	_ = t.inner.Append(t.ctx, text)
+	_ = t.inner.Append(context.Background(), text) //nolint:contextcheck // background loop has no per-turn ctx; errors are logged by the inner stream
 }
 
 func (t *ThrottledStream) Append(ctx context.Context, text string) error {
@@ -142,6 +145,7 @@ func (t *ThrottledStream) Append(ctx context.Context, text string) error {
 	t.mu.Lock()
 	t.buffer = text
 	t.mu.Unlock()
+
 	return nil
 }
 
@@ -162,5 +166,9 @@ func (t *ThrottledStream) Final(ctx context.Context, text string) error {
 			return fmt.Errorf("wrap: %w", err)
 		}
 	}
-	return t.inner.Final(ctx, text)
+	if err := t.inner.Final(ctx, text); err != nil {
+		return fmt.Errorf("throttled final: %w", err)
+	}
+
+	return nil
 }

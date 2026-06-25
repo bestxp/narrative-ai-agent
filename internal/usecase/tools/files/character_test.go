@@ -14,20 +14,20 @@ import (
 	yamlfs "github.com/bestxp/narrative-ai-agent/internal/storage/fs"
 )
 
-func newTestCharacter(t *testing.T) (*Character, *storage.FileStore) {
+func newTestCharacter(t *testing.T) *Character {
 	t.Helper()
 	fs, _ := storage.NewFileStore(t.TempDir())
 	yamlStore, _ := yamlfs.New(fs.Root())
 	repos := api.NewYamlRepositories(yamlStore)
 	c := newCharacter(repos, zerolog.Nop(), slowlog.Discard())
-	return c, fs
+	return c
 }
 
 // --- Soul ---
 
 func TestSoulYaml_AppendSection(t *testing.T) {
 	t.Parallel()
-	c, _ := newTestCharacter(t)
+	c := newTestCharacter(t)
 	ok, err := c.AppendSoul("markus", "Предпочтения", "Ирука-сенсей")
 	require.NoError(t, err)
 	assert.True(t, ok)
@@ -39,7 +39,7 @@ func TestSoulYaml_AppendSection(t *testing.T) {
 
 func TestSkillYaml_AppendSection(t *testing.T) {
 	t.Parallel()
-	c, _ := newTestCharacter(t)
+	c := newTestCharacter(t)
 	ok, err := c.AppendSkill("markus", "Ранг", "генин")
 	require.NoError(t, err)
 	assert.True(t, ok)
@@ -49,7 +49,7 @@ func TestSkillYaml_AppendSection(t *testing.T) {
 
 func TestMemoryYaml_AppendSection(t *testing.T) {
 	t.Parallel()
-	c, _ := newTestCharacter(t)
+	c := newTestCharacter(t)
 	ok, err := c.AppendMemorySection("markus", "Яркие моменты", "день 1: встреча с Какаши")
 	require.NoError(t, err)
 	assert.True(t, ok)
@@ -59,7 +59,7 @@ func TestMemoryYaml_AppendSection(t *testing.T) {
 
 func TestInventoryYaml_AppendItem(t *testing.T) {
 	t.Parallel()
-	c, _ := newTestCharacter(t)
+	c := newTestCharacter(t)
 	ok, err := c.AppendInventoryItem("markus", charprofile.Item{
 		Name: "Кунай", Description: "стандартный", Equip: true,
 	})

@@ -325,11 +325,7 @@ type autoSaveState struct {
 }
 
 func newAutoSaveState(cfg *config.Config) *autoSaveState {
-	n := cfg.Git.AutoSave.AfterMessages
-	if n < 0 {
-		n = 0
-	}
-	return &autoSaveState{threshold: n}
+	return &autoSaveState{threshold: max(cfg.Git.AutoSave.AfterMessages, 0)}
 }
 
 // maybeAutoSave increments the counter on every freeform

@@ -27,6 +27,7 @@ func EstimateConversationTokens(messages []llm.Message, systemPromptChars int) i
 			total += len(m.Name)
 		}
 	}
+
 	return (total + 3) / 4
 }
 
@@ -41,6 +42,7 @@ func NeedsCompaction(messages []llm.Message, systemPromptChars, contextWindow in
 		return false
 	}
 	tokens := EstimateConversationTokens(messages, systemPromptChars)
+
 	return tokens >= int(float64(contextWindow)*threshold)
 }
 
@@ -81,6 +83,7 @@ func CompactConversations(messages []llm.Message, keepRecent int) ([]llm.Message
 	dropped := len(messages) - keepRecent
 	kept := messages[len(messages)-keepRecent:]
 	after := EstimateConversationTokens(kept, 0)
+
 	return kept, CompactionResult{
 		BeforeTokens: before,
 		AfterTokens:  after,
@@ -124,5 +127,6 @@ func DescribeCompaction(r CompactionResult, role string, verbose bool) string {
 	if role != "" {
 		out += fmt.Sprintf("   роль: %s\n", role)
 	}
+
 	return out
 }

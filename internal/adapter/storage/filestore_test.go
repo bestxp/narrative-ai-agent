@@ -15,6 +15,7 @@ func newTestStore(t *testing.T) *FileStore {
 	dir := t.TempDir()
 	fs, err := NewFileStore(dir)
 	require.NoError(t, err)
+
 	return fs
 }
 

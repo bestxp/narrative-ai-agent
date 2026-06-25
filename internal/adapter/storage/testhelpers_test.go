@@ -14,5 +14,6 @@ func newBufLogger(buf *strings.Builder, level string) zerolog.Logger {
 	if err != nil {
 		lvl = zerolog.InfoLevel
 	}
+
 	return zerolog.New(buf).Level(lvl)
 }

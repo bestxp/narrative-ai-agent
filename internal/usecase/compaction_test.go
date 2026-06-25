@@ -137,7 +137,7 @@ func TestCompactionFlow_GMReply(t *testing.T) {
 	window := 100
 	threshold := 0.5
 	var msgs []llm.Message
-	for i := 0; i < 30; i++ {
+	for i := range 30 {
 		msgs = append(msgs,
 			llm.Message{Role: "user", Content: "user message " + string(rune('a'+i%26)) + " with extra padding to make this longer"},
 			llm.Message{Role: "assistant", Content: "assistant reply " + string(rune('a'+i%26)) + " with even more padding to push the count up"},

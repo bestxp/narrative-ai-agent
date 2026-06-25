@@ -22,6 +22,7 @@ func (f *fakeReporter) Reports() []Report {
 	defer f.mu.Unlock()
 	out := make([]Report, len(f.report))
 	copy(out, f.report)
+
 	return out
 }
 
@@ -136,5 +137,10 @@ func httpGetCtx(ctx context.Context, url string) (*http.Response, error) {
 	if err != nil {
 		return nil, fmt.Errorf("http_get_ctx: NewRequestWithContext failed: %w", err)
 	}
-	return http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("http_get_ctx: Do failed: %w", err)
+	}
+
+	return resp, nil
 }

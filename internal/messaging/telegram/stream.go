@@ -3,6 +3,7 @@ package telegram
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -88,6 +89,7 @@ func (s *stream) Append(ctx context.Context, text string) error {
 				Int("msg_id", s.msgID).
 				Int("text_len", len(text)).
 				Msg("stream edit: no-op (content unchanged)")
+
 			return nil
 		}
 		if isMessageTooLong(err) {
@@ -105,7 +107,8 @@ func (s *stream) Append(ctx context.Context, text string) error {
 					Str("chat", s.chatID).
 					Int("text_len", len(wire)).
 					Msg("stream edit retry after split failed")
-				return retryErr
+
+				return fmt.Errorf("telegram: stream edit after split failed: %w", retryErr)
 			}
 			for _, tail := range chunks[1:] {
 				m := tg.NewMessage(s.chat, tail)
@@ -127,13 +130,14 @@ func (s *stream) Append(ctx context.Context, text string) error {
 				Int("msg_id", s.msgID).
 				Int("text_len", len(text)).
 				Msg("stream edit failed")
-			return err
+
+			return fmt.Errorf("telegram: stream edit: %w", err)
 		}
 	}
 	s.lastSent = text
+
 	return nil
 }
-
 func (s *stream) Final(ctx context.Context, text string) error {
 	if s.closed {
 		return nil
@@ -146,6 +150,7 @@ func (s *stream) Final(ctx context.Context, text string) error {
 	s.client.streamsMu.Lock()
 	delete(s.client.activeStreams, s.chatID)
 	s.client.streamsMu.Unlock()
+
 	return nil
 }
 
@@ -177,12 +182,20 @@ func (t *ThrottledStream) Append(ctx context.Context, text string) error {
 	}
 	t.last = time.Now()
 	t.mu.Unlock()
-	return t.inner.Append(ctx, text)
+	if err := t.inner.Append(ctx, text); err != nil {
+		return fmt.Errorf("telegram throttled append: %w", err)
+	}
+
+	return nil
 }
 
 func (t *ThrottledStream) Final(ctx context.Context, text string) error {
 	t.mu.Lock()
 	t.last = time.Now()
 	t.mu.Unlock()
-	return t.inner.Final(ctx, text)
+	if err := t.inner.Final(ctx, text); err != nil {
+		return fmt.Errorf("telegram throttled final: %w", err)
+	}
+
+	return nil
 }

@@ -53,6 +53,7 @@ package chronicle
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"sort"
 	"strings"
 
@@ -164,6 +165,7 @@ func Load(body string) (Chronicle, error) {
 			out.Days[k] = strings.TrimSpace(v)
 		}
 	}
+
 	return out, nil
 }
 
@@ -188,13 +190,12 @@ func (c Chronicle) Save() (string, error) {
 	for _, p := range c.Periods {
 		out.Periods = append(out.Periods, periodYAML(p))
 	}
-	for k, v := range c.Days {
-		out.Days[k] = v
-	}
+	maps.Copy(out.Days, c.Days)
 	body, err := yaml.Marshal(out)
 	if err != nil {
 		return "", fmt.Errorf("chronicle: yaml.Marshal: %w", err)
 	}
+
 	return string(body), nil
 }
 
@@ -208,6 +209,7 @@ func (c Chronicle) SortedDays() []DayEntry {
 		out = append(out, DayEntry{Number: k, Text: v})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Number < out[j].Number })
+
 	return out
 }
 
@@ -236,6 +238,7 @@ func (c Chronicle) LastDay() (int, bool) {
 			highest = k
 		}
 	}
+
 	return highest, true
 }
 
@@ -249,13 +252,14 @@ func (c Chronicle) LastPeriodEnd() (int, bool) {
 	if len(c.Periods) == 0 {
 		return 0, false
 	}
-	max := 0
+	m := 0
 	for _, p := range c.Periods {
-		if p.To > max {
-			max = p.To
+		if p.To > m {
+			m = p.To
 		}
 	}
-	return max, true
+
+	return m, true
 }
 
 // AppendDay records a raw day entry. The caller's
@@ -284,6 +288,7 @@ func (c *Chronicle) AppendDay(day int, text string) bool {
 		return false
 	}
 	c.Days[day] = text
+
 	return true
 }
 
@@ -335,6 +340,7 @@ func (c *Chronicle) CompressWindow(from, to int, memory string) error {
 		To:     to,
 		Memory: memory,
 	})
+
 	return nil
 }
 

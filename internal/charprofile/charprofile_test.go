@@ -392,7 +392,10 @@ func TestMigrateFromMarkdown_Skill_DropsUnknownSection(t *testing.T) {
 	t.Parallel()
 	body := "# M\n\n## Ранг\n- Генин\n\n## MiscGarbage\n- drop me\n"
 	got, _ := MigrateFromMarkdown("skill", body, "m")
-	s := got.(Skill)
+	s, ok := got.(Skill)
+	if !ok {
+		t.Fatalf("migrate skill: unexpected return type %T", got)
+	}
 	if len(s.Data) != 1 {
 		t.Fatalf("MiscGarbage must be dropped on strict skill, got %+v", s.Data)
 	}
@@ -407,7 +410,10 @@ func TestMigrateFromMarkdown_Soul_KeepsUnknownSection(t *testing.T) {
 	// them.)
 	body := "# M\n\n## Свободная секция\n- v\n"
 	got, _ := MigrateFromMarkdown("SOUL", body, "m")
-	s := got.(Soul)
+	s, ok := got.(Soul)
+	if !ok {
+		t.Fatalf("migrate SOUL: unexpected return type %T", got)
+	}
 	if len(s.Data) != 1 || s.Data[0].Name != "Свободная секция" {
 		t.Fatalf("Soul must keep free-form section, got %+v", s.Data)
 	}
@@ -430,7 +436,10 @@ func TestMigrateFromMarkdown_Memory_KeepsAllSections(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MigrateFromMarkdown: %v", err)
 	}
-	m := got.(Memory)
+	m, ok := got.(Memory)
+	if !ok {
+		t.Fatalf("migrate memory: unexpected return type %T", got)
+	}
 	if len(m.Data) != 4 {
 		t.Fatalf("memory migration must keep all 4 legacy sections, got %+v", m.Data)
 	}

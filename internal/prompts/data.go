@@ -1,19 +1,39 @@
-// Package prompts: data-bag (PromptData) that aggregates
-// everything a prompt template might need. Templates
-// receive a single root object and reach into typed
-// sub-structs. There is no cross-package reach into
-// domain.* / config.* / npcprofile.* — all the projection
-// happens here in NewPromptData, so templates stay
-// declarative and decoupled.
+// Package prompts serves the bundled skill prompts. The source
+// files live in this directory; they are baked into the
+// binary at build time via //go:embed so the operator does not
+// have to ship them next to the executable.
+//
+// Why embed instead of a relative path at runtime:
+//
+//   - The skill files are *behaviour* of the bot, not data.
+//     A typo or a missing file would change how the GM
+//     reasons, silently, and the operator would have no clue
+//     which version of the prompt is actually in use.
+//   - Single-file deploys: `bot-windows-amd64.exe config.yaml`
+//     is enough. No need to remember to copy the prompts dir.
+//
+// If a future role needs its own prompt, add the .md.tmpl
+// file to this directory and call
+// `prompts.Render("<name>.md.tmpl", data)` — go:embed will
+// pick it up automatically thanks to the wildcard.
+//
+// Templates are *code*, not data — same lifecycle as .go:
+// a typo = a build-time error, never a silent runtime drift.
+//
+// The data-bag (PromptData) aggregates everything a template
+// might need. Templates receive a single root object and
+// reach into typed sub-structs. There is no cross-package
+// reach into domain.* / config.* / npcprofile.* — all the
+// projection happens here in NewPromptData, so templates
+// stay declarative and decoupled.
 //
 // The shared tunable thresholds (NPCPersonalMemoryLimit,
-// StageRenderMaxBytes, ...) live in internal/limits
-// and are referenced by name. This package does NOT
-// carry its own copy — that path led to drift and
-// required a unit test pinning the two values
-// together. The single source of truth is now
-// internal/limits, and this package just forwards
-// the values into the data-bag.
+// StageRenderMaxBytes, ...) live in internal/limits and are
+// referenced by name. This package does NOT carry its own
+// copy — that path led to drift and required a unit test
+// pinning the two values together. The single source of
+// truth is now internal/limits, and this package just
+// forwards the values into the data-bag.
 package prompts
 
 import "github.com/bestxp/narrative-ai-agent/internal/limits"
@@ -438,6 +458,7 @@ func ConvertNPCSnapshots(displayName, profile []string) []NPCSnapshotData {
 	for i := range displayName {
 		out[i] = NPCSnapshotData{DisplayName: displayName[i], Profile: profile[i]}
 	}
+
 	return out
 }
 
@@ -575,5 +596,6 @@ func pickInt(got, def int) int {
 	if got > 0 {
 		return got
 	}
+
 	return def
 }

@@ -7,8 +7,15 @@ package messaging
 
 import (
 	"context"
+	"errors"
 	"time"
 )
+
+// ErrStreamingDisabled is returned by Client.StartStream when the
+// transport or its configuration has streaming turned off. Callers
+// detect it with errors.Is and fall back to a single Send call —
+// the alternative (returning nil, nil) is forbidden by nilnil.
+var ErrStreamingDisabled = errors.New("messaging: streaming disabled")
 
 // HealthState is the lifecycle state a Client reports back to
 // the health server. Strings mirror the values exposed by the
@@ -173,6 +180,7 @@ func (m *MultiClient) Run(ctx context.Context) error {
 			return err
 		}
 	}
+
 	return nil
 }
 

@@ -43,6 +43,7 @@ func New(root string) (*YamlStorage, error) {
 	if err := os.MkdirAll(abs, 0o755); err != nil {
 		return nil, fmt.Errorf("fs: mkdir root: %w", err)
 	}
+
 	return &YamlStorage{root: abs}, nil
 }
 
@@ -75,6 +76,7 @@ func (s *YamlStorage) Read(key string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read: ReadFile failed: %w", err)
 	}
+
 	return b, nil
 }
 
@@ -89,10 +91,15 @@ func (s *YamlStorage) Write(key string, data []byte) error {
 	}
 	target := s.Join(key)
 	tmp := target + ".tmp"
-	if err := os.WriteFile(tmp, clean, 0o644); err != nil {
+	if err := os.WriteFile(tmp, clean, 0o600); err != nil {
 		return fmt.Errorf("write: %w", err)
 	}
-	return os.Rename(tmp, target)
+
+	if err := os.Rename(tmp, target); err != nil {
+		return fmt.Errorf("write: rename: %w", err)
+	}
+
+	return nil
 }
 
 // Exists reports whether key is present on disk.
@@ -104,7 +111,8 @@ func (s *YamlStorage) Exists(key string) (bool, error) {
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
 	}
-	return false, err
+
+	return false, fmt.Errorf("exists: %w", err)
 }
 
 // ListChildren returns the names (NOT full keys) of
@@ -122,6 +130,7 @@ func (s *YamlStorage) ListChildren(dir string) ([]string, error) {
 	for _, e := range entries {
 		out = append(out, e.Name())
 	}
+
 	return out, nil
 }
 
@@ -132,6 +141,7 @@ func (s *YamlStorage) EnsureDir(key string) error {
 	if err := os.MkdirAll(s.dirOf(key), 0o755); err != nil {
 		return fmt.Errorf("ensure_dir: %w", err)
 	}
+
 	return nil
 }
 
@@ -169,10 +179,11 @@ func stripIndexPollutionBytes(s []byte) []byte {
 	if len(out) > 0 && out[len(out)-1] == '\n' && (len(s) == 0 || s[len(s)-1] != '\n') {
 		out = out[:len(out)-1]
 	}
+
 	return out
 }
 
-// Detect for testing whether a key would be a
+// IsDirKey: detect whether a key would be a
 // directory listing (ends in /). Repositories use this
 // to decide whether to call ListChildren or Read. Kept
 // as a helper rather than an interface method because

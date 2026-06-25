@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -227,6 +228,7 @@ func NewGM(cfg GMConfig, fs *storage.FileStore, llmCli LLMClient, ss *SessionSta
 			Parameters:  raw,
 		})
 	}
+
 	return &GM{
 		fs:           fs,
 		llm:          llmCli,
@@ -260,16 +262,22 @@ type conversation struct {
 	messages []llm.Message
 }
 
-var conversations sync.Map // map[chatID]*conversation
+var conversations sync.Map //nolint:gochecknoglobals // per-process conversation cache keyed by chatID // map[chatID]*conversation
 
 func (g *GM) getConversation(chatID string) *conversation {
 	v, ok := conversations.Load(chatID)
 	if ok {
-		return v.(*conversation)
+		if conv, ok := v.(*conversation); ok {
+			return conv
+		}
 	}
 	c := &conversation{}
 	actual, _ := conversations.LoadOrStore(chatID, c)
-	return actual.(*conversation)
+	if conv, ok := actual.(*conversation); ok {
+		return conv
+	}
+
+	return c
 }
 
 // ResetConversation clears the per-chat history. Called when the
@@ -313,6 +321,7 @@ func (g *GM) RegenerateLast(ctx context.Context, chatID string, cb Callbacks) (T
 	if cb.OnStatus != nil {
 		cb.OnStatus("request_received", map[string]any{"text_len": 0, "regenerate": true})
 	}
+
 	return g.runConversation(ctx, chatID, cb)
 }
 
@@ -342,6 +351,7 @@ func (g *GM) EditAndRegenerate(ctx context.Context, chatID, newText string, cb C
 	if cb.OnStatus != nil {
 		cb.OnStatus("request_received", map[string]any{"text_len": len(newText), "edit": true})
 	}
+
 	return g.runConversation(ctx, chatID, cb)
 }
 
@@ -354,8 +364,8 @@ var ErrNoLastUserTurn = errors.New("gm: no last user turn to regenerate or edit"
 // Tool-role messages (role "tool") always belong to the
 // assistant turn they follow, so they are trimmed together.
 func trimTrailingAssistant(msgs []llm.Message) []llm.Message {
-	for i := len(msgs) - 1; i >= 0; i-- {
-		role := msgs[i].Role
+	for i, msg := range slices.Backward(msgs) {
+		role := msg.Role
 		if role == "user" {
 			return msgs[:i+1]
 		}
@@ -363,14 +373,15 @@ func trimTrailingAssistant(msgs []llm.Message) []llm.Message {
 			return msgs[:i+1]
 		}
 	}
+
 	return msgs
 }
 
 // lastUserIndex returns the index of the last user-role message,
 // or -1 when none exists.
 func lastUserIndex(msgs []llm.Message) int {
-	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i].Role == "user" {
+	for i, msg := range slices.Backward(msgs) {
+		if msg.Role == "user" {
 			return i
 		}
 	}
@@ -446,10 +457,7 @@ func (g *GM) runConversation(ctx context.Context, chatID string, cb Callbacks) (
 	if g.compaction.ContextWindow > 0 {
 		ctxChars := len(g.staticPrompt)
 		if NeedsCompaction(history, ctxChars, g.compaction.ContextWindow, g.compaction.Threshold) {
-			dropCount := len(history) - g.compaction.KeepRecent
-			if dropCount < 0 {
-				dropCount = 0
-			}
+			dropCount := max(len(history)-g.compaction.KeepRecent, 0)
 			var droppedTurns []llm.Message
 			if dropCount > 0 {
 				droppedTurns = history[:dropCount]
@@ -514,10 +522,7 @@ func (g *GM) runConversation(ctx context.Context, chatID string, cb Callbacks) (
 		ctxChars := len(g.staticPrompt)
 		if NeedsCompaction(history, ctxChars, g.compaction.ContextWindow, g.compaction.Threshold) {
 			keptMsgs, _ := CompactConversations(history, g.compaction.KeepRecent)
-			dropped := len(history) - g.compaction.KeepRecent
-			if dropped < 0 {
-				dropped = 0
-			}
+			dropped := max(len(history)-g.compaction.KeepRecent, 0)
 			conv.mu.Lock()
 			conv.messages = keptMsgs
 			conv.mu.Unlock()
@@ -529,7 +534,7 @@ func (g *GM) runConversation(ctx context.Context, chatID string, cb Callbacks) (
 
 	consecutiveToolOnlyRounds := 0
 
-	for round := 0; round < maxToolRounds; round++ {
+	for round := range maxToolRounds {
 		if cb.OnStatus != nil {
 			cb.OnStatus("build_context", nil)
 		}
@@ -1016,7 +1021,7 @@ func (g *GM) missedToolGuard(_ context.Context, chatID string, calls []llm.ToolC
 func extractProperNamesFromDialogue(answer string) []string {
 	var out []string
 	seen := make(map[string]bool)
-	for _, ln := range strings.Split(answer, "\n") {
+	for ln := range strings.SplitSeq(answer, "\n") {
 		t := strings.TrimSpace(ln)
 		if !strings.HasPrefix(t, "—") && !strings.HasPrefix(t, "-") {
 			continue
@@ -1025,7 +1030,7 @@ func extractProperNamesFromDialogue(answer string) []string {
 		body := strings.TrimLeft(t, "—- ")
 		// Walk words; collect runs of capitalised tokens.
 		var current []string
-		for _, w := range strings.Fields(body) {
+		for w := range strings.FieldsSeq(body) {
 			// Strip punctuation.
 			cleaned := strings.Trim(w, ",.;:!?\"'()«»…")
 			if cleaned == "" {
@@ -1123,7 +1128,7 @@ func extractContextCommands(answer string) []extractedCommand {
 		return nil
 	}
 	var out []extractedCommand
-	for _, raw := range strings.Split(block, "\n") {
+	for raw := range strings.SplitSeq(block, "\n") {
 		line := strings.TrimSpace(raw)
 		// Skip empty lines and lines that are clearly
 		// not directives (no recognised prefix after
@@ -1507,13 +1512,13 @@ func parseCommaPairs(s string) map[string]string {
 func parseKeyValuePairs(s, sep string) map[string]string {
 	out := map[string]string{}
 	var lastKey string
-	for _, part := range strings.Split(s, sep) {
+	for part := range strings.SplitSeq(s, sep) {
 		part = strings.TrimSpace(part)
 		if part == "" {
 			continue
 		}
-		idx := strings.Index(part, "=")
-		if idx < 0 {
+		key, val, hasEq := strings.Cut(part, "=")
+		if !hasEq {
 			// Bare chunk — append to previous value
 			// if we have one. We re-insert the
 			// separator (with surrounding spaces)
@@ -1521,12 +1526,12 @@ func parseKeyValuePairs(s, sep string) map[string]string {
 			if lastKey == "" {
 				continue
 			}
-			out[lastKey] = out[lastKey] + sep + " " + part
+			out[lastKey] = out[lastKey] + sep + " " + key
 
 			continue
 		}
-		key := strings.ToLower(strings.TrimSpace(part[:idx]))
-		val := strings.TrimSpace(part[idx+1:])
+		key = strings.ToLower(strings.TrimSpace(key))
+		val = strings.TrimSpace(val)
 		val = strings.Trim(val, "\"'«»")
 		if key == "" {
 			continue
@@ -2297,16 +2302,12 @@ func (g *GM) loadActiveNPCs(world, state string) []domain.NPCSnapshot {
 	// Fallback: legacy "Активные NPC прямо сейчас:"
 	// line, used by hand-edited or pre-migration files.
 	marker := "Активные NPC прямо сейчас:"
-	idx := strings.Index(state, marker)
-	if idx < 0 {
+	_, rest, found := strings.Cut(state, marker)
+	if !found {
 		return nil
 	}
-	rest := state[idx+len(marker):]
-	end := strings.Index(rest, "\n")
-	if end < 0 {
-		end = len(rest)
-	}
-	names := strings.Split(rest[:end], ",")
+	line, _, _ := strings.Cut(rest, "\n")
+	names := strings.Split(line, ",")
 	return g.loadRosterAtLOD(world, names)
 }
 
@@ -2470,7 +2471,7 @@ func (g *GM) dispatchOneTool(ctx context.Context, tc llm.ToolCall) (string, stri
 		//      model having to repeat it on every call.
 		var pp []string
 		if raw := toString(args["permanent_party"]); raw != "" {
-			for _, p := range strings.Split(raw, ",") {
+			for p := range strings.SplitSeq(raw, ",") {
 				if t := strings.TrimSpace(p); t != "" {
 					pp = append(pp, t)
 				}
@@ -2909,7 +2910,7 @@ func mergeToolCalls(acc, incoming []llm.ToolCall) []llm.ToolCall {
 }
 
 func okJSON(payload any) string {
-	b, _ := json.Marshal(map[string]any{"ok": true, "result": payload})
+	b, _ := json.Marshal(map[string]any{"ok": true, "result": payload}) //nolint:errchkjson // fixed-shape helper payload; marshal cannot fail
 	return string(b)
 }
 

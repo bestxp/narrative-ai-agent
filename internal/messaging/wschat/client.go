@@ -35,6 +35,7 @@ func New(cfg config.WSChatConfig, disp *dispatcher.Dispatcher, commands []messag
 	srv := NewServer(cfg.ListenAddr, cfg.ChatID, auth, disp, commands, log)
 	recvCh := make(chan messaging.IncomingMessage) // never written; see Recv.
 	close(recvCh)
+
 	return &Client{
 		cfg:    cfg,
 		srv:    srv,
@@ -107,6 +108,7 @@ func (s *streamSession) Append(ctx context.Context, text string) error {
 		return nil
 	}
 	s.srv.sendDelta(text)
+
 	return nil
 }
 
@@ -116,6 +118,7 @@ func (s *streamSession) Final(ctx context.Context, text string) error {
 	}
 	s.final = true
 	s.srv.sendMessage("assistant", text, "")
+
 	return nil
 }
 
@@ -126,5 +129,6 @@ func joinArgs(args []string) string {
 	if len(args) == 0 {
 		return ""
 	}
+
 	return " " + strings.Join(args, " ")
 }

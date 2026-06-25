@@ -2,9 +2,9 @@ package yaml
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 
-	"fmt"
 	"github.com/bestxp/narrative-ai-agent/internal/charprofile"
 	"github.com/bestxp/narrative-ai-agent/internal/storage"
 )
@@ -59,6 +59,7 @@ func (r *SoulYaml) Load(character string) (charprofile.Soul, error) {
 	if err != nil {
 		return charprofile.Soul{}, fmt.Errorf("load: LoadSoul failed: %w", err)
 	}
+
 	return s, nil
 }
 
@@ -68,7 +69,11 @@ func (r *SoulYaml) Save(character string, s charprofile.Soul) error {
 	if err != nil {
 		return fmt.Errorf("save: Save failed: %w", err)
 	}
-	return r.store.Write(soulKey(character), []byte(body))
+	if err := r.store.Write(soulKey(character), []byte(body)); err != nil {
+		return fmt.Errorf("save: write failed: %w", err)
+	}
+
+	return nil
 }
 
 // AppendSection adds a new free-form bullet to the
@@ -90,6 +95,7 @@ func (r *SoulYaml) AppendSection(character, section, value string) (bool, error)
 	if err := r.Save(character, s); err != nil {
 		return false, err
 	}
+
 	return true, nil
 }
 
@@ -118,6 +124,7 @@ func (r *SkillYaml) Load(character string) (charprofile.Skill, error) {
 	if err != nil {
 		return charprofile.Skill{}, fmt.Errorf("load: LoadSkill failed: %w", err)
 	}
+
 	return s, nil
 }
 
@@ -127,7 +134,11 @@ func (r *SkillYaml) Save(character string, s charprofile.Skill) error {
 	if err != nil {
 		return fmt.Errorf("save: Save failed: %w", err)
 	}
-	return r.store.Write(skillKey(character), []byte(body))
+	if err := r.store.Write(skillKey(character), []byte(body)); err != nil {
+		return fmt.Errorf("save: write failed: %w", err)
+	}
+
+	return nil
 }
 
 // AppendSection appends to a skill section.
@@ -142,6 +153,7 @@ func (r *SkillYaml) AppendSection(character, section, value string) (bool, error
 	if err := r.Save(character, s); err != nil {
 		return false, err
 	}
+
 	return true, nil
 }
 
@@ -172,6 +184,7 @@ func (r *CharacterMemoryYaml) Load(character string) (charprofile.Memory, error)
 	if err != nil {
 		return charprofile.Memory{}, fmt.Errorf("load: LoadMemory failed: %w", err)
 	}
+
 	return m, nil
 }
 
@@ -181,7 +194,11 @@ func (r *CharacterMemoryYaml) Save(character string, m charprofile.Memory) error
 	if err != nil {
 		return fmt.Errorf("save: Save failed: %w", err)
 	}
-	return r.store.Write(characterMemoryKey(character), []byte(body))
+	if err := r.store.Write(characterMemoryKey(character), []byte(body)); err != nil {
+		return fmt.Errorf("save: write failed: %w", err)
+	}
+
+	return nil
 }
 
 // AppendSection appends to a memory section.
@@ -196,6 +213,7 @@ func (r *CharacterMemoryYaml) AppendSection(character, section, value string) (b
 	if err := r.Save(character, m); err != nil {
 		return false, err
 	}
+
 	return true, nil
 }
 
@@ -224,6 +242,7 @@ func (r *InventoryYaml) Load(character string) (charprofile.Inventory, error) {
 	if err != nil {
 		return charprofile.Inventory{}, fmt.Errorf("load: LoadInventory failed: %w", err)
 	}
+
 	return inv, nil
 }
 
@@ -233,7 +252,11 @@ func (r *InventoryYaml) Save(character string, inv charprofile.Inventory) error 
 	if err != nil {
 		return fmt.Errorf("save: Save failed: %w", err)
 	}
-	return r.store.Write(inventoryKey(character), []byte(body))
+	if err := r.store.Write(inventoryKey(character), []byte(body)); err != nil {
+		return fmt.Errorf("save: write failed: %w", err)
+	}
+
+	return nil
 }
 
 // AppendItem REPLACE-on-name. Returns true if the
@@ -251,6 +274,7 @@ func (r *InventoryYaml) AppendItem(character string, item charprofile.Item) (boo
 	if err := r.Save(character, inv); err != nil {
 		return false, err
 	}
+
 	return true, nil
 }
 
@@ -270,9 +294,14 @@ func (r *InventoryYaml) RemoveItem(character, name string) error {
 		if errors.Is(err, charprofile.ErrItemNotFound) {
 			return nil
 		}
-		return err
+
+		return fmt.Errorf("remove_item: %w", err)
 	}
-	return r.Save(character, inv)
+	if err := r.Save(character, inv); err != nil {
+		return fmt.Errorf("remove_item save: %w", err)
+	}
+
+	return nil
 }
 
 // SetCurrency upserts a currency entry.
@@ -287,6 +316,7 @@ func (r *InventoryYaml) SetCurrency(character, name string, count int) (bool, er
 	if err := r.Save(character, inv); err != nil {
 		return false, err
 	}
+
 	return true, nil
 }
 

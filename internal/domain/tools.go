@@ -83,6 +83,7 @@ func Object(props ...Property) Schema {
 		f := false
 		out.AdditionalProperties = &f
 	}
+
 	return out
 }
 
@@ -124,6 +125,7 @@ func StringEnum(description string, values ...string) Schema {
 	for _, v := range values {
 		enum = append(enum, v)
 	}
+
 	return Schema{Type: "string", Description: description, Enum: enum}
 }
 
@@ -136,6 +138,7 @@ func ArrayOf(items Schema) Schema {
 func ArrayOfStrings(description string) Schema {
 	s := ArrayOf(String(""))
 	s.Description = description
+
 	return s
 }
 
@@ -146,15 +149,9 @@ func ArrayOfStringsBounded(description string, minItems, maxItems int) Schema {
 	s := ArrayOfStrings(description)
 	s.MinItems = &minItems
 	s.MaxItems = &maxItems
+
 	return s
 }
-
-// BoolPtr is a tiny helper for callers that want to set
-// AdditionalProperties manually.
-func BoolPtr(b bool) *bool { return &b }
-
-// IntPtr is the int equivalent.
-func IntPtr(n int) *int { return &n }
 
 // MarshalParameters renders the schema as the JSON object the
 // OpenAI API expects. It is called once per tool at startup; the
@@ -164,6 +161,7 @@ func (t Tool) MarshalParameters() (json.RawMessage, error) {
 	if err != nil {
 		return nil, fmt.Errorf("tool %s: marshal parameters: %w", t.Function.Name, err)
 	}
+
 	return out, nil
 }
 
@@ -262,7 +260,7 @@ func emptyObjectSchema() Schema {
 	return Schema{
 		Type:                 "object",
 		Properties:           map[string]Schema{},
-		AdditionalProperties: BoolPtr(false),
+		AdditionalProperties: new(bool),
 	}
 }
 
@@ -405,6 +403,7 @@ func updateSkillTool() Tool {
 		"Фундаментальные стихии", "Особые проявления",
 		"Универсальные навыки", "Ограничения", "Глаза", "Доспех",
 	}
+
 	return Tool{
 		Type: "function",
 		Function: ToolFunctionSchema{
@@ -428,6 +427,7 @@ func updateMemoryTool() Tool {
 	canonical := []string{
 		"Яркие моменты", "Факты о мире", "Обещания и цели", "Важные люди",
 	}
+
 	return Tool{
 		Type: "function",
 		Function: ToolFunctionSchema{
@@ -464,6 +464,7 @@ func updateInventoryTool() Tool {
 		"weapon", "armor", "accessory", "consumable",
 		"tool", "quest", "document", "material", "other",
 	}
+
 	return Tool{
 		Type: "function",
 		Function: ToolFunctionSchema{
@@ -541,6 +542,7 @@ func updateNpcTool() Tool {
 		"Способности", "Личная память/факты", "Текущий статус",
 		"Критические знания", "Последнее обновление",
 	}
+
 	return Tool{
 		Type: "function",
 		Function: ToolFunctionSchema{

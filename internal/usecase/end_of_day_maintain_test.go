@@ -137,7 +137,7 @@ temperament: "спокойный"
 	repos := api.NewYamlRepositories(yamlStore)
 	tools := NewFileToolset(fs, repos, discardLogger(), slowlog.Discard(), adapter, nil, nil, adapter)
 
-	log, _ := newBufLogger()
+	log := newBufLogger()
 	g := NewGM(GMConfig{
 		Role: llm.RoleConfig{
 			Model: "test", MaxTokens: 100, Temperature: 0.5,
@@ -251,7 +251,7 @@ file_slug: "kakashi"
 temperament: "спокойный"
 `)
 	require.NoError(t, err)
-	for i := 0; i < 25; i++ {
+	for range 25 {
 		shrunk.PersonalMemory = append(shrunk.PersonalMemory, "compacted")
 	}
 	shrunkBody, err := shrunk.Save()
@@ -287,7 +287,7 @@ func TestEndOfDay_DoesNotMaintainUnderLimitNPCs(t *testing.T) {
 file_slug: "kakashi"
 temperament: "спокойный"
 `)
-	for i := 0; i < 30; i++ {
+	for range 30 {
 		short.PersonalMemory = append(short.PersonalMemory, "под лимитом")
 	}
 	shortBody, _ := short.Save()
@@ -341,7 +341,7 @@ func TestEndOfDay_MaintainBiggerBodyKeepsOriginal(t *testing.T) {
 	scripting.push("[События прошедшего дня Д0001] Утром ГГ встретил Какаши.", nil)
 	original, _ := fs.ReadRaw("worlds/naruto/characters/kakashi.yaml")
 	biggerBody := original + "\n# extra padding line to make the body longer\n"
-	scripting.push(string(biggerBody), nil)
+	scripting.push(biggerBody, nil)
 
 	require.NoError(t, g.EndOfDay(context.Background(), "naruto", 1))
 	after, _ := fs.ReadRaw("worlds/naruto/characters/kakashi.yaml")
@@ -369,12 +369,12 @@ func TestEndOfDay_MaintainResultInvalidatesSnapshot(t *testing.T) {
 file_slug: "kakashi"
 temperament: "спокойный"
 `)
-	for i := 0; i < 25; i++ {
+	for range 25 {
 		shrunk.PersonalMemory = append(shrunk.PersonalMemory, "compacted")
 	}
 	shrunkBody, _ := shrunk.Save()
 	scripting.push("[События прошедшего дня Д0001] Утром ГГ встретил Какаши.", nil)
-	scripting.push(string(shrunkBody), nil)
+	scripting.push(shrunkBody, nil)
 
 	// Drive EndOfDay (which appends the protocol AND
 	// triggers maintain). Either branch invalidates the

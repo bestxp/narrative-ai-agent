@@ -86,6 +86,7 @@ func New(role llm.RoleConfig, log zerolog.Logger) *Driver {
 			},
 		})
 	}
+
 	return d
 }
 
@@ -160,11 +161,13 @@ func (d *Driver) Stream(ctx context.Context, req llm.ChatRequest, onChunk func(l
 		if errors.Is(err, context.DeadlineExceeded) {
 			return fmt.Errorf("openai: stream deadline: %w", err)
 		}
+
 		return fmt.Errorf("openai: stream: %w", err)
 	}
 	if err := onChunk(llm.Chunk{Done: true, RawTrace: rawTrace}); err != nil {
 		return fmt.Errorf("openai: done callback: %w", err)
 	}
+
 	return nil
 }
 
@@ -230,7 +233,7 @@ func (d *Driver) buildParams(req llm.ChatRequest) (openaisdk.ChatCompletionNewPa
 	}
 
 	params := openaisdk.ChatCompletionNewParams{
-		Model:    shared.ChatModel(req.Model),
+		Model:    req.Model,
 		Messages: messages,
 		StreamOptions: openaisdk.ChatCompletionStreamOptionsParam{
 			IncludeUsage: openaisdk.Opt(true),
@@ -262,6 +265,7 @@ func (d *Driver) buildParams(req llm.ChatRequest) (openaisdk.ChatCompletionNewPa
 	if req.ReasoningEffort != "" {
 		params.ReasoningEffort = shared.ReasoningEffort(req.ReasoningEffort)
 	}
+
 	return params, nil
 }
 
@@ -283,10 +287,7 @@ func (a *toolAccumulator) merge(deltas []openaisdk.ChatCompletionChunkChoiceDelt
 		if d.Function.Name == "" && d.Function.Arguments == "" {
 			continue
 		}
-		idx := d.Index
-		if idx < 0 {
-			idx = 0
-		}
+		idx := max(d.Index, 0)
 		entry, ok := a.buf[idx]
 		if !ok {
 			entry = &llm.ToolCall{Index: int(idx), Type: "function"}
@@ -334,6 +335,7 @@ func (a *toolAccumulator) merge(deltas []openaisdk.ChatCompletionChunkChoiceDelt
 	for _, e := range a.buf {
 		out = append(out, *e)
 	}
+
 	return out
 }
 
@@ -363,10 +365,12 @@ func unquoteJSONString(raw string) string {
 				out.WriteByte(inner[i+1])
 			}
 			i++
+
 			continue
 		}
 		out.WriteByte(inner[i])
 	}
+
 	return out.String()
 }
 
@@ -374,5 +378,6 @@ func orDefault(v, def int) int {
 	if v <= 0 {
 		return def
 	}
+
 	return v
 }

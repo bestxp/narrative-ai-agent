@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -85,12 +86,8 @@ func (c *Client) IsAllowed(senderID string) bool {
 	if err != nil {
 		return false
 	}
-	for _, allow := range c.cfg.AllowedUserIDs {
-		if allow == id {
-			return true
-		}
-	}
-	return false
+
+	return slices.Contains(c.cfg.AllowedUserIDs, id)
 }
 
 func (c *Client) SetCommands(_ context.Context, _ []messaging.BotCommand) error {
@@ -157,6 +154,7 @@ func (c *Client) Run(ctx context.Context) error {
 			c.setHealth(messaging.StateStopped, "", "ctx cancelled")
 			c.lp.Shutdown()
 			c.log.Info().Msg("vk: shutdown")
+
 			return nil
 		case err := <-errCh:
 			c.setHealth(messaging.StateReconnect, "", err.Error())
@@ -169,6 +167,7 @@ func (c *Client) Run(ctx context.Context) error {
 				c.setHealth(messaging.StateStopped, "", "ctx cancelled")
 				c.lp.Shutdown()
 				c.log.Info().Msg("vk: shutdown")
+
 				return nil
 			case <-time.After(backoff):
 			}
@@ -202,12 +201,13 @@ func (c *Client) Send(ctx context.Context, msg messaging.OutgoingMessage) error 
 			return fmt.Errorf("send_chunks: MessagesSend failed: %w", sendErr)
 		}
 	}
+
 	return nil
 }
 
 func (c *Client) StartStream(ctx context.Context, chatID string, replyToMessageID int) (messaging.StreamSession, error) {
 	if c.cfg.DisableStreaming {
-		return nil, nil
+		return nil, messaging.ErrStreamingDisabled
 	}
 	peerID, err := strconv.Atoi(chatID)
 	if err != nil {
@@ -232,7 +232,7 @@ func (c *Client) StartStream(ctx context.Context, chatID string, replyToMessageI
 
 	c.log.Debug().Str("chat", chatID).Int("msg_id", msgID).Msg("vk: stream started")
 
-	return NewThrottledStream(ctx, &stream{
+	return NewThrottledStream(&stream{
 		client:   c,
 		chatID:   chatID,
 		peerID:   peerID,
@@ -296,6 +296,7 @@ func splitForVK(text string) []string {
 	if rest != "" {
 		out = append(out, rest)
 	}
+
 	return out
 }
 
@@ -304,6 +305,7 @@ func splitForVK(text string) []string {
 func (c *Client) Health() messaging.HealthReport {
 	c.healthMu.RLock()
 	defer c.healthMu.RUnlock()
+
 	return messaging.HealthReport{
 		Name:      "vk",
 		State:     c.healthState,

@@ -129,6 +129,7 @@ func (s *SessionStart) checkSync(world, state string) (stateAhead, chronicleAhea
 	return false, false
 }
 
+//nolint:gochecknoglobals // precompiled header parser reused across SessionStart calls
 var dayHeaderRe = extractDayHeaderRegex()
 
 func extractDayHeaderRegex() func(string) (int, bool) {
@@ -138,7 +139,7 @@ func extractDayHeaderRegex() func(string) (int, bool) {
 		if idx < 0 {
 			return 0, false
 		}
-		rest := s[idx+len("День "):]
+		rest, _ := strings.CutPrefix(s[idx:], "День ")
 		end := 0
 		for end < len(rest) && rest[end] >= '0' && rest[end] <= '9' {
 			end++
@@ -147,7 +148,7 @@ func extractDayHeaderRegex() func(string) (int, bool) {
 			return 0, false
 		}
 		n := 0
-		for i := 0; i < end; i++ {
+		for i := range end {
 			n = n*10 + int(rest[i]-'0')
 		}
 		return n, true

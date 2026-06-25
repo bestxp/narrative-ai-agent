@@ -50,6 +50,7 @@ func File(path string) (*Logger, error) {
 	if err != nil {
 		return nil, fmt.Errorf("slowlog: open %s: %w", path, err)
 	}
+
 	return &Logger{w: f, mu: &sync.Mutex{}, now: time.Now}, nil
 }
 
@@ -95,6 +96,7 @@ func (l *Logger) Write(kind, chat string, fields map[string]any) error {
 	if _, err := l.w.Write(append(buf, '\n')); err != nil {
 		return fmt.Errorf("slowlog: write: %w", err)
 	}
+
 	return nil
 }
 

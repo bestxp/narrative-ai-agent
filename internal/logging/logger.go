@@ -5,6 +5,7 @@
 package logging
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -61,6 +62,7 @@ func NewWithSlowlog(cfg Config, slow *SlowlogWriter) zerolog.Logger {
 	if cfg.Pretty {
 		w = zerolog.ConsoleWriter{Out: w, TimeFormat: time.RFC3339}
 	}
+
 	return zerolog.New(w).Level(level).With().Timestamp().Logger()
 }
 
@@ -86,5 +88,10 @@ func NewSlowlogWriter(w io.Writer) *SlowlogWriter {
 func (s *SlowlogWriter) Write(p []byte) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.w.Write(p)
+	n, err := s.w.Write(p)
+	if err != nil {
+		return n, fmt.Errorf("slowlog_writer: %w", err)
+	}
+
+	return n, nil
 }

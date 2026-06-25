@@ -109,7 +109,7 @@ func newWithSlowlog(role llm.RoleConfig, log zerolog.Logger, slow *slowlog.Logge
 		// required by ollama.com and older Anthropic API
 		// versions; newer deployments recognise cache_control
 		// natively.
-		option.WithHeaderAdd("anthropic-beta", string(anthropic.AnthropicBetaPromptCaching2024_07_31)),
+		option.WithHeaderAdd("anthropic-beta", anthropic.AnthropicBetaPromptCaching2024_07_31),
 	}
 	if d.thinkingAsAuthToken {
 		clientOpts = append(clientOpts, option.WithAuthToken(role.APIKey))
@@ -178,6 +178,7 @@ func newWithSlowlog(role llm.RoleConfig, log zerolog.Logger, slow *slowlog.Logge
 			tool.CacheControl = anthropic.NewCacheControlEphemeralParam()
 		}
 	}
+
 	return d
 }
 
@@ -219,6 +220,7 @@ func (d *Driver) Stream(ctx context.Context, req llm.ChatRequest, onChunk func(l
 		if errors.Is(err, context.DeadlineExceeded) {
 			return fmt.Errorf("anthropic: deadline: %w", err)
 		}
+
 		return fmt.Errorf("anthropic: request: %w", err)
 	}
 	// Capture raw response for diagnostics on broken/empty
@@ -235,7 +237,7 @@ func (d *Driver) Stream(ctx context.Context, req llm.ChatRequest, onChunk func(l
 // blocks (Type="thinking" or non-standard `tool_use` blocks
 // with empty name+input that some providers emit) are logged
 // to slowlog and dropped.
-func (d *Driver) emitBlocks(ctx context.Context, resp *anthropic.Message, rawTrace []string, onChunk func(llm.Chunk) error) error {
+func (d *Driver) emitBlocks(_ context.Context, resp *anthropic.Message, rawTrace []string, onChunk func(llm.Chunk) error) error {
 	// OpenAI finish vocabulary mapping.
 	finish := mapAnthropicStopReason(resp.StopReason)
 
@@ -252,7 +254,7 @@ func (d *Driver) emitBlocks(ctx context.Context, resp *anthropic.Message, rawTra
 		// Filter thinking-blocks disguised as tool_use
 		// (openrouter convention).
 		if tu.Name == "" && len(tu.Input) == 0 {
-			d.logThinking(string(tu.ID), string(tu.Input))
+			d.logThinking(tu.ID, string(tu.Input))
 			continue
 		}
 		tools = append(tools, llm.ToolCall{
@@ -300,6 +302,7 @@ func (d *Driver) emitBlocks(ctx context.Context, resp *anthropic.Message, rawTra
 	if err := onChunk(llm.Chunk{Done: true, RawTrace: rawTrace}); err != nil {
 		return fmt.Errorf("anthropic: done callback: %w", err)
 	}
+
 	return nil
 }
 
@@ -386,12 +389,13 @@ func (d *Driver) buildRequest(req llm.ChatRequest) (anthropic.MessageNewParams, 
 				Role:    msg.Role,
 				Content: appendCacheControlToFirstUserBlock(msg.Content),
 			}
+
 			break
 		}
 	}
 
 	params := anthropic.MessageNewParams{
-		Model:     anthropic.Model(req.Model),
+		Model:     req.Model,
 		MaxTokens: int64(orDefault(req.MaxTokens, 1500)),
 		System:    systemBlocks,
 		Messages:  messages,
@@ -416,6 +420,7 @@ func (d *Driver) buildRequest(req llm.ChatRequest) (anthropic.MessageNewParams, 
 			OfDisabled: &disabled,
 		}
 	}
+
 	return params, nil
 }
 
@@ -436,6 +441,7 @@ func appendCacheControlToFirstUserBlock(content []anthropic.ContentBlockParamUni
 			return content
 		}
 	}
+
 	return content
 }
 
@@ -482,5 +488,6 @@ func orDefault(v, def int) int {
 	if v <= 0 {
 		return def
 	}
+
 	return v
 }

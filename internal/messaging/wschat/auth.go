@@ -2,6 +2,7 @@ package wschat
 
 import (
 	"net/http"
+	"slices"
 	"strings"
 )
 
@@ -23,12 +24,8 @@ func (a AuthConfig) IsAccepted(token string) bool {
 	if a.DevToken != "" && token == a.DevToken {
 		return true
 	}
-	for _, t := range a.AllowedTokens {
-		if t == token {
-			return true
-		}
-	}
-	return false
+
+	return slices.Contains(a.AllowedTokens, token)
 }
 
 // bearerFromRequest extracts the bearer token from either the
@@ -38,14 +35,16 @@ func (a AuthConfig) IsAccepted(token string) bool {
 // header path is what the HTTP API calls use.
 func bearerFromRequest(r *http.Request) string {
 	if h := r.Header.Get("Authorization"); h != "" {
-		if strings.HasPrefix(h, "Bearer ") {
-			return strings.TrimSpace(strings.TrimPrefix(h, "Bearer "))
+		if token, ok := strings.CutPrefix(h, "Bearer "); ok {
+			return strings.TrimSpace(token)
 		}
+
 		return strings.TrimSpace(h)
 	}
 	if t := r.URL.Query().Get("token"); t != "" {
 		return t
 	}
+
 	return ""
 }
 
@@ -62,7 +61,9 @@ func requireAuth(w http.ResponseWriter, r *http.Request, auth AuthConfig) bool {
 		w.Header().Set("WWW-Authenticate", "Bearer")
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
+
 		return false
 	}
+
 	return true
 }

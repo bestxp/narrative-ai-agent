@@ -72,6 +72,7 @@ func (f *FirstLaunch) Launch(char CharacterSpec, world WorldSpec) error {
 		return fmt.Errorf("wrap: %w", err)
 	}
 	f.log.Info().Str("character", charDir).Str("world", worldDir).Msg("first_launch")
+
 	return nil
 }
 
@@ -114,7 +115,12 @@ func (f *FirstLaunch) writeCharacter(dir string, c CharacterSpec) error {
 	if err := f.fs.WriteRawAtomic(root+"/memory.yaml", buildSeedMemory(c)); err != nil {
 		return fmt.Errorf("write_character: %w", err)
 	}
-	return f.fs.WriteRawAtomic(root+"/inventory.yaml", buildSeedInventory(c))
+
+	if err := f.fs.WriteRawAtomic(root+"/inventory.yaml", buildSeedInventory(c)); err != nil {
+		return fmt.Errorf("write_character: %w", err)
+	}
+
+	return nil
 }
 
 // buildSeedSoul renders the canonical SOUL.yaml
@@ -142,7 +148,9 @@ func buildSeedSoul(c CharacterSpec) string {
 			{Name: "Истинная сущность", Values: []string{strings.TrimSpace(c.TrueNature)}},
 		}
 	}
+
 	out, _ := s.Save()
+
 	return out
 }
 
@@ -164,6 +172,7 @@ func buildSeedSkill(_ CharacterSpec) string {
 		s.Data = append(s.Data, charprofile.Section{Name: name})
 	}
 	out, _ := s.Save()
+
 	return out
 }
 
@@ -181,6 +190,7 @@ func buildSeedMemory(_ CharacterSpec) string {
 		m.Data = append(m.Data, charprofile.Section{Name: name})
 	}
 	out, _ := m.Save()
+
 	return out
 }
 
@@ -191,6 +201,7 @@ func buildSeedMemory(_ CharacterSpec) string {
 func buildSeedInventory(_ CharacterSpec) string {
 	inv := charprofile.Inventory{}
 	out, _ := inv.Save()
+
 	return out
 }
 
@@ -252,6 +263,7 @@ func defaultStaging(dir string) string {
 	b.WriteString("enabled: false\n")
 	b.WriteString("init: []\n")
 	b.WriteString("stages: []\n")
+
 	return b.String()
 }
 
@@ -274,5 +286,6 @@ func defaultPlan(dir string) string {
 		b.WriteString(e)
 		b.WriteString("\n")
 	}
+
 	return b.String()
 }

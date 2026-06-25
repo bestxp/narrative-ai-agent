@@ -14,6 +14,7 @@ func (f *fakeFS) ReadRaw(rel string) (string, error) {
 	if !ok {
 		return "", &fsError{rel: rel}
 	}
+
 	return v, nil
 }
 
@@ -22,11 +23,13 @@ func (f *fakeFS) WriteRawAtomic(rel, body string) error {
 		f.files = map[string]string{}
 	}
 	f.files[rel] = body
+
 	return nil
 }
 
 func (f *fakeFS) Exists(rel string) bool {
 	_, ok := f.files[rel]
+
 	return ok
 }
 

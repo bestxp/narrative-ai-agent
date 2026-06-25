@@ -1,13 +1,21 @@
+package telegram
+
 // Package telegram implements the messaging.Client interface for the
 // Telegram Bot API. It uses long-polling; switching to webhooks is a
 // future optimisation, not a refactor.
-package telegram
+//
+// Markdown conversion is delegated to eekstunt/telegramify-markdown-go,
+// which produces Telegram MessageEntity objects (the API's native
+// formatting format) from a Markdown source. Our wrapper walks those
+// entities and emits Telegram-flavoured HTML so we can drive both
+// sendMessage and editMessageText with parse_mode=HTML.
 
 import (
 	"context"
 	"errors"
 	"fmt"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -62,6 +70,7 @@ func New(cfg Config, log zerolog.Logger) (*Client, error) {
 	if cfg.PollingTimeout == 0 {
 		cfg.PollingTimeout = 60
 	}
+
 	return &Client{
 		cfg:         cfg,
 		api:         api,
@@ -81,18 +90,13 @@ func (c *Client) Recv() <-chan messaging.IncomingMessage {
 }
 
 // IsAllowed implements messaging.Client.
-// IsAllowed implements messaging.Client.
 func (c *Client) IsAllowed(senderID string) bool {
 	id, err := strconv.Atoi(senderID)
 	if err != nil {
 		return false
 	}
-	for _, allow := range c.cfg.AllowedUserIDs {
-		if allow == id {
-			return true
-		}
-	}
-	return false
+
+	return slices.Contains(c.cfg.AllowedUserIDs, id)
 }
 
 // SetCommands implements messaging.Client. It registers the
@@ -116,6 +120,7 @@ func (c *Client) SetCommands(ctx context.Context, cmds []messaging.BotCommand) e
 		return fmt.Errorf("set_commands: MakeRequest failed: %w", err)
 	}
 	c.log.Info().Int("count", len(cmds)).Msg("telegram: setMyCommands ok")
+
 	return nil
 }
 
@@ -141,6 +146,7 @@ func encodeCommandsJSON(cmds []messaging.BotCommand) string {
 		b.WriteString("}")
 	}
 	b.WriteString("]")
+
 	return b.String()
 }
 
@@ -172,6 +178,7 @@ func jsonString(s string) string {
 		}
 	}
 	b.WriteByte('"')
+
 	return b.String()
 }
 
@@ -183,6 +190,7 @@ func asURLValues(m map[string]string) url.Values {
 	for k, val := range m {
 		v.Set(k, val)
 	}
+
 	return v
 }
 
@@ -207,10 +215,12 @@ func (c *Client) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			c.setHealth(messaging.StateStopped, "", "ctx cancelled")
 			c.log.Info().Msg("shutdown")
+
 			return nil
 		case upd, ok := <-updates:
 			if !ok {
 				c.setHealth(messaging.StateReconnect, "", "updates channel closed")
+
 				return errors.New("telegram: updates channel closed")
 			}
 			if upd.Message == nil {
@@ -271,6 +281,7 @@ func (c *Client) Send(ctx context.Context, msg messaging.OutgoingMessage) error 
 		}
 	}
 	c.log.Debug().Str("chat", msg.ChatID).Int("reply_to", msg.ReplyToMessageID).Int("text_len", len(msg.Text)).Int("chunks", len(chunks)).Msg("send ok")
+
 	return nil
 }
 
@@ -301,6 +312,7 @@ func (c *Client) startStream(ctx context.Context, chatID string, replyToMessageI
 	c.streamsMu.Unlock()
 	c.sendTyping(chatID)
 	c.log.Debug().Str("chat", chatID).Int("msg_id", sent.MessageID).Int("reply_to", replyToMessageID).Msg("stream started")
+
 	return &stream{
 		client:   c,
 		chatID:   chatID,
@@ -327,6 +339,7 @@ func (c *Client) formatText(text, msgMode string) string {
 	if mode == "HTML" || mode == "html" {
 		return markdownToHTML(text)
 	}
+
 	return text
 }
 
@@ -337,6 +350,7 @@ func (c *Client) Close() error {
 	}
 	c.isOpen = false
 	close(c.recv)
+
 	return nil
 }
 
@@ -378,6 +392,7 @@ func (c *Client) typingLoop(ctx context.Context) {
 func (c *Client) Health() messaging.HealthReport {
 	c.healthMu.RLock()
 	defer c.healthMu.RUnlock()
+
 	return messaging.HealthReport{
 		Name:      "telegram",
 		State:     c.healthState,

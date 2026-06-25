@@ -67,7 +67,7 @@ func TestSystemState_AppendCompaction_Multiple(t *testing.T) {
 	t.Parallel()
 	fs, _ := storage.NewFileStore(t.TempDir())
 	ss := NewSystemState(fs, discardLogger(), slowlog.Discard())
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		_, err := ss.AppendCompaction(domain.CompactionEvent{
 			At:           time.Unix(int64(i), 0).UTC(),
 			BeforeTokens: 22000,

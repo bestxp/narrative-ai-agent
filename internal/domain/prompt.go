@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/bestxp/narrative-ai-agent/internal/prompts"
@@ -220,6 +221,7 @@ func BuildSystemPrompt(staticRules string, char CharacterContext, disableThinkin
 	if !noThink {
 		return strings.TrimSpace(staticRules)
 	}
+
 	return "/no_think\n\n" + strings.TrimSpace(staticRules)
 }
 
@@ -280,10 +282,15 @@ func BuildWorldStateMessage(world WorldContext, char CharacterContext) (string, 
 		}
 		worldData.ActiveNPCs = prompts.ConvertNPCSnapshots(displayNames, profiles)
 	}
-	return prompts.Render("world_state.md.tmpl", prompts.PromptData{
+	out, err := prompts.Render("world_state.md.tmpl", prompts.PromptData{
 		Character: charData,
 		World:     worldData,
 	})
+	if err != nil {
+		return "", fmt.Errorf("build_world_state: %w", err)
+	}
+
+	return out, nil
 }
 
 // FormatNPCRegistry was the helper that rendered the
@@ -337,5 +344,6 @@ func convertChronicle(in *Chronicle) *prompts.ChronicleData {
 			Text:   d.Text,
 		}
 	}
+
 	return out
 }
