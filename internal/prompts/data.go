@@ -252,13 +252,18 @@ type NPCRelationRow struct {
 }
 
 // StateData is the structured shape used by
-// state.md.tmpl (replaces domain.BuildStateMarkdown).
+// state.yaml (planning/0001: state.md + stage.md →
+// state.yaml). The template is state.yaml.tmpl; the
+// on-disk format is the canonical example at
+// running/game-data/worlds/naruto/state.yaml.
 type StateData struct {
 	World    string
 	Day      int
 	InFlight bool
-	Location string
+	Daytime  string
 	NPCs     []string
+	Current  string
+	Location string
 	Moment   string
 	Events   []string
 }
@@ -354,15 +359,17 @@ func NewPromptData(
 // avoid an import cycle with internal/domain.
 func NewStateData(
 	world string, day int, inFlight bool,
-	location, moment string,
+	daytime, location, moment, current string,
 	npcs, events []string,
 ) *StateData {
 	return &StateData{
 		World:    world,
 		Day:      day,
 		InFlight: inFlight,
-		Location: location,
+		Daytime:  daytime,
 		NPCs:     append([]string(nil), npcs...),
+		Current:  current,
+		Location: location,
 		Moment:   moment,
 		Events:   append([]string(nil), events...),
 	}

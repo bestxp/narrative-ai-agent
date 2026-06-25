@@ -36,16 +36,16 @@ func readWhole(path string) ([]byte, error) {
 }
 
 // seedWorld bootstraps an empty `world` directory so tests
-// that touch state.md / plan.md / memorise.md can use a known
-// starting point. It writes empty stubs for every file the
-// toolset may read; the tests then populate what they need.
+// that touch state.md / plan.md / chronicle.yaml can
+// use a known starting point. It writes empty stubs for
+// every file the toolset may read; the tests then
+// populate what they need.
 func seedWorld(t *testing.T, fs *storage.FileStore, world string) {
 	t.Helper()
 	require.NoError(t, fs.EnsureDir("worlds/"+world+"/characters"))
 	require.NoError(t, fs.WriteRawAtomic(storage.InfoFile, domain.BuildInfo("markus", world, nil, nil)))
 	require.NoError(t, fs.WriteRawAtomic("worlds/"+world+"/state.md", ""))
 	require.NoError(t, fs.WriteRawAtomic("worlds/"+world+"/plan.md", ""))
-	require.NoError(t, fs.WriteRawAtomic("worlds/"+world+"/memorise.md", ""))
 	require.NoError(t, fs.WriteRawAtomic("worlds/"+world+"/lore.md", ""))
 	require.NoError(t, fs.WriteRawAtomic("worlds/"+world+"/canon.md", ""))
 }

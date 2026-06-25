@@ -67,7 +67,7 @@ func newGMTestEnv(t *testing.T) (*GM, *storage.FileStore, *fakeLLM) {
 	require.NoError(t, fs.WriteRawAtomic(storage.InfoFile, domain.BuildInfo("markus", "naruto", nil, nil)))
 	require.NoError(t, fs.EnsureDir("characters/markus"))
 	require.NoError(t, fs.WriteRawAtomic("characters/markus/SOUL.md", "# Markus"))
-	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/state.md", "День 1 (в процессе).\nАктивные NPC прямо сейчас: Какаши"))
+	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/state.yaml", "state:\n  world: naruto\n  day: 1\n  in-flight: true\n  npcs:\n    - Какаши\n"))
 	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/lore.md", "lore"))
 	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/plan.md", "plan"))
 	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/canon.md", "canon"))
@@ -153,7 +153,8 @@ func TestGM_ToolRound_UpdateState(t *testing.T) {
 	}
 	_, err := g.Reply(context.Background(), "chat1", "идём в деревню", Callbacks{})
 	require.NoError(t, err)
-	state, _ := fs.ReadRaw("worlds/naruto/state.md")
+	state, _ := fs.ReadRaw("worlds/naruto/state.yaml")
+	// YAML format: moment is under `state.moment:`
 	assert.Contains(t, state, "Маркус входит в деревню")
 	assert.Contains(t, state, "Какаши")
 }
@@ -368,8 +369,8 @@ func TestGM_CompactionWithSummarizer_WritesToState(t *testing.T) {
 	_, err := g.Reply(context.Background(), "chat1", "ping", Callbacks{OnDelta: func(s string) error { return nil }})
 	require.NoError(t, err)
 
-	// state.md should have the new history section appended.
-	state, _ := fs.ReadRaw("worlds/naruto/state.md")
+	// state.yaml should have the new history section appended.
+	state, _ := fs.ReadRaw("worlds/naruto/state.yaml")
 	assert.Contains(t, state, "[history сжато", "summarizer should have appended a history block")
 	assert.Contains(t, state, "Акацуки собраны")
 	assert.Contains(t, state, "Хокаге вызвал")
@@ -516,8 +517,8 @@ func TestGM_WorldStateSnapshot_StableAcrossTurns(t *testing.T) {
 	// Now simulate a turn that mutates the world. The
 	// file-backed State is the only thing that changes;
 	// the snapshots MUST stay identical.
-	require.NoError(t, g.fs.WriteRawAtomic("worlds/naruto/state.md",
-		"День 1 (в процессе).\nМомент: новая сцена\nАктивные NPC прямо сейчас: Какаши"))
+	require.NoError(t, g.fs.WriteRawAtomic("worlds/naruto/state.yaml",
+		"state:\n  world: naruto\n  day: 1\n  in-flight: true\n  moment: новая сцена\n  npcs:\n    - Какаши\n"))
 	secondSys, secondWorld, err := g.buildContext()
 	require.NoError(t, err)
 	assert.Equal(t, firstSys, secondSys,
@@ -632,156 +633,6 @@ func TestGM_ToolResultUpdateState_ShortWithDelta(t *testing.T) {
 	assert.Equal(t, world, curWorld, "update_state must not invalidate the world snapshot")
 }
 
-// --- in-place compaction tests -----------------------------
-
-// TestGM_AppendChronicleEntry_CreatesSection: first
-// in-place compaction creates the "## Хроника
-// текущего дня" section.
-func TestGM_AppendChronicleEntry_CreatesSection(t *testing.T) {
-	g, fs, _ := newGMTestEnv(t)
-	err := g.appendChronicleEntry("naruto", 1,
-		[]byte("[События текущего дня Д0001] Утром ГГ пришёл в Академию."))
-	require.NoError(t, err)
-	body, _ := fs.ReadRaw("worlds/naruto/state.md")
-	assert.Contains(t, body, "## Хроника текущего дня")
-	assert.Contains(t, body, "Д0001")
-	assert.Contains(t, body, "Утром ГГ пришёл")
-}
-
-// TestGM_AppendChronicleEntry_AppendsToExisting:
-// second entry lands under the same section.
-func TestGM_AppendChronicleEntry_AppendsToExisting(t *testing.T) {
-	g, fs, _ := newGMTestEnv(t)
-	require.NoError(t, g.appendChronicleEntry("naruto", 1,
-		[]byte("[События текущего дня Д0001] утро")))
-	require.NoError(t, g.appendChronicleEntry("naruto", 1,
-		[]byte("[События текущего дня Д0001] дополнение днём")))
-	body, _ := fs.ReadRaw("worlds/naruto/state.md")
-	assert.Contains(t, body, "утро")
-	assert.Contains(t, body, "дополнение днём")
-	// Exactly one section header.
-	count := strings.Count(body, "## Хроника текущего дня")
-	assert.Equal(t, 1, count, "single section header")
-}
-
-// TestGM_AppendChronicleEntry_DoesNotConfuseWithProtocol:
-// "## Хроника текущего дня" and "## Протокол
-// прошедших дней" are different sections; appending
-// to one must not touch the other.
-func TestGM_AppendChronicleEntry_DoesNotConfuseWithProtocol(t *testing.T) {
-	g, fs, _ := newGMTestEnv(t)
-	// Pre-seed a protocol section.
-	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/state.md",
-		"День 1 (в процессе).\n\n## Протокол прошедших дней\n#### Д0000\nстарый\n"))
-	require.NoError(t, g.appendChronicleEntry("naruto", 1,
-		[]byte("[События текущего дня Д0001] новая хроника")))
-	body, _ := fs.ReadRaw("worlds/naruto/state.md")
-	assert.Contains(t, body, "## Хроника текущего дня")
-	assert.Contains(t, body, "## Протокол прошедших дней")
-	assert.Contains(t, body, "старый", "protocol preserved")
-	assert.Contains(t, body, "новая хроника", "chronicle added")
-}
-
-// TestGM_InPlaceCompaction_InvalidatesWorldState: after
-// appendChronicleEntry + invalidateWorldState, the next
-// buildContext must rebuild the WORLD snapshot from disk
-// (chronicle was appended to state.md). The system snapshot
-// (rules + character) is unaffected — system cache
-// invariant.
-func TestGM_InPlaceCompaction_InvalidatesWorldState(t *testing.T) {
-	g, _, _ := newGMTestEnv(t)
-	firstSys, firstWorld, err := g.buildContext()
-	require.NoError(t, err)
-
-	require.NoError(t, g.appendChronicleEntry("naruto", 1,
-		[]byte("[События текущего дня Д0001] новая хроника")))
-	g.invalidateWorldState("compaction")
-
-	secondSys, secondWorld, err := g.buildContext()
-	require.NoError(t, err)
-	assert.Equal(t, firstSys, secondSys,
-		"system snapshot must NOT change on in-place compaction")
-	assert.NotEqual(t, firstWorld, secondWorld)
-	assert.Contains(t, secondWorld, "## Хроника текущего дня")
-}
-
-// --- end-of-day protocol tests -----------------------------
-
-// TestGM_AppendProtocolEntry_CreatesSection: first
-// protocol entry creates the "## Протокол прошедших
-// дней" section.
-func TestGM_AppendProtocolEntry_CreatesSection(t *testing.T) {
-	g, fs, _ := newGMTestEnv(t)
-	err := g.appendProtocolEntry("naruto",
-		[]byte("#### Д0001:\nГГ встретил Какаши у фонтана утром, тот показал ловушку в лесу."))
-	require.NoError(t, err)
-	body, _ := fs.ReadRaw("worlds/naruto/state.md")
-	assert.Contains(t, body, "## Протокол прошедших дней")
-	assert.Contains(t, body, "#### Д0001")
-	assert.Contains(t, body, "Какаши")
-}
-
-// TestGM_AppendProtocolEntry_AppendsToExisting:
-// multiple days stack under the same section.
-func TestGM_AppendProtocolEntry_AppendsToExisting(t *testing.T) {
-	g, fs, _ := newGMTestEnv(t)
-	require.NoError(t, g.appendProtocolEntry("naruto",
-		[]byte("#### Д0001:\nпервый")))
-	require.NoError(t, g.appendProtocolEntry("naruto",
-		[]byte("#### Д0002:\nвторой")))
-	body, _ := fs.ReadRaw("worlds/naruto/state.md")
-	assert.Contains(t, body, "первый")
-	assert.Contains(t, body, "второй")
-	count := strings.Count(body, "## Протокол прошедших дней")
-	assert.Equal(t, 1, count, "single section header")
-}
-
-// TestGM_ExtractChronicleSection_RoundTrip: the
-// companion to appendChronicleEntry.
-func TestGM_ExtractChronicleSection_RoundTrip(t *testing.T) {
-	body := "День 1 (в процессе).\n## Хроника текущего дня\n[События текущего дня Д0001] утро\nднём\n## Другая секция\nне наша"
-	got := extractChronicleSection(body)
-	assert.Contains(t, got, "утро")
-	assert.Contains(t, got, "днём")
-	assert.NotContains(t, got, "Другая секция")
-}
-
-// TestGM_EnforceProtocolWindow_EvictsToMemorise:
-// when 3 days are in the protocol and window=2, the
-// oldest is moved to memorise.md.
-func TestGM_EnforceProtocolWindow_EvictsToMemorise(t *testing.T) {
-	g, fs, _ := newGMTestEnv(t)
-	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/state.md",
-		"День 4 (в процессе).\n\n## Протокол прошедших дней\n#### Д0001:\nсамый старый\n#### Д0002:\nсредний\n#### Д0003:\nновейший\n"))
-	require.NoError(t, g.enforceProtocolWindow("naruto"))
-	body, _ := fs.ReadRaw("worlds/naruto/state.md")
-	assert.NotContains(t, body, "самый старый",
-		"oldest day must be evicted from protocol")
-	assert.Contains(t, body, "средний")
-	assert.Contains(t, body, "новейший")
-	mem, _ := fs.ReadRaw(fs.WorldChronicle("naruto"))
-	assert.Contains(t, mem, "самый старый",
-		"evicted day must land in the chronicle")
-}
-
-// TestGM_EnforceProtocolWindow_ByCharCount: even with
-// 2 days (within window), if the section exceeds
-// protocolMaxChars, the oldest is evicted.
-func TestGM_EnforceProtocolWindow_ByCharCount(t *testing.T) {
-	g, fs, _ := newGMTestEnv(t)
-	huge := strings.Repeat("A", 3000)
-	big := strings.Repeat("B", 3000)
-	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/state.md",
-		"День 4 (в процессе).\n\n## Протокол прошедших дней\n#### Д0001:\n"+huge+"\n#### Д0002:\n"+big+"\n"))
-	// g.protocolMaxChars is 5000 by default.
-	require.NoError(t, g.enforceProtocolWindow("naruto"))
-	body, _ := fs.ReadRaw("worlds/naruto/state.md")
-	assert.NotContains(t, body, huge,
-		"the oldest oversized day must be evicted")
-	mem, _ := fs.ReadRaw(fs.WorldChronicle("naruto"))
-	assert.Contains(t, mem, huge)
-}
-
 // --- /reload tests ------------------------------------------
 
 // TestGM_ResetAllConversations_ClearsAll: ensure
@@ -819,9 +670,9 @@ func TestGM_InvalidateWorldState_AfterReload(t *testing.T) {
 	g, fs, _ := newGMTestEnv(t)
 	_, firstWorld, err := g.buildContext()
 	require.NoError(t, err)
-	// Operator hand-edits state.md.
-	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/state.md",
-		"День 1 (в процессе).\nАктивные NPC прямо сейчас: Какаши, Хината\n"))
+	// Operator hand-edits state.yaml.
+	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/state.yaml",
+		"state:\n  world: naruto\n  day: 1\n  in-flight: true\n  npcs:\n    - Какаши\n    - Хината\n"))
 	// /reload semantics.
 	g.InvalidateWorldState("reload")
 	_, secondWorld, err := g.buildContext()
@@ -832,30 +683,6 @@ func TestGM_InvalidateWorldState_AfterReload(t *testing.T) {
 }
 
 // --- search_npc tool ---
-
-// TestExtractPermanentParty: the helper scans SKILL.md
-// for "## permanent party" and returns the comma-
-// separated list under it. Tolerates trailing commas,
-// whitespace, and ignores prose after the first list
-// line.
-func TestExtractPermanentParty(t *testing.T) {
-	assert.Equal(t, []string{"Какаши", "Хината", "Ирука"},
-		extractPermanentParty(`# Skills
-
-## Боевые приёмы
-Катон и др.
-
-## permanent party
-Какаши, Хината, Ирука
-
-## Другое
-не нужно
-`))
-	// Empty section → no prune (safe default).
-	assert.Nil(t, extractPermanentParty("# Skills\n## Other\nfoo"))
-	// Missing section → nil.
-	assert.Nil(t, extractPermanentParty(""))
-}
 
 // TestSearchNPC_ResolvesDisplayName: search_npc maps a
 // free-form query to the registry entry, loads the
@@ -963,14 +790,14 @@ func TestSearchNPC_RateLimit(t *testing.T) {
 // TestEndScene_PrunesRosterByExplicitList: when the
 // tool is called with a permanent_party arg, the
 // active roster is pruned to that list. NPCs not in
-// the list are dropped from state.md.
+// the list are dropped from state.yaml.
 func TestEndScene_PrunesRunesByExplicitList(t *testing.T) {
 	g, fs, _ := newGMTestEnv(t)
-	// Seed state with a 4-NPC roster. The parser
-	// reads lines starting with "NPC: " — see
-	// state.go:ParseStateMD.
-	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/state.md",
-		"День 1 (в процессе).\nNPC: Какаши, Хината, Ирука, Наруто\nЛокация: Полигон\n"))
+	// Seed state with a 4-NPC roster. The YAML
+	// parser reads the npcs list under `state:` —
+	// see world_state_yaml.go:parseStateYAML.
+	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/state.yaml",
+		"state:\n  world: naruto\n  day: 1\n  in-flight: true\n  npcs:\n    - Какаши\n    - Хината\n    - Ирука\n    - Наруто\n"))
 
 	res, errStr := g.dispatchOneTool(context.Background(), llm.ToolCall{
 		ID:   "t1",
@@ -985,11 +812,11 @@ func TestEndScene_PrunesRunesByExplicitList(t *testing.T) {
 	assert.Contains(t, res, `"pruned_npcs_len":2`)
 
 	// On disk: roster is now "Какаши, Хината".
-	cur, _ := fs.ReadRaw("worlds/naruto/state.md")
-	assert.Contains(t, cur, "Какаши")
-	assert.Contains(t, cur, "Хината")
-	assert.NotContains(t, cur, "Ирука", "non-party NPC must be pruned from state.md")
-	assert.NotContains(t, cur, "Наруто", "non-party NPC must be pruned from state.md")
+	cur, _ := fs.ReadRaw("worlds/naruto/state.yaml")
+	assert.Contains(t, cur, "- Какаши")
+	assert.Contains(t, cur, "- Хината")
+	assert.NotContains(t, cur, "Ирука", "non-party NPC must be pruned from state.yaml")
+	assert.NotContains(t, cur, "Наруто", "non-party NPC must be pruned from state.yaml")
 
 	// Snapshot dropped so the next turn rebuilds.
 	g.contextMu.Lock()
@@ -1000,15 +827,12 @@ func TestEndScene_PrunesRunesByExplicitList(t *testing.T) {
 
 // TestEndScene_NoPruneWhenListMissing: if the tool
 // is called with no permanent_party arg AND the
-// character's SKILL.md has no "## permanent party"
-// section, the roster is left as-is (safe default).
+// world's state.yaml has no permanent party, the
+// roster is left as-is (safe default).
 func TestEndScene_NoPruneWhenListMissing(t *testing.T) {
 	g, fs, _ := newGMTestEnv(t)
-	// SKILL.md in newGMTestEnv has no "## permanent
-	// party" section (see helper). Empty arg, no
-	// skill section → no prune.
-	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/state.md",
-		"День 1 (в процессе).\nNPC: Какаши, Хината\n"))
+	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/state.yaml",
+		"state:\n  world: naruto\n  day: 1\n  in-flight: true\n  npcs:\n    - Какаши\n    - Хината\n"))
 
 	res, errStr := g.dispatchOneTool(context.Background(), llm.ToolCall{
 		ID:       "t1",
@@ -1018,40 +842,9 @@ func TestEndScene_NoPruneWhenListMissing(t *testing.T) {
 	require.Empty(t, errStr)
 	assert.Contains(t, res, `"pruned_npcs_len":0`)
 
-	cur, _ := fs.ReadRaw("worlds/naruto/state.md")
-	assert.Contains(t, cur, "Какаши")
-	assert.Contains(t, cur, "Хината")
-}
-
-// TestEndScene_ReadsPartyFromStateMD: the tool can
-// pull permanent_party from the active world's
-// state.md when no arg is passed. The dispatch path
-// is the same; only the arg-resolution step
-// differs.
-//
-// h5 refactor: permanent party moved out of
-// characters/<dir>/SKILL.md (a per-character file)
-// and into worlds/<w>/state.md (a per-world
-// section). The cast is world-scoped because the
-// same character visits different worlds with
-// different retainers.
-func TestEndScene_ReadsPartyFromStateMD(t *testing.T) {
-	g, fs, _ := newGMTestEnv(t)
-	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/state.md",
-		"День 1 (в процессе).\nNPC: Какаши, Хината, Наруто\n\n"+
-			"## permanent party\nКакаши\n\n## Хроника\nx\n"))
-	res, errStr := g.dispatchOneTool(context.Background(), llm.ToolCall{
-		ID:       "t1",
-		Type:     "function",
-		Function: llm.FunctionCall{Name: "end_scene", Arguments: `{}`},
-	})
-	require.Empty(t, errStr)
-	// 2 NPCs pruned (Хината, Наруто), 1 kept (Какаши).
-	assert.Contains(t, res, `"pruned_npcs_len":2`)
-
-	cur, _ := fs.ReadRaw("worlds/naruto/state.md")
-	assert.Contains(t, cur, "Какаши")
-	assert.NotContains(t, cur, "Хината")
+	cur, _ := fs.ReadRaw("worlds/naruto/state.yaml")
+	assert.Contains(t, cur, "- Какаши")
+	assert.Contains(t, cur, "- Хината")
 }
 
 // --- LOD для NPC ---

@@ -132,30 +132,30 @@ func TestRenderTurnsForSummary_AssistantWithToolCalls(t *testing.T) {
 func TestAppendHistoryToState_AppendsToEnd(t *testing.T) {
 	fs, _ := storage.NewFileStore(t.TempDir())
 	require.NoError(t, fs.WriteRawAtomic("info.yaml", "active_world: naruto\n"))
-	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/state.md",
-		"# Состояние мира: naruto\n\n## Текущий момент\nДень 5 (в процессе).\nМомент: допрос.\n\n## Хронология дня\n- Ход 1: Аньбу подошла.\n"))
+	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/state.yaml",
+		"state:\n  world: naruto\n  day: 5\n  in-flight: true\n  moment: допрос\n  events:\n    - \"Ход 1: Аньбу подошла.\"\n"))
 	yamlStore, _ := yamlfs.New(fs.Root())
 	repos := api.NewYamlRepositories(yamlStore)
 	tools := NewFileToolset(fs, repos, zerolog.Nop(), slowlog.Discard(), nil, nil, nil, nil)
 	require.NoError(t, tools.AppendHistoryToState("naruto", "- Акацуки собраны\n- Хокаге вызвал", mustParseTime("2026-06-06T14:00:00Z")))
-	got, _ := fs.ReadRaw("worlds/naruto/state.md")
+	got, _ := fs.ReadRaw("worlds/naruto/state.yaml")
 	assert.Contains(t, got, "[history сжато 2026-06-06 14:00 UTC]")
-	assert.Contains(t, got, "- Акацуки собраны")
-	assert.Contains(t, got, "- Хокаге вызвал")
+	assert.Contains(t, got, "Акацуки собраны")
+	assert.Contains(t, got, "Хокаге вызвал")
 	// Existing content preserved.
-	assert.Contains(t, got, "Момент: допрос.")
+	assert.Contains(t, got, "допрос")
 	assert.Contains(t, got, "Ход 1: Аньбу подошла.")
 }
 
 func TestAppendHistoryToState_EmptySummaryNoop(t *testing.T) {
 	fs, _ := storage.NewFileStore(t.TempDir())
-	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/state.md", "old"))
+	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/state.yaml", "state:\n  world: naruto\n"))
 	yamlStore, _ := yamlfs.New(fs.Root())
 	repos := api.NewYamlRepositories(yamlStore)
 	tools := NewFileToolset(fs, repos, zerolog.Nop(), slowlog.Discard(), nil, nil, nil, nil)
 	require.NoError(t, tools.AppendHistoryToState("naruto", "", mustParseTime("2026-06-06T14:00:00Z")))
-	got, _ := fs.ReadRaw("worlds/naruto/state.md")
-	assert.Equal(t, "old", got, "empty summary should be a no-op")
+	got, _ := fs.ReadRaw("worlds/naruto/state.yaml")
+	assert.Contains(t, got, "world: naruto", "empty summary should be a no-op")
 }
 
 func TestAppendHistoryToState_EmptyWorldErrors(t *testing.T) {

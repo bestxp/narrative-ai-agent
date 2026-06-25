@@ -29,7 +29,7 @@ import (
 	"text/template"
 )
 
-//go:embed *.md.tmpl
+//go:embed *.tmpl
 var bundledFS embed.FS
 
 // List returns the names of all bundled prompt
@@ -44,7 +44,7 @@ func List() []string {
 	}
 	out := make([]string, 0, len(entries))
 	for _, e := range entries {
-		if !e.IsDir() && strings.HasSuffix(e.Name(), ".md.tmpl") {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".tmpl") {
 			out = append(out, e.Name())
 		}
 	}
@@ -70,8 +70,8 @@ var templateCache sync.Map // map[string]*template.Template
 // Execute time thanks to missingkey=error, not silently
 // with `<no value>`.
 func Render(name string, data PromptData) (string, error) {
-	if !strings.HasSuffix(name, ".md.tmpl") {
-		return "", fmt.Errorf("prompts: Render only accepts .md.tmpl files, got %q", name)
+	if !strings.HasSuffix(name, ".tmpl") {
+		return "", fmt.Errorf("prompts: Render only accepts .tmpl files, got %q", name)
 	}
 	src, err := bundledFS.ReadFile(name)
 	if err != nil {

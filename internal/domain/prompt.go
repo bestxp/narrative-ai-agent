@@ -121,16 +121,19 @@ type ChronicleDay struct {
 }
 
 // StateSnapshot is the in-memory representation of
-// state.md. The writer-tool layer (usecase/tools/files)
-// reads/writes this struct; the data-bag for the
-// state.md.tmpl template (prompts.StateData) is
-// projected from it in renderStateBody.
+// state.yaml (planning/0001: state.md + stage.md →
+// state.yaml). The writer-tool layer (usecase/tools/files)
+// reads/writes this struct; the YAML encoder in
+// internal/repository/yaml/world_state_yaml.go
+// projects it into the canonical YAML shape.
 type StateSnapshot struct {
 	World    string
 	Day      int
 	InFlight bool
-	Location string
+	Daytime  string // "утро" | "день" | "вечер" | "ночь"
 	NPCs     []string
+	Current  string // one-line snapshot of the in-progress scene
+	Location string
 	Moment   string
 	Events   []string
 }

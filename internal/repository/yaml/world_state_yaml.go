@@ -2,9 +2,9 @@ package yaml
 
 import (
 	"context"
-	"fmt"
-	"strconv"
 	"strings"
+
+	gyaml "gopkg.in/yaml.v3"
 
 	"github.com/bestxp/narrative-ai-agent/internal/domain"
 	"github.com/bestxp/narrative-ai-agent/internal/prompts"
@@ -12,9 +12,12 @@ import (
 )
 
 // stateKey returns the canonical storage key for a
-// world's state file.
+// world's state file. planning/0001 (state+stage
+// merge): the file is YAML, not markdown. See
+// running/game-data/worlds/naruto/state.yaml for the
+// reference format.
 func stateKey(world string) string {
-	return "worlds/" + world + "/state.md"
+	return "worlds/" + world + "/state.yaml"
 }
 
 // WorldStateYaml is the YAML-backed implementation of
@@ -38,7 +41,7 @@ func NewWorldStateYaml(store storage.Storage) *WorldStateYaml {
 	return &WorldStateYaml{store: store}
 }
 
-// Load reads state.md and parses it back into a
+// Load reads state.yaml and parses it back into a
 // StateSnapshot. An empty body returns the zero-value
 // StateSnapshot (the world has no state yet).
 func (r *WorldStateYaml) Load(world string) (domain.StateSnapshot, error) {
@@ -46,7 +49,7 @@ func (r *WorldStateYaml) Load(world string) (domain.StateSnapshot, error) {
 	if err != nil {
 		return domain.StateSnapshot{}, err
 	}
-	return ParseStateMD(string(body)), nil
+	return parseStateYAML(string(body)), nil
 }
 
 // Save renders the StateSnapshot through the
@@ -104,19 +107,18 @@ func (r *WorldStateYaml) EnsureExists(world string, day int, inFlight bool) erro
 	})
 }
 
-// Compile-time guard.
 // renderStateBody is the data-bag driven renderer for
-// state.md. The template (prompts/state.md.tmpl) owns
-// block order and conditional formatting; this helper
-// only projects the in-memory StateSnapshot into the
-// data-bag shape.
+// state.yaml. The template (prompts/state.yaml.tmpl)
+// owns block order and conditional formatting; this
+// helper only projects the in-memory StateSnapshot
+// into the data-bag shape.
 func renderStateBody(s domain.StateSnapshot) (string, error) {
 	data := prompts.NewStateData(
 		s.World, s.Day, s.InFlight,
-		s.Location, s.Moment,
+		s.Daytime, s.Location, s.Moment, s.Current,
 		s.NPCs, s.Events,
 	)
-	return prompts.Render("state.md.tmpl", prompts.PromptData{
+	return prompts.Render("state.tmpl", prompts.PromptData{
 		State: data,
 	})
 }
@@ -130,83 +132,56 @@ func RenderStateBody(s domain.StateSnapshot) (string, error) {
 	return renderStateBody(s)
 }
 
-// ParseStateMD is the inverse of renderStateBody —
-// recovers the StateSnapshot from a state.md body.
-// Tolerates a missing "## Хронология дня" section
-// (returns empty Events). Tolerant of partial state
-// files; missing fields stay zero.
+// parseStateYAML is the inverse of renderStateBody —
+// recovers the StateSnapshot from a state.yaml body.
+// Tolerant of partial state files; missing fields
+// stay zero.
 //
-// Block format:
+// Block format (planning/0001, see
+// running/game-data/worlds/naruto/state.yaml):
 //
-//	# Состояние мира: <World>
-//	День <N> (в процессе|завершён).
-//	Локация: <Location>.
-//	NPC: <npc1>, <npc2>, <npc3>.
-//	Момент: <Moment>.
-//	## Текущий момент
-//	## Хронология дня
-//	- <event 1>
-//	- <event 2>
-func ParseStateMD(body string) domain.StateSnapshot {
+//	state:
+//	  world: <world>
+//	  day: <N>
+//	  in-flight: true|false
+//	  daytime: утро|день|вечер|ночь
+//	  npcs:
+//	    - <npc1>
+//	  current: |-
+//	    <one-line snapshot>
+//	  events:
+//	    - "<event 1>"
+func parseStateYAML(body string) domain.StateSnapshot {
 	out := domain.StateSnapshot{}
-	if body == "" {
+	if strings.TrimSpace(body) == "" {
 		return out
 	}
-	lines := strings.Split(body, "\n")
-	inEvents := false
-	for _, ln := range lines {
-		trim := strings.TrimSpace(ln)
-		switch {
-		case strings.HasPrefix(trim, "# Состояние мира:"):
-			out.World = strings.TrimSpace(strings.TrimPrefix(trim, "# Состояние мира:"))
-		case strings.HasPrefix(trim, "## Текущий момент"):
-			inEvents = false
-		case strings.HasPrefix(trim, "## Хронология дня"):
-			inEvents = true
-		case inEvents && strings.HasPrefix(trim, "- "):
-			out.Events = append(out.Events, strings.TrimSpace(strings.TrimPrefix(trim, "- ")))
-		case strings.HasPrefix(trim, "День "):
-			parts := strings.SplitN(trim, " ", 3)
-			if len(parts) >= 2 {
-				if d, err := strconv.Atoi(parts[1]); err == nil {
-					out.Day = d
-				}
-			}
-			out.InFlight = strings.Contains(trim, "в процессе")
-		case strings.HasPrefix(trim, "Локация:"):
-			out.Location = strings.TrimSpace(strings.TrimPrefix(trim, "Локация:"))
-			out.Location = strings.TrimSuffix(out.Location, ".")
-		case strings.HasPrefix(trim, "NPC:"):
-			raw := strings.TrimSpace(strings.TrimPrefix(trim, "NPC:"))
-			raw = strings.TrimSuffix(raw, ".")
-			if raw != "" {
-				for _, p := range strings.Split(raw, ",") {
-					if n := strings.TrimSpace(p); n != "" {
-						out.NPCs = append(out.NPCs, n)
-					}
-				}
-			}
-		case strings.HasPrefix(trim, "Момент:"):
-			out.Moment = strings.TrimSpace(strings.TrimPrefix(trim, "Момент:"))
-			out.Moment = strings.TrimSuffix(out.Moment, ".")
-		}
+	var doc struct {
+		State struct {
+			World    string   `yaml:"world"`
+			Day      int      `yaml:"day"`
+			InFlight bool     `yaml:"in-flight"`
+			Daytime  string   `yaml:"daytime"`
+			NPCs     []string `yaml:"npcs"`
+			Current  string   `yaml:"current"`
+			Location string   `yaml:"location"`
+			Moment   string   `yaml:"moment"`
+			Events   []string `yaml:"events"`
+		} `yaml:"state"`
 	}
+	if err := gyaml.Unmarshal([]byte(body), &doc); err != nil {
+		return out
+	}
+	out.World = doc.State.World
+	out.Day = doc.State.Day
+	out.InFlight = doc.State.InFlight
+	out.Daytime = doc.State.Daytime
+	out.NPCs = append(out.NPCs, doc.State.NPCs...)
+	out.Current = doc.State.Current
+	out.Location = doc.State.Location
+	out.Moment = doc.State.Moment
+	out.Events = append(out.Events, doc.State.Events...)
 	return out
-}
-
-// ValidateStateFormat checks that a state.md body has
-// the minimum fields required to be useful
-// (World + Day > 0). Used by tests + the operator's
-// /inspect command.
-func ValidateStateFormat(body string) error {
-	snap := ParseStateMD(body)
-	if snap.World == "" {
-		return fmt.Errorf("state.md: missing '# Состояние мира: <world>' header")
-	}
-	if snap.Day <= 0 {
-		return fmt.Errorf("state.md: missing or invalid 'День N' line")
-	}
-	return nil
 }
 
 // (linter-quiet — context is reserved for future

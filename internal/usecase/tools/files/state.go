@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
+	gyaml "gopkg.in/yaml.v3"
 
 	"github.com/bestxp/narrative-ai-agent/internal/domain"
 	"github.com/bestxp/narrative-ai-agent/internal/repository/api"
@@ -161,7 +162,7 @@ func (s *State) UpdateState(snap tools.StateSnapshot) error {
 			"npcs_removed": diffStrings(prevNPCs, existing.NPCs),
 			"npcs_now":     existing.NPCs,
 			"events_added": len(existing.Events) - prevEventCount,
-			"path":         "worlds/" + snap.World + "/state.md",
+			"path":         "worlds/" + snap.World + "/state.yaml",
 			"bytes":        len(body),
 		})
 	}
@@ -187,53 +188,74 @@ func diffStrings(a, b []string) []string {
 	return out
 }
 
-// ParseStateMD is the inverse of renderStateBody —
-// recovers the StateSnapshot from a state.md body.
-// Tolerates a missing "## Хронология дня" section.
-func ParseStateMD(body string) domain.StateSnapshot {
+// ParseStateYAML decodes the day counter from a
+// state.yaml body. planning/0001 (state+stage
+// merge): the on-disk format is YAML, not the legacy
+// markdown. Returns 0 when the body is empty or
+// unparseable — callers treat 0 as "unknown".
+//
+// Why this is local to the tools/files package: the
+// full StateSnapshot parse lives in
+// internal/repository/yaml/world_state_yaml.go
+// (ParseStateYAML), which is the canonical round-trip
+// for the writer tool path. The state-tool path
+// (UpdateState / ArchiveChronicleDay) does not need
+// the full snapshot — just the day counter — so the
+// narrow helper stays here.
+func ParseStateYAML(body string) int {
+	if strings.TrimSpace(body) == "" {
+		return 0
+	}
+	var raw struct {
+		State struct {
+			Day int `yaml:"day"`
+		} `yaml:"state"`
+	}
+	if err := gyaml.Unmarshal([]byte(body), &raw); err != nil {
+		return 0
+	}
+	return raw.State.Day
+}
+
+// ParseStateYAMLFull decodes the full StateSnapshot
+// from a state.yaml body. planning/0001 (state+stage
+// merge): the on-disk format is YAML, not markdown.
+// See running/game-data/worlds/naruto/state.yaml for
+// the reference shape. Tolerant of partial state
+// files; missing fields stay zero. The narrow
+// day-only helper is ParseStateYAML; this is the
+// full-struct sibling used by code that needs NPCs,
+// events, location or moment.
+func ParseStateYAMLFull(body string) domain.StateSnapshot {
 	out := domain.StateSnapshot{}
-	if body == "" {
+	if strings.TrimSpace(body) == "" {
 		return out
 	}
-	lines := strings.Split(body, "\n")
-	inEvents := false
-	for _, ln := range lines {
-		trim := strings.TrimSpace(ln)
-		switch {
-		case strings.HasPrefix(trim, "# Состояние мира:"):
-			out.World = strings.TrimSpace(strings.TrimPrefix(trim, "# Состояние мира:"))
-		case strings.HasPrefix(trim, "## Текущий момент"):
-			inEvents = false
-		case strings.HasPrefix(trim, "## Хронология дня"):
-			inEvents = true
-		case inEvents && strings.HasPrefix(trim, "- "):
-			out.Events = append(out.Events, strings.TrimSpace(strings.TrimPrefix(trim, "- ")))
-		case strings.HasPrefix(trim, "День "):
-			parts := strings.SplitN(trim, " ", 3)
-			if len(parts) >= 2 {
-				if d, err := strconv.Atoi(parts[1]); err == nil {
-					out.Day = d
-				}
-			}
-			out.InFlight = strings.Contains(trim, "в процессе")
-		case strings.HasPrefix(trim, "Локация:"):
-			out.Location = strings.TrimSpace(strings.TrimPrefix(trim, "Локация:"))
-			out.Location = strings.TrimSuffix(out.Location, ".")
-		case strings.HasPrefix(trim, "NPC:"):
-			raw := strings.TrimSpace(strings.TrimPrefix(trim, "NPC:"))
-			raw = strings.TrimSuffix(raw, ".")
-			if raw != "" {
-				for _, p := range strings.Split(raw, ",") {
-					if n := strings.TrimSpace(p); n != "" {
-						out.NPCs = append(out.NPCs, n)
-					}
-				}
-			}
-		case strings.HasPrefix(trim, "Момент:"):
-			out.Moment = strings.TrimSpace(strings.TrimPrefix(trim, "Момент:"))
-			out.Moment = strings.TrimSuffix(out.Moment, ".")
-		}
+	var doc struct {
+		State struct {
+			World    string   `yaml:"world"`
+			Day      int      `yaml:"day"`
+			InFlight bool     `yaml:"in-flight"`
+			Daytime  string   `yaml:"daytime"`
+			NPCs     []string `yaml:"npcs"`
+			Current  string   `yaml:"current"`
+			Location string   `yaml:"location"`
+			Moment   string   `yaml:"moment"`
+			Events   []string `yaml:"events"`
+		} `yaml:"state"`
 	}
+	if err := gyaml.Unmarshal([]byte(body), &doc); err != nil {
+		return out
+	}
+	out.World = doc.State.World
+	out.Day = doc.State.Day
+	out.InFlight = doc.State.InFlight
+	out.Daytime = doc.State.Daytime
+	out.NPCs = append(out.NPCs, doc.State.NPCs...)
+	out.Current = doc.State.Current
+	out.Location = doc.State.Location
+	out.Moment = doc.State.Moment
+	out.Events = append(out.Events, doc.State.Events...)
 	return out
 }
 

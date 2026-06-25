@@ -53,12 +53,12 @@ func TestRender_MissingTemplate(t *testing.T) {
 }
 
 // TestRender_RejectsNonTemplate: Render only accepts
-// .md.tmpl files. A naked .md call is a programming
+// .tmpl files. A naked .md call is a programming
 // error, not a runtime one.
 func TestRender_RejectsNonTemplate(t *testing.T) {
 	_, err := Render("narrative.md", PromptData{})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), ".md.tmpl")
+	assert.Contains(t, err.Error(), ".tmpl")
 }
 
 // TestRender_CachesParsedTemplate: the second call
@@ -93,16 +93,17 @@ func TestNewPromptData_DefaultsFilled(t *testing.T) {
 	assert.Equal(t, 250, d.Narrative.WordLimit)
 }
 
-// TestNewStateData: the data-bag shape for state.md.tmpl.
+// TestNewStateData: the data-bag shape for state.tmpl.
 func TestNewStateData(t *testing.T) {
-	d := NewStateData("naruto", 5, true, "Коноха", "Аньбу толкает",
+	d := NewStateData("naruto", 5, true, "день", "Коноха", "Аньбу толкает", "",
 		[]string{"anbu_dog", "anbu_cat"},
 		[]string{"Ход 1: ...", "Ход 2: ..."})
 	assert.Equal(t, "naruto", d.World)
 	assert.Equal(t, 5, d.Day)
 	assert.True(t, d.InFlight)
+	assert.Equal(t, "день", d.Daytime)
 	assert.Equal(t, "Коноха", d.Location)
-	assert.Equal(t, []string{"anbu_dog", "anbu_cat"}, d.NPCs)
 	assert.Equal(t, "Аньбу толкает", d.Moment)
+	assert.Equal(t, []string{"anbu_dog", "anbu_cat"}, d.NPCs)
 	assert.Equal(t, []string{"Ход 1: ...", "Ход 2: ..."}, d.Events)
 }

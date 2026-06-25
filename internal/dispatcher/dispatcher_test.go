@@ -117,12 +117,12 @@ func TestDispatcher_LeaveAndReturn(t *testing.T) {
 	rep, err := d.Handle(context.Background(), messaging.IncomingMessage{Command: "leave", Args: []string{"bleach"}})
 	require.NoError(t, err)
 	assert.Contains(t, rep, "Активный мир: bleach")
-	assert.True(t, fs.Exists("worlds/bleach/state.md"))
+	assert.True(t, fs.Exists("worlds/bleach/state.yaml"))
 
 	_, err = d.Handle(context.Background(), messaging.IncomingMessage{Command: "return", Args: []string{"naruto", "3"}})
 	require.NoError(t, err)
-	state, _ := fs.ReadRaw("worlds/naruto/state.md")
-	assert.Contains(t, state, "День 4")
+	state, _ := fs.ReadRaw("worlds/naruto/state.yaml")
+	assert.Contains(t, state, "day: 3")
 }
 
 func TestDispatcher_FreeformValidates(t *testing.T) {

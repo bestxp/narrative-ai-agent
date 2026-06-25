@@ -584,16 +584,16 @@ type summarizerAdapter struct {
 	s *usecase.Summarizer
 }
 
-func (a summarizerAdapter) SummarizeNPC(ctx context.Context, displayName, world string, yamlBody, memoriseTail []byte) ([]byte, error) {
-	res, err := a.s.SummarizeNPC(ctx, displayName, world, yamlBody, memoriseTail)
+func (a summarizerAdapter) SummarizeNPC(ctx context.Context, displayName, world string, yamlBody, chronicleContext []byte) ([]byte, error) {
+	res, err := a.s.SummarizeNPC(ctx, displayName, world, yamlBody, chronicleContext)
 	if err != nil {
 		return nil, err
 	}
 	return res.Body, nil
 }
 
-func (a summarizerAdapter) SummarizeLore(ctx context.Context, world string, loreBody, memoriseTail, stateMD []byte) ([]byte, error) {
-	res, err := a.s.SummarizeLore(ctx, world, loreBody, memoriseTail, stateMD)
+func (a summarizerAdapter) SummarizeLore(ctx context.Context, world string, loreBody, chronicleContext, stateMD []byte) ([]byte, error) {
+	res, err := a.s.SummarizeLore(ctx, world, loreBody, chronicleContext, stateMD)
 	if err != nil {
 		return nil, err
 	}

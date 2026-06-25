@@ -451,19 +451,19 @@ func projectNPCProfile(yamlBody []byte) *prompts.NPCProfileData {
 	)
 }
 
-// projectState converts a raw state.md body into the
-// template-friendly *prompts.StateData via the existing
-// ParseStateMD helper. Data-only: the template renders
-// the markdown from the struct. Returns nil if parsing
-// yields nothing useful.
-func projectState(stateMD string) *prompts.StateData {
-	if strings.TrimSpace(stateMD) == "" {
+// projectState converts a raw state.yaml body into the
+// template-friendly *prompts.StateData via the
+// canonical full-state parser. Data-only: the
+// template renders the YAML from the struct. Returns
+// nil if parsing yields nothing useful.
+func projectState(stateBody string) *prompts.StateData {
+	if strings.TrimSpace(stateBody) == "" {
 		return nil
 	}
-	snap := files.ParseStateMD(stateMD)
+	snap := files.ParseStateYAMLFull(stateBody)
 	return prompts.NewStateData(
 		snap.World, snap.Day, snap.InFlight,
-		snap.Location, snap.Moment,
+		snap.Daytime, snap.Location, snap.Moment, snap.Current,
 		snap.NPCs, snap.Events,
 	)
 }

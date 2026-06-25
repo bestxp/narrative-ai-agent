@@ -114,7 +114,10 @@ func TestUpdateState_DedupesAppendEvents(t *testing.T) {
 	assert.Contains(t, body, "Хокаге пришёл на полигон")
 	// NPC list reflects the most recent UpdateState (full
 	// replacement, not append — see UpdateState doc).
-	assert.Contains(t, body, "NPC: Ирука, Хокаге")
+	// planning/0001: YAML format — Ирука and Хокаге
+	// appear as separate list items under `npcs:`.
+	assert.Contains(t, body, "- Ирука")
+	assert.Contains(t, body, "- Хокаге")
 }
 
 // TestUpdateState_PreservesGenuineNarrativeVariation
@@ -190,7 +193,7 @@ func TestUpdateState_ReplacesNPCList(t *testing.T) {
 	}))
 	body, err := renderStateBodyForTest(t, ts)
 	require.NoError(t, err)
-	assert.Contains(t, body, "NPC: Ирука")
+	assert.Contains(t, body, "- Ирука")
 	assert.NotContains(t, body, "Хокаге", "Хокаге should have been removed when he left the scene")
 	// sanity: file path joined correctly
 }
@@ -247,7 +250,7 @@ func TestUpdateState_SlowlogDeltaNPCAddedRemoved(t *testing.T) {
 	assert.ElementsMatch(t, []string{"Ирука", "Какаши"}, added)
 	assert.Empty(t, toStrSlice(t, first["npcs_removed"]))
 	assert.Equal(t, float64(0), first["events_added"])
-	assert.Equal(t, "worlds/naruto/state.md", first["path"])
+	assert.Equal(t, "worlds/naruto/state.yaml", first["path"])
 	assert.Greater(t, first["bytes"], float64(0))
 
 	// Second call: -Какаши, +Хината, +1 event.
