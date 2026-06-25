@@ -92,7 +92,11 @@ func Render(name string, data PromptData) (string, error) {
 // parsing and caching on first call.
 func getOrParse(name, src string) (*template.Template, error) {
 	if v, ok := templateCache.Load(name); ok {
-		return v.(*template.Template), nil
+		tpl, ok := v.(*template.Template)
+		if !ok {
+			return nil, fmt.Errorf("prompts: cache for %q has unexpected type %T", name, v)
+		}
+		return tpl, nil
 	}
 	tpl, err := template.New(name).
 		Option("missingkey=error").

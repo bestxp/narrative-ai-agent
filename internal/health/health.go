@@ -115,9 +115,9 @@ func (s *Server) MarkReady() {
 // (e.g. port in use); runtime errors are logged and the server
 // stops accepting connections. Always pair with Shutdown.
 func (s *Server) Start() error {
-	ln, err := net.Listen("tcp", s.addr)
+	ln, err := net.Listen("tcp", s.addr) //nolint:noctx // bind runs once at startup; cancellation handled by Shutdown
 	if err != nil {
-		return err
+		return fmt.Errorf("start: Listen failed: %w", err)
 	}
 	if s.addr == ":0" || s.addr == "" {
 		s.mu.Lock()
@@ -178,7 +178,7 @@ func (s *Server) handleReady(w http.ResponseWriter, _ *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(map[string]any{
+	_ = json.NewEncoder(w).Encode(map[string]any{ //nolint:errchkjson
 		"status":    "ready",
 		"clients":   reports,
 		"connected": connected,
@@ -189,7 +189,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	if s.reporter == nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(map[string]any{
+		_ = json.NewEncoder(w).Encode(map[string]any{ //nolint:errchkjson
 			"status":  "no clients configured",
 			"clients": []Report{},
 		})
@@ -210,11 +210,11 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 		body["status"] = "degraded"
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusServiceUnavailable)
-		_ = json.NewEncoder(w).Encode(body)
+		_ = json.NewEncoder(w).Encode(body) //nolint:errchkjson
 		return
 	}
 	body["status"] = "ready"
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(body)
+	_ = json.NewEncoder(w).Encode(body) //nolint:errchkjson
 }

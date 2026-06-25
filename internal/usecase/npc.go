@@ -15,7 +15,7 @@ func CompactNPCBody(body string) string {
 	lines := strings.Split(body, "\n")
 	keep := make([]string, 0, len(lines)/2)
 	eventRe := regexp.MustCompile(`^\s*(?:-|\*|\d+\.)\s+.*\d{4}.*`) // dated bullets
-	quoteRe := regexp.MustCompile(`^\s*>.+`)                          // blockquotes
+	quoteRe := regexp.MustCompile(`^\s*>.+`)                        // blockquotes
 	for _, ln := range lines {
 		trimmed := strings.TrimSpace(ln)
 		if trimmed == "" {

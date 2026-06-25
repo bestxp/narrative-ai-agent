@@ -12,6 +12,7 @@ import (
 func (e *testEnv) newNPCProfileRepo() *NPCProfileYaml { return NewNPCProfileYaml(e.store) }
 
 func TestNPCProfileYaml_RoundTrip(t *testing.T) {
+	t.Parallel()
 	env := newTestEnv(t)
 	in := npcprofile.Profile{
 		DisplayName: "Какаши Хатаке",
@@ -27,12 +28,14 @@ func TestNPCProfileYaml_RoundTrip(t *testing.T) {
 }
 
 func TestNPCProfileYaml_LoadMissing(t *testing.T) {
+	t.Parallel()
 	env := newTestEnv(t)
 	_, err := env.newNPCProfileRepo().Load("naruto", "unknown")
 	assert.ErrorIs(t, err, npcprofile.ErrNotFound)
 }
 
 func TestNPCProfileYaml_UpdateSection(t *testing.T) {
+	t.Parallel()
 	env := newTestEnv(t)
 	require.NoError(t, env.newNPCProfileRepo().Save("naruto", "kakashi", npcprofile.Profile{
 		DisplayName: "Какаши Хатаке",

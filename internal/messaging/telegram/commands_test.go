@@ -13,18 +13,21 @@ import (
 )
 
 func TestEncodeCommandsJSON_Empty(t *testing.T) {
+	t.Parallel()
 	assert.Equal(t, "[]", encodeCommandsJSON(nil))
 	assert.Equal(t, "[]", encodeCommandsJSON([]messaging.BotCommand{}))
 }
 
 func TestEncodeCommandsJSON_Single(t *testing.T) {
+	t.Parallel()
 	out := encodeCommandsJSON([]messaging.BotCommand{
 		{Command: "start", Description: "Загрузить info.yaml"},
 	})
-	assert.Equal(t, `[{"command":"start","description":"Загрузить info.yaml"}]`, out)
+	assert.JSONEq(t, `[{"command":"start","description":"Загрузить info.yaml"}]`, out)
 }
 
 func TestEncodeCommandsJSON_Multiple(t *testing.T) {
+	t.Parallel()
 	out := encodeCommandsJSON([]messaging.BotCommand{
 		{Command: "start", Description: "Загрузить"},
 		{Command: "me", Description: "Персонаж"},
@@ -37,6 +40,7 @@ func TestEncodeCommandsJSON_Multiple(t *testing.T) {
 }
 
 func TestEncodeCommandsJSON_EscapesQuotes(t *testing.T) {
+	t.Parallel()
 	out := encodeCommandsJSON([]messaging.BotCommand{
 		{Command: "x", Description: `игра "Найти Кагую"`},
 	})
@@ -44,6 +48,7 @@ func TestEncodeCommandsJSON_EscapesQuotes(t *testing.T) {
 }
 
 func TestEncodeCommandsJSON_StripsControlChars(t *testing.T) {
+	t.Parallel()
 	out := encodeCommandsJSON([]messaging.BotCommand{
 		{Command: "x", Description: "before\x00\x01after"},
 	})
@@ -54,23 +59,27 @@ func TestEncodeCommandsJSON_StripsControlChars(t *testing.T) {
 }
 
 func TestJsonString_Basic(t *testing.T) {
+	t.Parallel()
 	assert.Equal(t, `"hello"`, jsonString("hello"))
 	assert.Equal(t, `"with\"quote"`, jsonString(`with"quote`))
 	assert.Equal(t, `"line\nbreak"`, jsonString("line\nbreak"))
 }
 
 func TestAsURLValues_Conversion(t *testing.T) {
+	t.Parallel()
 	v := asURLValues(map[string]string{"a": "1", "b": "2"})
 	assert.Equal(t, "1", v.Get("a"))
 	assert.Equal(t, "2", v.Get("b"))
 }
 
 func TestAsURLValues_Empty(t *testing.T) {
+	t.Parallel()
 	v := asURLValues(nil)
 	assert.NotNil(t, v)
 }
 
 func TestSetCommands_BuildsCorrectPayload(t *testing.T) {
+	t.Parallel()
 	// We can't actually reach Telegram from tests, but we can
 	// confirm the encoding helper produces what the API
 	// expects. The full SetCommands call uses MakeRequest
@@ -89,6 +98,7 @@ func TestSetCommands_BuildsCorrectPayload(t *testing.T) {
 }
 
 func TestSetCommands_ContextHonoured(t *testing.T) {
+	t.Parallel()
 	// Sanity: SetCommands takes a context even though the
 	// underlying MakeRequest does not honour cancellation.
 	// The function must not panic on a cancelled context.

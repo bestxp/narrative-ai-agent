@@ -95,11 +95,14 @@ func Load(fs interface {
 	Exists(rel string) bool
 }, world string) (*Registry, error) {
 	if world == "" {
-		return nil, fmt.Errorf("worldregistry: world is empty")
+		return nil, errors.New("worldregistry: world is empty")
 	}
 	rel := "worlds/" + world + "/characters.yaml"
 	body, err := fs.ReadRaw(rel)
-	if err != nil || strings.TrimSpace(body) == "" {
+	if err != nil {
+		return &Registry{}, nil
+	}
+	if strings.TrimSpace(body) == "" {
 		return &Registry{}, nil
 	}
 	var f registryFile
@@ -193,7 +196,7 @@ func (r *Registry) Add(e Entry) error {
 	e.Slug = strings.TrimSpace(e.Slug)
 	e.DisplayName = strings.TrimSpace(e.DisplayName)
 	if e.Slug == "" {
-		return fmt.Errorf("worldregistry: empty slug")
+		return errors.New("worldregistry: empty slug")
 	}
 	for _, ex := range r.entries {
 		if strings.EqualFold(ex.Slug, e.Slug) {

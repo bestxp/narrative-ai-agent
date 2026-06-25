@@ -113,7 +113,7 @@ func (c *Client) SetCommands(ctx context.Context, cmds []messaging.BotCommand) e
 	_, err := c.api.MakeRequest("setMyCommands", asURLValues(params))
 	if err != nil {
 		c.log.Warn().Err(err).Int("count", len(cmds)).Msg("telegram: setMyCommands failed")
-		return err
+		return fmt.Errorf("set_commands: MakeRequest failed: %w", err)
 	}
 	c.log.Info().Int("count", len(cmds)).Msg("telegram: setMyCommands ok")
 	return nil
@@ -267,7 +267,7 @@ func (c *Client) Send(ctx context.Context, msg messaging.OutgoingMessage) error 
 		}
 		if _, err := c.api.Send(m); err != nil {
 			c.log.Error().Err(err).Str("chat", msg.ChatID).Int("reply_to", msg.ReplyToMessageID).Int("text_len", len(chunk)).Int("chunk", i).Msg("telegram: send failed")
-			return err
+			return fmt.Errorf("wrap: Send failed: %w", err)
 		}
 	}
 	c.log.Debug().Str("chat", msg.ChatID).Int("reply_to", msg.ReplyToMessageID).Int("text_len", len(msg.Text)).Int("chunks", len(chunks)).Msg("send ok")
@@ -306,7 +306,6 @@ func (c *Client) startStream(ctx context.Context, chatID string, replyToMessageI
 		chatID:   chatID,
 		msgID:    sent.MessageID,
 		chat:     chat,
-		ctx:      ctx,
 		lastSent: "…",
 	}, nil
 }

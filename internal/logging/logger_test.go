@@ -12,6 +12,7 @@ import (
 )
 
 func TestNew_DefaultLevel(t *testing.T) {
+	t.Parallel()
 	var buf bytes.Buffer
 	log := New(Config{Writer: &buf})
 	log.Info().Msg("hello")
@@ -22,6 +23,7 @@ func TestNew_DefaultLevel(t *testing.T) {
 }
 
 func TestNew_RespectsLevel(t *testing.T) {
+	t.Parallel()
 	var buf bytes.Buffer
 	log := New(Config{Writer: &buf, Level: "error"})
 	log.Info().Msg("should be dropped")
@@ -32,6 +34,7 @@ func TestNew_RespectsLevel(t *testing.T) {
 }
 
 func TestNew_UnknownLevelFallsBackToInfo(t *testing.T) {
+	t.Parallel()
 	var buf bytes.Buffer
 	log := New(Config{Writer: &buf, Level: "nonsense"})
 	log.Debug().Msg("dropped")
@@ -42,6 +45,7 @@ func TestNew_UnknownLevelFallsBackToInfo(t *testing.T) {
 }
 
 func TestNew_PrettyWritesToStream(t *testing.T) {
+	t.Parallel()
 	var buf bytes.Buffer
 	log := New(Config{Writer: &buf, Pretty: true, Level: "debug"})
 	log.Debug().Msg("pretty")
@@ -51,6 +55,7 @@ func TestNew_PrettyWritesToStream(t *testing.T) {
 }
 
 func TestDiscard(t *testing.T) {
+	t.Parallel()
 	log := Discard()
 	// Should not panic; underlying writer is io.Discard so no output.
 	assert.NotPanics(t, func() {

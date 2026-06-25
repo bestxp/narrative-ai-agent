@@ -2,7 +2,6 @@ package usecase
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -228,17 +227,18 @@ func itoaE2E(n int) string {
 // failure-path tests. Defined locally because the
 // usecase package does not import the tools/files
 // package's testing helpers.
-var errE2ETest = errE2EStub("synthetic end-of-day test error")
+var errE2ETest = errE2EError("synthetic end-of-day test error")
 
-type errE2EStub string
+type errE2EError string
 
-func (e errE2EStub) Error() string { return string(e) }
+func (e errE2EError) Error() string { return string(e) }
 
 // TestEndOfDay_MaintainsOverflowedNPCs: calling the
 // end_day tool with a 50-fact NPC profile triggers
 // Memory.MaintainNPCs and shrinks the on-disk YAML.
 // The .bak file preserves the pre-rewrite body.
 func TestEndOfDay_MaintainsOverflowedNPCs(t *testing.T) {
+	t.Parallel()
 	t.Skip("pending gm.go migration to repository pattern")
 	g, fs, scripting := newEndOfDayTestEnv(t)
 
@@ -257,7 +257,7 @@ temperament: "спокойный"
 	shrunkBody, err := shrunk.Save()
 	require.NoError(t, err)
 	scripting.push("[События прошедшего дня Д0001] Утром ГГ встретил Какаши, тот показал ловушку в лесу; днём ГГ и Хината обезвредили её; вечером в Академии Ирука устроил разбор полётов; ГГ пообещал себе вернуться к ловушкам завтра.", nil)
-	scripting.push(string(shrunkBody), nil)
+	scripting.push(shrunkBody, nil)
 
 	require.NoError(t, g.EndOfDay(context.Background(), "naruto", 1))
 
@@ -279,6 +279,7 @@ temperament: "спокойный"
 // stays untouched through EndOfDay. The .bak file is
 // never created (no maintain = no backup).
 func TestEndOfDay_DoesNotMaintainUnderLimitNPCs(t *testing.T) {
+	t.Parallel()
 	g, fs, _ := newEndOfDayTestEnv(t)
 
 	// Replace the 50-fact kakashi with a 30-fact profile.
@@ -312,6 +313,7 @@ temperament: "спокойный"
 // (MaintainNPCs isolates per-NPC errors and does not
 // write on failure). The .bak is also untouched.
 func TestEndOfDay_MaintainFailureKeepsOriginal(t *testing.T) {
+	t.Parallel()
 	g, fs, scripting := newEndOfDayTestEnv(t)
 	// Call 1: end-of-day narrative (success).
 	scripting.push("[События прошедшего дня Д0001] Утром ГГ встретил Какаши.", nil)
@@ -330,6 +332,7 @@ func TestEndOfDay_MaintainFailureKeepsOriginal(t *testing.T) {
 // input (e.g. it hallucinated more facts), MaintainNPCs
 // drops the write and the original file is preserved.
 func TestEndOfDay_MaintainBiggerBodyKeepsOriginal(t *testing.T) {
+	t.Parallel()
 	g, fs, scripting := newEndOfDayTestEnv(t)
 
 	// Summarizer returns: 1) end-of-day narrative, 2) a
@@ -354,6 +357,7 @@ func TestEndOfDay_MaintainBiggerBodyKeepsOriginal(t *testing.T) {
 // the next turn has a single 1-shot cache miss and
 // then hits the cache again.
 func TestEndOfDay_MaintainResultInvalidatesSnapshot(t *testing.T) {
+	t.Parallel()
 	g, _, scripting := newEndOfDayTestEnv(t)
 
 	// Build snapshots.
@@ -384,44 +388,12 @@ temperament: "спокойный"
 	assert.Empty(t, world, "world snapshot must be dropped after maintain")
 }
 
-// writeLongCharacterMemory seeds characters/markus/SOUL.yaml
-// (for display name) and characters/markus/memory.yaml
-// (over the 4KB maintain threshold). Returns the raw
-// memory body so the caller can assert on it.
-func writeLongCharacterMemory(t *testing.T, fs *storage.FileStore) string {
-	t.Helper()
-	require.NoError(t, fs.EnsureDir("characters/markus"))
-	require.NoError(t, fs.WriteRawAtomic("characters/markus/SOUL.yaml",
-		"name: Маркус\nsoul: \"подросток, попаданец\"\ndata:\n    - section: \"Истинная сущность\"\n      values:\n        - \"человек из другого мира\"\n"))
-	var b strings.Builder
-	b.WriteString("data:\n")
-	for _, sec := range []string{
-		"Яркие моменты",
-		"Факты о мире",
-		"Обещания и цели",
-		"Важные люди",
-		// Legacy / non-canonical — must be refiled by
-		// the summarizer into one of the 4 above.
-		"Эмоции",
-		"Действия дня 1",
-		"Видения Кагуи",
-		"Контакт с семьёй Яманака",
-	} {
-		fmt.Fprintf(&b, "    - section: %q\n      values:\n", sec)
-		for i := 0; i < 8; i++ {
-			fmt.Fprintf(&b, "        - \"Длинный факт номер %d в секции %s — попаданец учится в Академии, тренируется на полигоне, вспоминает видения Кагуи и продолжает помнить свою семью из иного мира\"\n", i+1, sec)
-		}
-	}
-	body := b.String()
-	require.NoError(t, fs.WriteRawAtomic("characters/markus/memory.yaml", body))
-	return body
-}
-
 // TestEndOfDay_AppliesPendingStage: when staging has a
 // pending transition (staging.next set), end_day applies
 // it BEFORE MaintainNPCs and BEFORE MaintainCharacterMemory
 // so the new stage is visible on the next turn.
 func TestEndOfDay_AppliesPendingStage(t *testing.T) {
+	t.Parallel()
 	g, fs, scripting := newEndOfDayTestEnv(t)
 
 	// Configure staging: enabled, init=beginning, 1 transition to "accepted".
@@ -470,7 +442,7 @@ file_slug: "kakashi"
 temperament: "спокойный"
 `)
 	npcBody, _ := npc.Save()
-	scripting.push(string(npcBody), nil)
+	scripting.push(npcBody, nil)
 	// Character memory summariser should not be called (under threshold).
 
 	require.NoError(t, g.EndOfDay(context.Background(), "naruto", 1))
@@ -479,15 +451,16 @@ temperament: "спокойный"
 	// planning/0001: state.yaml is the single writer.
 	stateBody, err := fs.ReadRaw("worlds/naruto/state.yaml")
 	require.NoError(t, err)
-	assert.True(t, strings.Contains(stateBody, "current: accepted"),
+	assert.Contains(t, stateBody, "current: accepted",
 		"expected current=accepted after end_day; got: %s", stateBody)
-	assert.True(t, strings.Contains(stateBody, `next: ""`),
+	assert.Contains(t, stateBody, `next: ""`,
 		"expected next cleared; got: %s", stateBody)
 }
 
 // TestEndOfDay_NoOpWhenNoPending: when staging.next is empty,
 // end_day leaves the stage untouched.
 func TestEndOfDay_NoOpWhenNoPending(t *testing.T) {
+	t.Parallel()
 	g, fs, scripting := newEndOfDayTestEnv(t)
 
 	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/staging.yaml", `enabled: true
@@ -514,11 +487,11 @@ file_slug: "kakashi"
 temperament: "спокойный"
 `)
 	npcBody, _ := npc.Save()
-	scripting.push(string(npcBody), nil)
+	scripting.push(npcBody, nil)
 
 	require.NoError(t, g.EndOfDay(context.Background(), "naruto", 1))
 
 	stateBody, _ := fs.ReadRaw("worlds/naruto/stage.md")
-	assert.True(t, strings.Contains(stateBody, "current: beginning"),
+	assert.Contains(t, stateBody, "current: beginning",
 		"expected current=beginning unchanged; got: %s", stateBody)
 }

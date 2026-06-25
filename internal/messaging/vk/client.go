@@ -199,7 +199,7 @@ func (c *Client) Send(ctx context.Context, msg messaging.OutgoingMessage) error 
 		}
 		if _, sendErr := c.vk.MessagesSend(params); sendErr != nil {
 			c.log.Error().Err(sendErr).Str("peer", msg.ChatID).Int("chunk", i).Msg("vk: send failed")
-			return sendErr
+			return fmt.Errorf("send_chunks: MessagesSend failed: %w", sendErr)
 		}
 	}
 	return nil
@@ -232,13 +232,12 @@ func (c *Client) StartStream(ctx context.Context, chatID string, replyToMessageI
 
 	c.log.Debug().Str("chat", chatID).Int("msg_id", msgID).Msg("vk: stream started")
 
-	return NewThrottledStream(&stream{
+	return NewThrottledStream(ctx, &stream{
 		client:   c,
 		chatID:   chatID,
 		peerID:   peerID,
 		msgID:    msgID,
 		groupID:  c.cfg.GroupID,
-		ctx:      ctx,
 		lastSent: "\u2026",
 	}), nil
 }

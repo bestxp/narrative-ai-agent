@@ -22,15 +22,14 @@ import (
 // list on "/api/commands", and the WebSocket endpoint on "/ws".
 // One Server serves one logical chat (the dev chat_id from config).
 type Server struct {
-	addr      string
-	chatID    string
-	auth      AuthConfig
-	commands  []messaging.BotCommand
-	disp      *dispatcher.Dispatcher
-	log       zerolog.Logger
-	upgrader  websocket.Upgrader
-	httpSrv   *http.Server
-	startedAt time.Time
+	addr     string
+	chatID   string
+	auth     AuthConfig
+	commands []messaging.BotCommand
+	disp     *dispatcher.Dispatcher
+	log      zerolog.Logger
+	upgrader websocket.Upgrader
+	httpSrv  *http.Server
 
 	// session is the single active WebSocket connection. In dev the
 	// chat has exactly one operator; a second connection replaces the
@@ -116,7 +115,7 @@ func (s *Server) Run(ctx context.Context) error {
 
 	select {
 	case <-ctx.Done():
-		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		shutCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
 		_ = s.httpSrv.Shutdown(shutCtx)
 		s.closeSession()
@@ -171,7 +170,7 @@ func (s *Server) handleCommandsAPI(w http.ResponseWriter, r *http.Request) {
 		out.Commands = append(out.Commands, CommandDesc{Command: c.Command, Description: c.Description})
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(out)
+	_ = json.NewEncoder(w).Encode(out) //nolint:errchkjson // HTTP response stream is already started; encode errors are unobservable to the client
 }
 
 // handleWS upgrades the HTTP request to a WebSocket and runs the
@@ -253,25 +252,25 @@ func (s *Server) sendMessage(role, text, command string) {
 			}
 		}
 	}
-	payload, _ := json.Marshal(mp)
+	payload, _ := json.Marshal(mp) //nolint:errchkjson // wire frame for fixed-shape struct; marshal cannot fail
 	s.sendFrame(Frame{Type: FrameMessage, Payload: payload})
 }
 
 // sendDelta pushes a FrameDelta with the full current assistant text.
 func (s *Server) sendDelta(text string) {
-	payload, _ := json.Marshal(DeltaPayload{Text: text})
+	payload, _ := json.Marshal(DeltaPayload{Text: text}) //nolint:errchkjson // wire frame for fixed-shape struct; marshal cannot fail
 	s.sendFrame(Frame{Type: FrameDelta, Payload: payload})
 }
 
 // sendStatus pushes a FrameStatus.
 func (s *Server) sendStatus(phase string, details map[string]any) {
-	payload, _ := json.Marshal(StatusPayload{Phase: phase, Details: details})
+	payload, _ := json.Marshal(StatusPayload{Phase: phase, Details: details}) //nolint:errchkjson
 	s.sendFrame(Frame{Type: FrameStatus, Payload: payload})
 }
 
 // sendError pushes a FrameError with an optional correlation id.
 func (s *Server) sendError(id, code, msg string) {
-	payload, _ := json.Marshal(ErrorPayload{Code: code, Message: msg})
+	payload, _ := json.Marshal(ErrorPayload{Code: code, Message: msg}) //nolint:errchkjson
 	s.sendFrame(Frame{Type: FrameError, ID: id, Payload: payload})
 }
 
@@ -285,7 +284,7 @@ func (s *Server) sendAck(id string, ok bool, msg string) {
 // called from the session's read loop. The session tracks its own
 // in-flight LLM call so edit_last / resend_last arriving while the
 // model is streaming are queued or rejected cleanly.
-func (s *Server) handleClientFrame(sess *wsSession, f Frame) {
+func (s *Server) handleClientFrame(ctx context.Context, sess *wsSession, f Frame) {
 	switch f.Type {
 	case FrameSend:
 		var p SendPayload
@@ -293,7 +292,7 @@ func (s *Server) handleClientFrame(sess *wsSession, f Frame) {
 			s.sendError(f.ID, "bad_payload", err.Error())
 			return
 		}
-		s.handleSend(sess, f.ID, p)
+		s.handleSend(ctx, sess, f.ID, p)
 	case FrameEditLast:
 		var p EditPayload
 		if err := json.Unmarshal(f.Payload, &p); err != nil {
@@ -326,7 +325,7 @@ func (s *Server) handleClientFrame(sess *wsSession, f Frame) {
 // and the client can group them. The user message itself is not
 // pushed optimistically by the client — the server echoes it back
 // as a FrameMessage so there is exactly one bubble per turn.
-func (s *Server) handleSend(sess *wsSession, id string, p SendPayload) {
+func (s *Server) handleSend(ctx context.Context, sess *wsSession, id string, p SendPayload) {
 	// Serialize: only one in-flight LLM turn per chat. The lock is
 	// per-server (one chat_id), so a second send while the first is
 	// streaming is rejected with a short error.
@@ -350,7 +349,7 @@ func (s *Server) handleSend(sess *wsSession, id string, p SendPayload) {
 			Command: p.Command,
 			Args:    p.Args,
 		}
-		reply, err := s.disp.Handle(context.Background(), msg)
+		reply, err := s.disp.Handle(ctx, msg)
 		if err != nil {
 			s.sendError(id, "command_error", err.Error())
 			return
@@ -377,7 +376,7 @@ func (s *Server) handleSend(sess *wsSession, id string, p SendPayload) {
 		ChatID: chatID,
 		Text:   p.Text,
 	}
-	if err := s.disp.HandleStream(context.Background(), msg, cb); err != nil {
+	if err := s.disp.HandleStream(ctx, msg, cb); err != nil {
 		s.sendError(id, "llm_error", err.Error())
 		return
 	}

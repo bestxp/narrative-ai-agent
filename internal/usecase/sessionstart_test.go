@@ -12,6 +12,7 @@ import (
 )
 
 func TestSessionStart_NoInfo(t *testing.T) {
+	t.Parallel()
 	fs, _ := storage.NewFileStore(t.TempDir())
 	s := NewSessionStart(fs)
 	_, err := s.Start()
@@ -19,6 +20,7 @@ func TestSessionStart_NoInfo(t *testing.T) {
 }
 
 func TestSessionStart_BootstrapsMissingRegistry(t *testing.T) {
+	t.Parallel()
 	fs, _ := storage.NewFileStore(t.TempDir())
 	s := NewSessionStart(fs)
 	require.NoError(t, s.ensureRegistry())
@@ -31,6 +33,7 @@ func TestSessionStart_BootstrapsMissingRegistry(t *testing.T) {
 }
 
 func TestSessionStart_BootstrapsEmptyRegistry(t *testing.T) {
+	t.Parallel()
 	fs, _ := storage.NewFileStore(t.TempDir())
 	require.NoError(t, fs.WriteRawAtomic(storage.InfoFile, ""))
 	s := NewSessionStart(fs)
@@ -54,6 +57,7 @@ func writeChronicleDays(t *testing.T, fs *storage.FileStore, world string, days 
 }
 
 func TestSessionStart_OK(t *testing.T) {
+	t.Parallel()
 	fs, _ := storage.NewFileStore(t.TempDir())
 	seedWorld(t, fs, "naruto")
 	require.NoError(t, fs.WriteRawAtomic(storage.InfoFile, domain.BuildInfo("markus", "naruto", nil, nil)))
@@ -68,6 +72,7 @@ func TestSessionStart_OK(t *testing.T) {
 }
 
 func TestSessionStart_DetectsStateAhead(t *testing.T) {
+	t.Parallel()
 	fs, _ := storage.NewFileStore(t.TempDir())
 	seedWorld(t, fs, "naruto")
 	require.NoError(t, fs.WriteRawAtomic(storage.InfoFile, domain.BuildInfo("markus", "naruto", nil, nil)))
@@ -79,6 +84,7 @@ func TestSessionStart_DetectsStateAhead(t *testing.T) {
 }
 
 func TestSessionStart_DetectsChronicleAhead(t *testing.T) {
+	t.Parallel()
 	fs, _ := storage.NewFileStore(t.TempDir())
 	seedWorld(t, fs, "naruto")
 	require.NoError(t, fs.WriteRawAtomic(storage.InfoFile, domain.BuildInfo("markus", "naruto", nil, nil)))
@@ -90,6 +96,7 @@ func TestSessionStart_DetectsChronicleAhead(t *testing.T) {
 }
 
 func TestSessionStart_PopulatesStateString(t *testing.T) {
+	t.Parallel()
 	fs, _ := storage.NewFileStore(t.TempDir())
 	seedWorld(t, fs, "naruto")
 	require.NoError(t, fs.WriteRawAtomic(storage.InfoFile, domain.BuildInfo("markus", "naruto", nil, nil)))

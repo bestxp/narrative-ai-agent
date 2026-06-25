@@ -2,6 +2,7 @@ package files
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/rs/zerolog"
@@ -34,7 +35,7 @@ func newMemoryTestEnv(t *testing.T) (*Memory, *storage.FileStore) {
 func writeLongNPC(t *testing.T, fs *storage.FileStore, world, slug, display string) {
 	t.Helper()
 	p := npcprofile.Profile{DisplayName: display, FileSlug: slug}
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		p.PersonalMemory = append(p.PersonalMemory, "факт "+itoa(i))
 	}
 	body, err := p.Save()
@@ -58,6 +59,7 @@ func itoa(n int) string {
 // --- AppendLore ---
 
 func TestAppendLore_AppendsToExisting(t *testing.T) {
+	t.Parallel()
 	m, _ := newMemoryTestEnv(t)
 	require.NoError(t, m.repos.Lore.AppendEntry("naruto", "Канон", "Хокаге умер в бою"))
 	require.NoError(t, m.AppendLore("naruto", "Лор", "Какаши носит маску"))
@@ -68,6 +70,7 @@ func TestAppendLore_AppendsToExisting(t *testing.T) {
 }
 
 func TestAppendLore_EmptyHeaderRejected(t *testing.T) {
+	t.Parallel()
 	m, _ := newMemoryTestEnv(t)
 	assert.Error(t, m.AppendLore("naruto", "", "x"))
 }
@@ -75,6 +78,7 @@ func TestAppendLore_EmptyHeaderRejected(t *testing.T) {
 // --- MaintainNPCs ---
 
 func TestMaintainNPCs_NilSummarizerWarnsAndSkips(t *testing.T) {
+	t.Parallel()
 	m, fs := newMemoryTestEnv(t)
 	writeLongNPC(t, fs, "naruto", "kakashi", "Какаши")
 	touched, err := m.MaintainNPCs("naruto")
@@ -85,6 +89,7 @@ func TestMaintainNPCs_NilSummarizerWarnsAndSkips(t *testing.T) {
 // --- MaintainLore ---
 
 func TestMaintainLore_UnderThresholdSkips(t *testing.T) {
+	t.Parallel()
 	m, _ := newMemoryTestEnv(t)
 	require.NoError(t, m.repos.Lore.AppendEntry("naruto", "H", "b"))
 	ok, err := m.MaintainLore(context.Background(), "naruto")
@@ -95,6 +100,7 @@ func TestMaintainLore_UnderThresholdSkips(t *testing.T) {
 // --- ChronicleCompressWindow ---
 
 func TestChronicleCompressWindow_Basic30Days(t *testing.T) {
+	t.Parallel()
 	m, _ := newMemoryTestEnv(t)
 	for i := 1; i <= 30; i++ {
 		require.NoError(t, appendDay(t, m, "naruto", i, "день "+itoa(i)))
@@ -111,10 +117,11 @@ func TestChronicleCompressWindow_Basic30Days(t *testing.T) {
 	assert.Equal(t, 1, c.Periods[0].From)
 	assert.Equal(t, 30, c.Periods[0].To)
 	assert.Equal(t, "выжимка 30 дней", c.Periods[0].Memory)
-	assert.Equal(t, 0, len(c.Days))
+	assert.Empty(t, c.Days)
 }
 
 func TestChronicleCompressWindow_NoSummarizerSkips(t *testing.T) {
+	t.Parallel()
 	m, _ := newMemoryTestEnv(t)
 	for i := 1; i <= 30; i++ {
 		require.NoError(t, appendDay(t, m, "naruto", i, "день "+itoa(i)))
@@ -125,6 +132,7 @@ func TestChronicleCompressWindow_NoSummarizerSkips(t *testing.T) {
 }
 
 func TestChronicleCompressWindow_BadOutputSkips(t *testing.T) {
+	t.Parallel()
 	m, _ := newMemoryTestEnv(t)
 	for i := 1; i <= 30; i++ {
 		require.NoError(t, appendDay(t, m, "naruto", i, "день "+itoa(i)))
@@ -136,11 +144,12 @@ func TestChronicleCompressWindow_BadOutputSkips(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, ok)
 	after, _ := m.repos.Chronicle.Load("naruto")
-	assert.Equal(t, len(before.Periods), len(after.Periods))
-	assert.Equal(t, len(before.Days), len(after.Days))
+	assert.Len(t, after.Periods, len(before.Periods))
+	assert.Len(t, after.Days, len(before.Days))
 }
 
 func TestChronicleCompressWindow_TooThinSkips(t *testing.T) {
+	t.Parallel()
 	m, _ := newMemoryTestEnv(t)
 	for _, d := range []int{1} {
 		require.NoError(t, appendDay(t, m, "naruto", d, "факт"))
@@ -154,6 +163,7 @@ func TestChronicleCompressWindow_TooThinSkips(t *testing.T) {
 }
 
 func TestChronicleCompressWindow_KeepsEarlierSummaries(t *testing.T) {
+	t.Parallel()
 	m, _ := newMemoryTestEnv(t)
 	c := chronicle.Chronicle{
 		Periods: []chronicle.Period{
@@ -185,7 +195,7 @@ func appendDay(t *testing.T, m *Memory, world string, day int, text string) erro
 	t.Helper()
 	c, err := m.repos.Chronicle.Load(world)
 	if err != nil {
-		return err
+		return fmt.Errorf("appendDay: Chronicle.Load failed: %w", err)
 	}
 	if !c.AppendDay(day, text) {
 		t.Fatalf("appendDay: day %d already present", day)

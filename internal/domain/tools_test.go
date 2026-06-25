@@ -18,6 +18,7 @@ func paramsJSON(t *testing.T, s Schema) map[string]any {
 }
 
 func TestTools_AllHaveNameAndSchema(t *testing.T) {
+	t.Parallel()
 	tools := Tools()
 	assert.NotEmpty(t, tools)
 	seen := map[string]bool{}
@@ -33,6 +34,7 @@ func TestTools_AllHaveNameAndSchema(t *testing.T) {
 }
 
 func TestTools_SchemaIsValidObject(t *testing.T) {
+	t.Parallel()
 	for _, tl := range Tools() {
 		probe := paramsJSON(t, tl.Function.Parameters)
 		assert.Equal(t, "object", probe["type"], "tool %s", tl.Function.Name)
@@ -46,6 +48,7 @@ func TestTools_SchemaIsValidObject(t *testing.T) {
 }
 
 func TestTools_StrictAdditionalProperties(t *testing.T) {
+	t.Parallel()
 	// OpenAI's strict function-calling subset requires
 	// additionalProperties=false. Every tool with at least one
 	// property must declare it.
@@ -58,6 +61,7 @@ func TestTools_StrictAdditionalProperties(t *testing.T) {
 }
 
 func TestEndDayTool_Shape(t *testing.T) {
+	t.Parallel()
 	tool := findTool(t, "end_day")
 	assert.Contains(t, tool.Function.Description, "chronicle")
 	assert.Contains(t, tool.Function.Description, "world state")
@@ -70,15 +74,17 @@ func TestEndDayTool_Shape(t *testing.T) {
 }
 
 func TestRotatePlanTool_HasBounds(t *testing.T) {
+	t.Parallel()
 	tool := findTool(t, "rotate_plan")
 	probe := paramsJSON(t, tool.Function.Parameters)
 	events := probe["properties"].(map[string]any)["events"].(map[string]any)
 	assert.Equal(t, "array", events["type"])
-	assert.Equal(t, float64(3), events["minItems"])
-	assert.Equal(t, float64(5), events["maxItems"])
+	assert.InDelta(t, float64(3), events["minItems"], 1e-9)
+	assert.InDelta(t, float64(5), events["maxItems"], 1e-9)
 }
 
 func TestUpdateSoulTool_SectionIsFreeString(t *testing.T) {
+	t.Parallel()
 	// SOUL.yaml is free-form: the section arg is a
 	// plain String (not an enum), so the model can
 	// invent new section names.
@@ -91,6 +97,7 @@ func TestUpdateSoulTool_SectionIsFreeString(t *testing.T) {
 }
 
 func TestUpdateSkillTool_SectionIsEnum(t *testing.T) {
+	t.Parallel()
 	// skill.yaml is strict: section must be on the
 	// canonical list.
 	tool := findTool(t, "update_skill")
@@ -104,6 +111,7 @@ func TestUpdateSkillTool_SectionIsEnum(t *testing.T) {
 }
 
 func TestUpdateMemoryTool_SectionIsEnum(t *testing.T) {
+	t.Parallel()
 	// memory.yaml: 4 canonical sections only.
 	tool := findTool(t, "update_memory")
 	probe := paramsJSON(t, tool.Function.Parameters)
@@ -115,6 +123,7 @@ func TestUpdateMemoryTool_SectionIsEnum(t *testing.T) {
 }
 
 func TestUpdateInventoryTool_TypeIsEnum(t *testing.T) {
+	t.Parallel()
 	tool := findTool(t, "update_inventory")
 	probe := paramsJSON(t, tool.Function.Parameters)
 	typ := probe["properties"].(map[string]any)["type"].(map[string]any)
@@ -126,6 +135,7 @@ func TestUpdateInventoryTool_TypeIsEnum(t *testing.T) {
 }
 
 func TestRemoveInventoryItemTool_HasName(t *testing.T) {
+	t.Parallel()
 	tool := findTool(t, "remove_inventory_item")
 	probe := paramsJSON(t, tool.Function.Parameters)
 	required := probe["required"].([]any)
@@ -133,6 +143,7 @@ func TestRemoveInventoryItemTool_HasName(t *testing.T) {
 }
 
 func TestSetCurrencyTool_ClampNoteInDescription(t *testing.T) {
+	t.Parallel()
 	tool := findTool(t, "set_currency")
 	assert.Contains(t, tool.Function.Description, "Clamp",
 		"set_currency description must mention the [0, 999_999_999] clamp")
@@ -140,6 +151,7 @@ func TestSetCurrencyTool_ClampNoteInDescription(t *testing.T) {
 }
 
 func TestObject_RequiredIsSorted(t *testing.T) {
+	t.Parallel()
 	// Wire format is stable regardless of declaration order.
 	props := Object(
 		Required("zeta", String("z")),
@@ -147,7 +159,8 @@ func TestObject_RequiredIsSorted(t *testing.T) {
 		Required("mu", String("m")),
 		Optional("optional", String("o")),
 	)
-	raw, _ := json.Marshal(props)
+	raw, err := json.Marshal(props)
+	require.NoError(t, err)
 	var probe struct {
 		Required []string `json:"required"`
 	}
@@ -156,12 +169,15 @@ func TestObject_RequiredIsSorted(t *testing.T) {
 }
 
 func TestStringEnum_RoundTrips(t *testing.T) {
+	t.Parallel()
 	s := StringEnum("pick one", "a", "b", "c")
-	raw, _ := json.Marshal(s)
+	raw, err := json.Marshal(s)
+	require.NoError(t, err)
 	assert.Contains(t, string(raw), `"enum":["a","b","c"]`)
 }
 
 func TestMarshalParameters_ErrorPropagates(t *testing.T) {
+	t.Parallel()
 	// Cyclic schema would normally panic in json.Marshal; we
 	// just check the happy path here and trust stdlib for the
 	// rest. A failing schema should be caught at tool construction.

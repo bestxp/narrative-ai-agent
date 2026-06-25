@@ -158,10 +158,10 @@ func buildSummarizer(cfg *config.Config, role config.LLMRoleConfig, snap promptp
 	} else {
 		summarizer = usecase.NewFallbackSummarizer(sumLLM, sumRole, sumPrompt, slow, log)
 	}
-	wireSummarizerPrompt(summarizer, "compaction_in_place.md.tmpl", snap, summarizer.SetCompactionInPlacePrompt, "in-place compaction will no-op", log)
-	wireSummarizerPrompt(summarizer, "end_of_day.md.tmpl", snap, summarizer.SetEndOfDayPrompt, "end-of-day protocol will no-op", log)
-	wireSummarizerPrompt(summarizer, "character_memory_maintain.md.tmpl", snap, summarizer.SetCharacterMemoryPrompt, "end-of-day memory defrag will no-op", log)
-	wireSummarizerPrompt(summarizer, "chronicle_summary.md.tmpl", snap, summarizer.SetChronicleSummaryPrompt, "chronicle window compression falls back to base summary prompt", log)
+	wireSummarizerPrompt("compaction_in_place.md.tmpl", snap, summarizer.SetCompactionInPlacePrompt, "in-place compaction will no-op", log)
+	wireSummarizerPrompt("end_of_day.md.tmpl", snap, summarizer.SetEndOfDayPrompt, "end-of-day protocol will no-op", log)
+	wireSummarizerPrompt("character_memory_maintain.md.tmpl", snap, summarizer.SetCharacterMemoryPrompt, "end-of-day memory defrag will no-op", log)
+	wireSummarizerPrompt("chronicle_summary.md.tmpl", snap, summarizer.SetChronicleSummaryPrompt, "chronicle window compression falls back to base summary prompt", log)
 	summarizerData := promptpkg.NewPromptData(snap, promptpkg.CharacterData{}, promptpkg.WorldData{})
 	summarizer.SetCompactionConfig(summarizerData.Compaction)
 	return summarizer
@@ -173,7 +173,7 @@ func buildSummarizer(cfg *config.Config, role config.LLMRoleConfig, snap promptp
 // the prompt unwired (the corresponding Summarize* call
 // then no-ops or falls back).
 func wireSummarizerPrompt(
-	s *usecase.Summarizer, name string,
+	name string,
 	snap promptpkg.NarrativeConfigSnapshot,
 	setter func(string), warnReason string,
 	log zerolog.Logger,

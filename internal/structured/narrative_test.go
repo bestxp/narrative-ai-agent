@@ -16,6 +16,7 @@ const fullJSON = `{
 }`
 
 func TestParse_OK(t *testing.T) {
+	t.Parallel()
 	n, err := Parse(fullJSON)
 	require.NoError(t, err)
 	assert.Equal(t, "Хината вздрогнула, отступила. Уши — алые.", n.Narration)
@@ -25,6 +26,7 @@ func TestParse_OK(t *testing.T) {
 }
 
 func TestParse_StripsFence(t *testing.T) {
+	t.Parallel()
 	fenced := "```json\n" + fullJSON + "\n```"
 	n, err := Parse(fenced)
 	require.NoError(t, err)
@@ -32,6 +34,7 @@ func TestParse_StripsFence(t *testing.T) {
 }
 
 func TestParse_StripsFenceNoLang(t *testing.T) {
+	t.Parallel()
 	fenced := "```\n" + fullJSON + "\n```"
 	n, err := Parse(fenced)
 	require.NoError(t, err)
@@ -39,21 +42,25 @@ func TestParse_StripsFenceNoLang(t *testing.T) {
 }
 
 func TestParse_NotJSON(t *testing.T) {
+	t.Parallel()
 	_, err := Parse("**диалоги и действия**\n— Хината вздрогнула...")
 	assert.ErrorIs(t, err, ErrNotJSON)
 }
 
 func TestParse_Empty(t *testing.T) {
+	t.Parallel()
 	_, err := Parse("")
 	assert.ErrorIs(t, err, ErrNotJSON)
 }
 
 func TestParse_Whitespace(t *testing.T) {
+	t.Parallel()
 	_, err := Parse("   \n\t  ")
 	assert.ErrorIs(t, err, ErrNotJSON)
 }
 
 func TestParse_InvalidJSON(t *testing.T) {
+	t.Parallel()
 	// Looks like JSON (starts with '{') but is malformed.
 	// Must NEVER return ErrNotJSON (that triggers markdown
 	// fallback).  With jsonrepair the string may be fixed
@@ -61,11 +68,12 @@ func TestParse_InvalidJSON(t *testing.T) {
 	// "invalid" without quotes is harder: jsonrepair returns
 	// error because it cannot guess the missing quotes.
 	_, err := Parse(`{"narration": "ok", invalid}`)
-	assert.NotNil(t, err)
+	require.Error(t, err)
 	assert.NotErrorIs(t, err, ErrNotJSON)
 }
 
 func TestLooksLikeJSON(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		in   string
 		want bool
@@ -86,6 +94,7 @@ func TestLooksLikeJSON(t *testing.T) {
 }
 
 func TestMissingFields(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		body    string
@@ -114,6 +123,7 @@ func TestMissingFields(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			n, err := Parse(tc.body)
 			require.NoError(t, err)
 			assert.Equal(t, tc.missing, n.MissingFields())
@@ -122,6 +132,7 @@ func TestMissingFields(t *testing.T) {
 }
 
 func TestRender_4Blocks(t *testing.T) {
+	t.Parallel()
 	n, err := Parse(fullJSON)
 	require.NoError(t, err)
 	out := n.Render()
@@ -132,12 +143,12 @@ func TestRender_4Blocks(t *testing.T) {
 		"**БУДУЩЕЕ**",
 		"**ВАЛИДАЦИЯ ПРАВИЛ**",
 	} {
-		assert.True(t, strings.Contains(out, h), "missing header %q in:\n%s", h, out)
+		assert.Contains(t, out, h, "missing header %q in:\n%s", h, out)
 	}
 	// Order matters — block 1 must precede block 4.
 	idx1 := strings.Index(out, "**диалоги и действия**")
 	idx4 := strings.Index(out, "**ВАЛИДАЦИЯ ПРАВИЛ**")
-	assert.True(t, idx1 < idx4, "block order broken")
+	assert.Less(t, idx1, idx4, "block order broken")
 	// All four narratives must be present.
 	assert.Contains(t, out, "Хината вздрогнула, отступила.")
 	assert.Contains(t, out, "state.md обновлён")
@@ -146,6 +157,7 @@ func TestRender_4Blocks(t *testing.T) {
 }
 
 func TestRender_TrimsTrailingWhitespace(t *testing.T) {
+	t.Parallel()
 	n := &Narrative{
 		Narration:  "  сцена.  ",
 		Context:    "  без изменений.\n\n  ",
@@ -167,6 +179,7 @@ func TestRender_TrimsTrailingWhitespace(t *testing.T) {
 }
 
 func TestParse_DuplicateJSON(t *testing.T) {
+	t.Parallel()
 	duped := fullJSON + "\n``````json\n" + fullJSON
 	n, err := Parse(duped)
 	require.NoError(t, err)
@@ -175,6 +188,7 @@ func TestParse_DuplicateJSON(t *testing.T) {
 }
 
 func TestParse_DuplicateRawJSON(t *testing.T) {
+	t.Parallel()
 	duped := fullJSON + "\n" + fullJSON
 	n, err := Parse(duped)
 	require.NoError(t, err)
@@ -182,6 +196,7 @@ func TestParse_DuplicateRawJSON(t *testing.T) {
 }
 
 func TestParse_PrefixTextBeforeJSON(t *testing.T) {
+	t.Parallel()
 	prefixed := "Нужно записать это как действие.\n" + fullJSON
 	n, err := Parse(prefixed)
 	require.NoError(t, err)
@@ -189,6 +204,7 @@ func TestParse_PrefixTextBeforeJSON(t *testing.T) {
 }
 
 func TestParse_PrefixAndFencedDuplicate(t *testing.T) {
+	t.Parallel()
 	prefixed := "Нужно записать это.\n```json\n" + fullJSON + "\n```\n``````json\n" + fullJSON + "\n```"
 	n, err := Parse(prefixed)
 	require.NoError(t, err)
@@ -196,6 +212,7 @@ func TestParse_PrefixAndFencedDuplicate(t *testing.T) {
 }
 
 func TestParse_InnerQuotes(t *testing.T) {
+	t.Parallel()
 	// Model uses '"' as typographic quotes inside a value
 	broken := `{
   "narration": "Мизуки... \"Другой способ\"...",
@@ -209,6 +226,7 @@ func TestParse_InnerQuotes(t *testing.T) {
 }
 
 func TestParse_InnerQuotesWithChevrons(t *testing.T) {
+	t.Parallel()
 	// Real-world bug: model writes «"Другой способ"...»
 	broken := `{
   "narration": "Мизуки... «\"Другой способ\"...»",
@@ -222,6 +240,7 @@ func TestParse_InnerQuotesWithChevrons(t *testing.T) {
 }
 
 func TestSanitizeJSONQuotes(t *testing.T) {
+	t.Parallel()
 	assert.Equal(t, `"a"`, string(sanitizeJSONQuotes([]byte(`"a"`))))
 	assert.Equal(t, `"a\"b"`, string(sanitizeJSONQuotes([]byte(`"a"b"`))))
 	assert.Equal(t, `"a\"b\"c"`, string(sanitizeJSONQuotes([]byte(`"a"b"c"`))))
@@ -229,6 +248,6 @@ func TestSanitizeJSONQuotes(t *testing.T) {
 	assert.Equal(t, `"a","b"`, string(sanitizeJSONQuotes([]byte(`"a","b"`))))
 	assert.Equal(t, `"a": "b\"c"`, string(sanitizeJSONQuotes([]byte(`"a": "b"c"`))))
 	// real JSON object — structural quotes untouched
-	real := `{"narration": "x", "context": "y"}`
-	assert.Equal(t, real, string(sanitizeJSONQuotes([]byte(real))))
+	payload := `{"narration": "x", "context": "y"}`
+	assert.Equal(t, payload, string(sanitizeJSONQuotes([]byte(payload))))
 }

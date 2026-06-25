@@ -1,25 +1,29 @@
 package chronicle
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
 
 func TestLoad_Empty(t *testing.T) {
+	t.Parallel()
 	_, err := Load("")
-	if err != ErrNotFound {
+	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
 }
 
 func TestLoad_WhitespaceOnly(t *testing.T) {
+	t.Parallel()
 	_, err := Load("   \n\n  \n")
-	if err != ErrNotFound {
+	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
 }
 
 func TestSaveLoad_RoundTrip(t *testing.T) {
+	t.Parallel()
 	in := Chronicle{
 		Periods: []Period{
 			{From: 1, To: 30, Memory: "first window summary"},
@@ -59,6 +63,7 @@ func TestSaveLoad_RoundTrip(t *testing.T) {
 }
 
 func TestLoad_OnlyPeriods(t *testing.T) {
+	t.Parallel()
 	body := `periods:
   - from: 1
     to: 30
@@ -77,6 +82,7 @@ func TestLoad_OnlyPeriods(t *testing.T) {
 }
 
 func TestLoad_OnlyDays(t *testing.T) {
+	t.Parallel()
 	body := `days:
   1: "raw"
   2: "raw 2"
@@ -94,6 +100,7 @@ func TestLoad_OnlyDays(t *testing.T) {
 }
 
 func TestAppendDay_Basic(t *testing.T) {
+	t.Parallel()
 	c := Chronicle{}
 	if !c.AppendDay(1, "day 1") {
 		t.Fatal("AppendDay should return true on first insert")
@@ -110,6 +117,7 @@ func TestAppendDay_Basic(t *testing.T) {
 }
 
 func TestAppendDay_Trims(t *testing.T) {
+	t.Parallel()
 	c := Chronicle{}
 	c.AppendDay(1, "  hello  ")
 	if got := c.Days[1]; got != "hello" {
@@ -118,6 +126,7 @@ func TestAppendDay_Trims(t *testing.T) {
 }
 
 func TestAppendDay_EmptyText(t *testing.T) {
+	t.Parallel()
 	c := Chronicle{}
 	if c.AppendDay(1, "") {
 		t.Fatal("AppendDay should return false for empty text")
@@ -128,6 +137,7 @@ func TestAppendDay_EmptyText(t *testing.T) {
 }
 
 func TestAppendDay_ZeroDay(t *testing.T) {
+	t.Parallel()
 	c := Chronicle{}
 	if c.AppendDay(0, "x") {
 		t.Fatal("AppendDay should return false for day=0")
@@ -138,6 +148,7 @@ func TestAppendDay_ZeroDay(t *testing.T) {
 }
 
 func TestCompressWindow_Basic(t *testing.T) {
+	t.Parallel()
 	c := Chronicle{Days: map[int]string{
 		1: "a", 2: "b", 3: "c",
 	}}
@@ -156,6 +167,7 @@ func TestCompressWindow_Basic(t *testing.T) {
 }
 
 func TestCompressWindow_PreservesOutOfRangeDays(t *testing.T) {
+	t.Parallel()
 	c := Chronicle{Days: map[int]string{
 		1: "a", 2: "b", 3: "c", 4: "d", 5: "e",
 	}}
@@ -174,6 +186,7 @@ func TestCompressWindow_PreservesOutOfRangeDays(t *testing.T) {
 }
 
 func TestCompressWindow_RejectsOverlap(t *testing.T) {
+	t.Parallel()
 	c := Chronicle{Days: map[int]string{
 		31: "x", 32: "y",
 	}}
@@ -197,6 +210,7 @@ func TestCompressWindow_RejectsOverlap(t *testing.T) {
 }
 
 func TestCompressWindow_InvalidRange(t *testing.T) {
+	t.Parallel()
 	c := Chronicle{}
 	if err := c.CompressWindow(10, 5, "x"); err == nil {
 		t.Error("expected error when from > to")
@@ -207,6 +221,7 @@ func TestCompressWindow_InvalidRange(t *testing.T) {
 }
 
 func TestCompressWindow_EmptyMemory(t *testing.T) {
+	t.Parallel()
 	c := Chronicle{}
 	if err := c.CompressWindow(1, 5, ""); err == nil {
 		t.Error("expected error on empty memory")
@@ -217,6 +232,7 @@ func TestCompressWindow_EmptyMemory(t *testing.T) {
 }
 
 func TestLastDay(t *testing.T) {
+	t.Parallel()
 	c := Chronicle{}
 	if _, ok := c.LastDay(); ok {
 		t.Error("LastDay should be false on empty chronicle")
@@ -229,6 +245,7 @@ func TestLastDay(t *testing.T) {
 }
 
 func TestLastPeriodEnd(t *testing.T) {
+	t.Parallel()
 	c := Chronicle{}
 	if _, ok := c.LastPeriodEnd(); ok {
 		t.Error("LastPeriodEnd should be false on empty chronicle")
@@ -245,6 +262,7 @@ func TestLastPeriodEnd(t *testing.T) {
 }
 
 func TestSortedDays(t *testing.T) {
+	t.Parallel()
 	c := Chronicle{Days: map[int]string{
 		3: "c", 1: "a", 2: "b",
 	}}
@@ -261,6 +279,7 @@ func TestSortedDays(t *testing.T) {
 }
 
 func TestSave_EmptyChronicleHasBothSections(t *testing.T) {
+	t.Parallel()
 	c := Chronicle{}
 	body, err := c.Save()
 	if err != nil {
@@ -275,6 +294,7 @@ func TestSave_EmptyChronicleHasBothSections(t *testing.T) {
 }
 
 func TestSaveLoad_EmptyChronicle(t *testing.T) {
+	t.Parallel()
 	c := Chronicle{}
 	body, err := c.Save()
 	if err != nil {
@@ -293,6 +313,7 @@ func TestSaveLoad_EmptyChronicle(t *testing.T) {
 }
 
 func TestWindowSize_MatchesLimits(t *testing.T) {
+	t.Parallel()
 	// Sanity: the local alias must agree with the
 	// single source of truth in internal/limits. If
 	// they drift, the bot's compression rule silently

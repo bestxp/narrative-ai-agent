@@ -73,7 +73,7 @@ func (s *YamlStorage) Read(key string) ([]byte, error) {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read: ReadFile failed: %w", err)
 	}
 	return b, nil
 }
@@ -85,12 +85,12 @@ func (s *YamlStorage) Read(key string) ([]byte, error) {
 func (s *YamlStorage) Write(key string, data []byte) error {
 	clean := stripIndexPollutionBytes(data)
 	if err := os.MkdirAll(s.dirOf(key), 0o755); err != nil {
-		return err
+		return fmt.Errorf("write: MkdirAll failed: %w", err)
 	}
 	target := s.Join(key)
 	tmp := target + ".tmp"
 	if err := os.WriteFile(tmp, clean, 0o644); err != nil {
-		return err
+		return fmt.Errorf("write: %w", err)
 	}
 	return os.Rename(tmp, target)
 }
@@ -116,7 +116,7 @@ func (s *YamlStorage) ListChildren(dir string) ([]string, error) {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("list_children: ReadDir failed: %w", err)
 	}
 	out := make([]string, 0, len(entries))
 	for _, e := range entries {
@@ -129,7 +129,10 @@ func (s *YamlStorage) ListChildren(dir string) ([]string, error) {
 // For filesystem this is os.MkdirAll. Calling on an
 // already-existing dir is a no-op.
 func (s *YamlStorage) EnsureDir(key string) error {
-	return os.MkdirAll(s.dirOf(key), 0o755)
+	if err := os.MkdirAll(s.dirOf(key), 0o755); err != nil {
+		return fmt.Errorf("ensure_dir: %w", err)
+	}
+	return nil
 }
 
 // Compile-time guarantee *YamlStorage implements Storage.

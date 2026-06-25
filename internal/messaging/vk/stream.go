@@ -2,6 +2,7 @@ package vk
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -18,14 +19,13 @@ type stream struct {
 	peerID   int
 	msgID    int
 	groupID  int
-	ctx      context.Context
 	closed   bool
 	lastSent string
 }
 
 func (s *stream) Append(ctx context.Context, text string) error {
 	if s.closed {
-		return fmt.Errorf("vk: stream closed")
+		return errors.New("vk: stream closed")
 	}
 	if s.lastSent == text {
 		return nil
@@ -92,13 +92,15 @@ type ThrottledStream struct {
 	ticker   *time.Ticker
 	stop     chan struct{}
 	wg       sync.WaitGroup
+	ctx      context.Context
 }
 
-func NewThrottledStream(inner messaging.StreamSession) *ThrottledStream {
+func NewThrottledStream(ctx context.Context, inner messaging.StreamSession) *ThrottledStream {
 	t := &ThrottledStream{
 		inner:    inner,
 		minDelay: 700 * time.Millisecond,
 		stop:     make(chan struct{}),
+		ctx:      ctx,
 	}
 	t.ticker = time.NewTicker(t.minDelay)
 	t.wg.Add(1)
@@ -130,7 +132,7 @@ func (t *ThrottledStream) flush() {
 		return
 	}
 	// Best-effort flush; errors are logged by the inner stream.
-	_ = t.inner.Append(context.Background(), text)
+	_ = t.inner.Append(t.ctx, text)
 }
 
 func (t *ThrottledStream) Append(ctx context.Context, text string) error {
@@ -157,7 +159,7 @@ func (t *ThrottledStream) Final(ctx context.Context, text string) error {
 
 	if remaining != "" {
 		if err := t.inner.Append(ctx, remaining); err != nil {
-			return err
+			return fmt.Errorf("wrap: %w", err)
 		}
 	}
 	return t.inner.Final(ctx, text)

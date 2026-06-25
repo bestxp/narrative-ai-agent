@@ -32,7 +32,7 @@ func initRepo(t *testing.T) string {
 		{"config", "user.email", "test@test.local"},
 	}
 	for _, c := range cmds {
-		cmd := exec.Command("git", c...)
+		cmd := exec.CommandContext(t.Context(), "git", c...)
 		cmd.Dir = dir
 		out, err := cmd.CombinedOutput()
 		require.NoError(t, err, "%v: %s", c, out)
@@ -40,7 +40,7 @@ func initRepo(t *testing.T) string {
 	return dir
 }
 
-func newCfg(t *testing.T, workdir string) *config.Config {
+func newCfg(_ *testing.T, workdir string) *config.Config {
 	return &config.Config{
 		Messaging: config.MessagingConfig{
 			Telegram: config.TelegramConfig{
@@ -72,6 +72,7 @@ func setup(t *testing.T) (*Dispatcher, *storage.FileStore) {
 }
 
 func TestDispatcher_CommandsHasAllEntries(t *testing.T) {
+	t.Parallel()
 	d, _ := setup(t)
 	cmds := d.Commands()
 	assert.GreaterOrEqual(t, len(cmds), 8, "expected at least 8 commands")
@@ -88,6 +89,7 @@ func TestDispatcher_CommandsHasAllEntries(t *testing.T) {
 }
 
 func TestDispatcher_LaunchAndStart(t *testing.T) {
+	t.Parallel()
 	d, fs := setup(t)
 	rep, err := d.Handle(context.Background(), messaging.IncomingMessage{
 		Command: "launch", Args: []string{"Маркус", "naruto", "канон"},
@@ -102,6 +104,7 @@ func TestDispatcher_LaunchAndStart(t *testing.T) {
 }
 
 func TestDispatcher_EndDay(t *testing.T) {
+	t.Parallel()
 	d, fs := setup(t)
 	_, _ = d.Handle(context.Background(), messaging.IncomingMessage{Command: "launch", Args: []string{"m", "naruto"}})
 	rep, err := d.Handle(context.Background(), messaging.IncomingMessage{Command: "endday", Args: []string{"5", "бой"}})
@@ -112,6 +115,7 @@ func TestDispatcher_EndDay(t *testing.T) {
 }
 
 func TestDispatcher_LeaveAndReturn(t *testing.T) {
+	t.Parallel()
 	d, fs := setup(t)
 	_, _ = d.Handle(context.Background(), messaging.IncomingMessage{Command: "launch", Args: []string{"m", "naruto"}})
 	rep, err := d.Handle(context.Background(), messaging.IncomingMessage{Command: "leave", Args: []string{"bleach"}})
@@ -126,6 +130,7 @@ func TestDispatcher_LeaveAndReturn(t *testing.T) {
 }
 
 func TestDispatcher_FreeformValidates(t *testing.T) {
+	t.Parallel()
 	d, _ := setup(t)
 	rep, err := d.Handle(context.Background(), messaging.IncomingMessage{Text: "ты усмехнулся"})
 	require.NoError(t, err)
@@ -134,6 +139,7 @@ func TestDispatcher_FreeformValidates(t *testing.T) {
 }
 
 func TestDispatcher_UnknownCommandIsSilent(t *testing.T) {
+	t.Parallel()
 	d, _ := setup(t)
 	rep, err := d.Handle(context.Background(), messaging.IncomingMessage{Command: "no-such"})
 	require.NoError(t, err)
@@ -141,6 +147,7 @@ func TestDispatcher_UnknownCommandIsSilent(t *testing.T) {
 }
 
 func TestDispatcher_Help(t *testing.T) {
+	t.Parallel()
 	d, _ := setup(t)
 	rep, _ := d.Handle(context.Background(), messaging.IncomingMessage{Command: "help"})
 	assert.Contains(t, rep, "/launch")

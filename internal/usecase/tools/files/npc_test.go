@@ -35,6 +35,7 @@ func makeNPC(t *testing.T) (*NPC, *storage.FileStore) {
 // file is actually consulted on every Load /
 // UpdateNPC / Search call.
 func TestNPC_LookupViaRegistry(t *testing.T) {
+	t.Parallel()
 	n, fs := makeNPC(t)
 	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/characters/hinata.yaml",
 		"display_name: Хината Хьюга\ntemperament: застенчивая\n"))
@@ -53,6 +54,7 @@ func TestNPC_LookupViaRegistry(t *testing.T) {
 // the model's token, so the substring direction
 // is the model→file one).
 func TestNPC_LookupSubstring(t *testing.T) {
+	t.Parallel()
 	reg := worldregistry.Registry{}
 	require.NoError(t, reg.Add(worldregistry.Entry{
 		Slug: "hinata", DisplayName: "Хината Хьюга",
@@ -67,6 +69,7 @@ func TestNPC_LookupSubstring(t *testing.T) {
 // must refuse to guess — the operator should pick
 // the unambiguous name and retry.
 func TestNPC_LookupAmbiguousRefuses(t *testing.T) {
+	t.Parallel()
 	reg := worldregistry.Registry{}
 	require.NoError(t, reg.Add(worldregistry.Entry{Slug: "naruto_uzumaki", DisplayName: "Наруто"}))
 	require.NoError(t, reg.Add(worldregistry.Entry{Slug: "naruto_clone", DisplayName: "Наруто-клона"}))
@@ -80,6 +83,7 @@ func TestNPC_LookupAmbiguousRefuses(t *testing.T) {
 // is expected to translate that into a
 // "create_npc first" hint to the model.
 func TestNPC_NotFoundReturnsErrNPCNotFound(t *testing.T) {
+	t.Parallel()
 	n, _ := makeNPC(t)
 	_, err := n.resolveSlug("naruto", "Совершенно Незнакомый NPC")
 	require.ErrorIs(t, err, ErrNPCNotFound)
@@ -95,7 +99,8 @@ func TestNPC_NotFoundReturnsErrNPCNotFound(t *testing.T) {
 // `npc_updated` Info line existed, which lacks the
 // `kind=` prefix that the regression suite greps for.
 func TestNPC_UpdateNPC_Slowlog(t *testing.T) {
-	n, fs := makeNPC(t)
+	t.Parallel()
+	_, fs := makeNPC(t)
 	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/characters/inari.yaml",
 		"display_name: Инари\ntemperament: робкая\ncurrent_status: в деревне\n"+
 			"personal_memory: []\nabilities: []\nrelations_npcs: []\ncritical_knowledge: []\nnicknames: []\nlast_update: \"\"\n"))
@@ -106,7 +111,7 @@ func TestNPC_UpdateNPC_Slowlog(t *testing.T) {
 	// the slow.Write call below reaches the logger.
 	yamlStore, _ := yamlfs.New(fs.Root())
 	repos := api.NewYamlRepositories(yamlStore)
-	n = newNPC(zerolog.Nop(), logger, repos, fs)
+	n := newNPC(zerolog.Nop(), logger, repos, fs)
 
 	require.NoError(t, n.UpdateNPC("naruto", "Инари", "Личная память/факты", "Встретил ГГ у моста"))
 

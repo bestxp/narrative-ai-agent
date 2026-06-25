@@ -162,12 +162,9 @@ func (t *Toolset) MaintainCharacterMemory(ctx context.Context, world, character 
 // *tools.NPCSearchResult (decoupled from the file
 // backend); this forwarder adapts the file package's
 // *SearchResult to the interface type at the boundary.
-func (t *Toolset) SearchNPC(world, query string) (result *tools.NPCSearchResult, err error) {
+func (t *Toolset) SearchNPC(world, query string) (*tools.NPCSearchResult, error) {
 	defer func() {
-		if r := recover(); r != nil {
-			result = nil
-			err = nil
-		}
+		_ = recover()
 	}()
 	if t.NPC == nil {
 		return nil, nil

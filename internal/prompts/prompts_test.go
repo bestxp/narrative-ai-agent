@@ -8,6 +8,7 @@ import (
 )
 
 func TestList_ContainsExpectedFiles(t *testing.T) {
+	t.Parallel()
 	list := List()
 	assert.Contains(t, list, "narrative.md.tmpl", "narrative.md.tmpl must be embedded")
 	assert.Contains(t, list, "summary.md.tmpl", "summary.md.tmpl must be embedded")
@@ -19,6 +20,7 @@ func TestList_ContainsExpectedFiles(t *testing.T) {
 // net: a future refactor that adds a stray substitution
 // is caught here.
 func TestRender_PlainTemplateRoundTrip(t *testing.T) {
+	t.Parallel()
 	ResetTemplateCache()
 	rendered, err := Render("summary.md.tmpl", PromptData{
 		Narrative: NarrativeData{WordLimit: 200},
@@ -32,6 +34,7 @@ func TestRender_PlainTemplateRoundTrip(t *testing.T) {
 // the data-bag. A different WordLimit yields a different
 // rendered body.
 func TestRender_SubstitutesConfig(t *testing.T) {
+	t.Parallel()
 	ResetTemplateCache()
 	data := PromptData{Narrative: NarrativeData{WordLimit: 250}}
 	rendered, err := Render("narrative.md.tmpl", data)
@@ -47,6 +50,7 @@ func TestRender_SubstitutesConfig(t *testing.T) {
 // when they edit config.yaml — a missing template must
 // fail loudly at startup, not silently render as "".
 func TestRender_MissingTemplate(t *testing.T) {
+	t.Parallel()
 	_, err := Render("does-not-exist.md.tmpl", PromptData{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "template not found")
@@ -56,6 +60,7 @@ func TestRender_MissingTemplate(t *testing.T) {
 // .tmpl files. A naked .md call is a programming
 // error, not a runtime one.
 func TestRender_RejectsNonTemplate(t *testing.T) {
+	t.Parallel()
 	_, err := Render("narrative.md", PromptData{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), ".tmpl")
@@ -67,6 +72,7 @@ func TestRender_RejectsNonTemplate(t *testing.T) {
 // the cache, but we can assert the second render
 // reflects the new WordLimit.
 func TestRender_CachesParsedTemplate(t *testing.T) {
+	t.Parallel()
 	ResetTemplateCache()
 	_, err := Render("narrative.md.tmpl", PromptData{Narrative: NarrativeData{WordLimit: 200}})
 	require.NoError(t, err)
@@ -85,6 +91,7 @@ func TestRender_CachesParsedTemplate(t *testing.T) {
 // in internal/limits. The exact constants live there;
 // here we just assert the values flow through.
 func TestNewPromptData_DefaultsFilled(t *testing.T) {
+	t.Parallel()
 	snap := NarrativeConfigSnapshot{WordLimit: 250}
 	d := NewPromptData(snap, CharacterData{}, WorldData{})
 	assert.Equal(t, DefaultNPCPersonalMemoryLimit, d.Compaction.NPCPersonalMemoryLimit)
@@ -98,6 +105,7 @@ func TestNewPromptData_DefaultsFilled(t *testing.T) {
 // here is just a typed projection used by tests that
 // round-trip StateSnapshot values.
 func TestNewStateData(t *testing.T) {
+	t.Parallel()
 	d := NewStateData("naruto", 5, true, "день", "Коноха", "Аньбу толкает", "",
 		StageStateData{Current: "wave_mission", TimelineIndex: 1},
 		[]string{"anbu_dog", "anbu_cat"},

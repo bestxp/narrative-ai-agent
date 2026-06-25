@@ -141,7 +141,6 @@ func main() {
 
 	autoSave := newAutoSaveState(cfg)
 	for _, c := range pool.All() {
-		c := c
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

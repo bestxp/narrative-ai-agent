@@ -3,6 +3,7 @@ package yaml
 import (
 	"strings"
 
+	"fmt"
 	"github.com/bestxp/narrative-ai-agent/internal/chronicle"
 	"github.com/bestxp/narrative-ai-agent/internal/storage"
 )
@@ -30,7 +31,7 @@ func NewChronicleYaml(store storage.Storage) *ChronicleYaml {
 func (r *ChronicleYaml) Load(world string) (chronicle.Chronicle, error) {
 	body, err := r.store.Read(chronicleKey(world))
 	if err != nil {
-		return chronicle.Chronicle{}, err
+		return chronicle.Chronicle{}, fmt.Errorf("chronicle_load: Read failed: %w", err)
 	}
 	if strings.TrimSpace(string(body)) == "" {
 		return chronicle.Chronicle{
@@ -40,7 +41,7 @@ func (r *ChronicleYaml) Load(world string) (chronicle.Chronicle, error) {
 	}
 	c, err := chronicle.Load(string(body))
 	if err != nil {
-		return chronicle.Chronicle{}, err
+		return chronicle.Chronicle{}, fmt.Errorf("wrap: %w", err)
 	}
 	// chronicle.Load may return nil Periods / nil Days
 	// when the YAML had empty sections; normalise so
@@ -58,7 +59,7 @@ func (r *ChronicleYaml) Load(world string) (chronicle.Chronicle, error) {
 func (r *ChronicleYaml) Save(world string, c chronicle.Chronicle) error {
 	body, err := c.Save()
 	if err != nil {
-		return err
+		return fmt.Errorf("save: Save failed: %w", err)
 	}
 	return r.store.Write(chronicleKey(world), []byte(body))
 }

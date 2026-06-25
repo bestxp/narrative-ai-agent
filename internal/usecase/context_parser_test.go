@@ -8,6 +8,7 @@ import (
 )
 
 func TestExtractContextCommands_Markdown_UpdateNpc(t *testing.T) {
+	t.Parallel()
 	body := `**диалоги и действия**
 Хината вздрогнула.
 
@@ -29,6 +30,7 @@ func TestExtractContextCommands_Markdown_UpdateNpc(t *testing.T) {
 }
 
 func TestExtractContextCommands_Markdown_Lore(t *testing.T) {
+	t.Parallel()
 	body := `**КОНТЕКСТ И ИЗМЕНЕНИЯ**
 ⦁ lore: День 5 — Саске простил Итахи, они помирились
 
@@ -42,6 +44,7 @@ func TestExtractContextCommands_Markdown_Lore(t *testing.T) {
 }
 
 func TestExtractContextCommands_Markdown_UpdateState(t *testing.T) {
+	t.Parallel()
 	body := `**КОНТЕКСТ И ИЗМЕНЕНИЯ**
 ⦁ update_state: moment=у ворот Конохи; npcs=Наруто, Хината; events=вышли к воротам; in_flight=true
 
@@ -55,6 +58,7 @@ func TestExtractContextCommands_Markdown_UpdateState(t *testing.T) {
 }
 
 func TestExtractContextCommands_Markdown_NpcShortForm(t *testing.T) {
+	t.Parallel()
 	body := `**КОНТЕКСТ И ИЗМЕНЕНИЯ**
 ⦁ npc: Хината — личная память: оговорилась про «не думала о Наруто»`
 	cmds := extractContextCommands(body)
@@ -66,6 +70,7 @@ func TestExtractContextCommands_Markdown_NpcShortForm(t *testing.T) {
 }
 
 func TestExtractContextCommands_JSON(t *testing.T) {
+	t.Parallel()
 	// Режим A: JSON-объект с полем context.
 	body := `{
   "narration": "Хината покраснела.",
@@ -82,6 +87,7 @@ func TestExtractContextCommands_JSON(t *testing.T) {
 }
 
 func TestExtractContextCommands_NoContextBlock(t *testing.T) {
+	t.Parallel()
 	body := `**диалоги и действия**
 Хината вздрогнула, отступила.
 
@@ -92,6 +98,7 @@ func TestExtractContextCommands_NoContextBlock(t *testing.T) {
 }
 
 func TestExtractContextCommands_MultipleBullets(t *testing.T) {
+	t.Parallel()
 	body := `**КОНТЕКСТ И ИЗМЕНЕНИЯ**
 - update_npc: Хината — статус: смущена
 • update_npc: Наруто — способности: рамен-ная техника
@@ -108,6 +115,7 @@ func TestExtractContextCommands_MultipleBullets(t *testing.T) {
 }
 
 func TestExtractContextCommands_UnknownLineIgnored(t *testing.T) {
+	t.Parallel()
 	body := `**КОНТЕКСТ И ИЗМЕНЕНИЯ**
 ⦁ state.md: момент обновлён
 ⦁ memory.md: добавлена запись
@@ -120,6 +128,7 @@ func TestExtractContextCommands_UnknownLineIgnored(t *testing.T) {
 }
 
 func TestExtractContextCommands_QuotedNPCLineNotMistakenForDirective(t *testing.T) {
+	t.Parallel()
 	body := `**диалоги и действия**
 — update_npc: Хината — сказал Наруто
 — Тренируйся усерднее
@@ -132,6 +141,7 @@ func TestExtractContextCommands_QuotedNPCLineNotMistakenForDirective(t *testing.
 }
 
 func TestParseSemicolonPairs(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		in   string
 		want map[string]string
@@ -150,6 +160,7 @@ func TestParseSemicolonPairs(t *testing.T) {
 }
 
 func TestSplitCSV(t *testing.T) {
+	t.Parallel()
 	assert.Equal(t, []string{"a", "b", "c"}, splitCSV("a, b, c"))
 	assert.Equal(t, []string{"a", "b"}, splitCSV("a;b"))
 	assert.Empty(t, splitCSV(""))
@@ -157,6 +168,7 @@ func TestSplitCSV(t *testing.T) {
 }
 
 func TestParseBoolArg(t *testing.T) {
+	t.Parallel()
 	cases := map[string]bool{
 		"true": true, "yes": true, "1": true, "on": true,
 		"false": false, "no": false, "0": false, "": false,
@@ -168,6 +180,7 @@ func TestParseBoolArg(t *testing.T) {
 }
 
 func TestExtractContextCommands_AppendLoreShortForm(t *testing.T) {
+	t.Parallel()
 	body := `**КОНТЕКСТ И ИЗМЕНЕНИЯ**
 ⦁ append_lore: header=День 7, bullet=Маркус приземлился в Конохе`
 	cmds := extractContextCommands(body)
@@ -182,6 +195,7 @@ func TestExtractContextCommands_AppendLoreShortForm(t *testing.T) {
 // two-arg form (the h5 refactor dropped the `file=`
 // discriminator — the tool name IS the file).
 func TestExtractContextCommands_UpdateSoul(t *testing.T) {
+	t.Parallel()
 	body := `**КОНТЕКСТ И ИЗМЕНЕНИЯ**
 ⦁ update_soul: section=Легенда для прикрытия, append=сирота с другого континента, кораблекрушение`
 	cmds := extractContextCommands(body)
@@ -194,6 +208,7 @@ func TestExtractContextCommands_UpdateSoul(t *testing.T) {
 // TestExtractContextCommands_UpdateSkill covers the
 // strict-enum skill dispatcher.
 func TestExtractContextCommands_UpdateSkill(t *testing.T) {
+	t.Parallel()
 	body := `**КОНТЕКСТ И ИЗМЕНЕНИЯ**
 ⦁ update_skill: section=Оружие, append=Кунай — 3 шт.`
 	cmds := extractContextCommands(body)
@@ -209,6 +224,7 @@ func TestExtractContextCommands_UpdateSkill(t *testing.T) {
 // contract: the directive form is "section=X,
 // append=Y" with no date metadata.
 func TestExtractContextCommands_UpdateMemory(t *testing.T) {
+	t.Parallel()
 	body := `**КОНТЕКСТ И ИЗМЕНЕНИЯ**
 ⦁ update_memory: section=Яркие моменты, append=первый поцелуй с Ино на вечерней прогулке по Конохе`
 	cmds := extractContextCommands(body)
@@ -222,6 +238,7 @@ func TestExtractContextCommands_UpdateMemory(t *testing.T) {
 // the REPLACE-by-name inventory path with all 4
 // optional attrs (description/equip/special).
 func TestExtractContextCommands_UpdateInventory(t *testing.T) {
+	t.Parallel()
 	body := `**КОНТЕКСТ И ИЗМЕНЕНИЯ**
 ⦁ update_inventory: name=Кунай, type=weapon, description=стандартный клинок Конохи, equip=false, special=нет`
 	cmds := extractContextCommands(body)
@@ -239,6 +256,7 @@ func TestExtractContextCommands_UpdateInventory(t *testing.T) {
 // three sibling tools share the same comma-pair
 // grammar. One test covers all three for compactness.
 func TestExtractContextCommands_InventoryAndCurrency(t *testing.T) {
+	t.Parallel()
 	body := `**КОНТЕКСТ И ИЗМЕНЕНИЯ**
 ⦁ update_inventory: name=Пилюля, type=consumable, description=восстанавливает чакру
 ⦁ remove_inventory_item: name=Пилюля
@@ -263,6 +281,7 @@ func TestExtractContextCommands_InventoryAndCurrency(t *testing.T) {
 // discriminator is exactly what the h5 refactor
 // removed.
 func TestExtractContextCommands_UpdateCharacterRejected(t *testing.T) {
+	t.Parallel()
 	body := `**КОНТЕКСТ И ИЗМЕНЕНИЯ**
 ⦁ update_character: file=SOUL, section=Легенда, append=...`
 	cmds := extractContextCommands(body)
@@ -270,6 +289,7 @@ func TestExtractContextCommands_UpdateCharacterRejected(t *testing.T) {
 }
 
 func TestExtractContextCommands_RawPreserved(t *testing.T) {
+	t.Parallel()
 	body := `**КОНТЕКСТ И ИЗМЕНЕНИЯ**
 ⦁ update_npc: Хината — статус: смущена`
 	cmds := extractContextCommands(body)

@@ -96,13 +96,13 @@ func CompactConversations(messages []llm.Message, keepRecent int) ([]llm.Message
 func NewCompactionEvent(role string, before, after, dropped, keptRecent int, now time.Time) domain.CompactionEvent {
 	trigger := "context_window*0.7"
 	return domain.CompactionEvent{
-		At:            now.UTC(),
-		Trigger:       trigger,
-		Role:          role,
-		BeforeTokens:  before,
-		AfterTokens:   after,
-		DroppedTurns:  dropped,
-		KeptRecent:    keptRecent,
+		At:           now.UTC(),
+		Trigger:      trigger,
+		Role:         role,
+		BeforeTokens: before,
+		AfterTokens:  after,
+		DroppedTurns: dropped,
+		KeptRecent:   keptRecent,
 	}
 }
 

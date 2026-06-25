@@ -94,9 +94,9 @@ func (d *Dispatcher) Handle(ctx context.Context, msg messaging.IncomingMessage) 
 	case "push":
 		return d.cmdPush()
 	case "maintenance":
-		return d.cmdMaintenance()
+		return d.cmdMaintenance(ctx)
 	case "endday":
-		return d.cmdEndDay(msg)
+		return d.cmdEndDay(ctx, msg)
 	case "leave":
 		return d.cmdLeave(msg)
 	case "return":
@@ -120,10 +120,12 @@ func (d *Dispatcher) HandleStream(ctx context.Context, msg messaging.IncomingMes
 		// Commands are non-streaming. Buffer and return.
 		reply, err := d.Handle(ctx, msg)
 		if err != nil {
-			return err
+			return fmt.Errorf("handle_stream: Handle failed: %w", err)
 		}
 		if cb.OnDelta != nil && reply != "" {
-			return cb.OnDelta(reply)
+			if err := cb.OnDelta(reply); err != nil {
+				return fmt.Errorf("handle_stream: OnDelta failed: %w", err)
+			}
 		}
 		return nil
 	}
@@ -133,7 +135,9 @@ func (d *Dispatcher) HandleStream(ctx context.Context, msg messaging.IncomingMes
 		reply := fmt.Sprintf("**диалоги и действия**\n%s\n\n**КОНТЕКСТ И ИЗМЕНЕНИЯ**\nбез изменений\n\n**ВАЛИДАЦИЯ ПРАВИЛ**\n- Лимит слов: %d\n- Слов в ответе: %d\n- Превышен: %v\n- Запрещённые формы: %v\n",
 			msg.Text, d.cfg.Narrative.WordLimit, v.WordCount, v.OverLimit, v.ForbiddenForms)
 		if cb.OnDelta != nil {
-			return cb.OnDelta(reply)
+			if err := cb.OnDelta(reply); err != nil {
+				return fmt.Errorf("handle_stream: OnDelta failed: %w", err)
+			}
 		}
 		return nil
 	}
@@ -145,7 +149,7 @@ func (d *Dispatcher) HandleStream(ctx context.Context, msg messaging.IncomingMes
 		})
 	}
 	_, err := d.gm.Reply(ctx, msg.ChatID, msg.Text, cb)
-	return err
+	return fmt.Errorf("handle_stream: Reply failed: %w", err)
 }
 
 // ResendLast re-runs the GM on the last user message of the given
@@ -192,7 +196,7 @@ func (d *Dispatcher) cmdStart() (string, error) {
 	}
 	sc, err := d.ss.Start()
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("cmd_start: Start failed: %w", err)
 	}
 	warn := ""
 	if len(sc.Warnings) > 0 {
@@ -235,7 +239,7 @@ func (d *Dispatcher) cmdStatus() (string, error) {
 	}
 	sc, err := d.ss.Start()
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("cmd_status: Start failed: %w", err)
 	}
 	return fmt.Sprintf("Персонаж: %s\nМир: %s\n\n**world state**\n%s", sc.Character, sc.World, sc.State), nil
 }
@@ -252,13 +256,16 @@ func (d *Dispatcher) cmdMe() (string, error) {
 		return "Нет активной сессии. /launch сначала.", nil
 	}
 	raw, _ := d.fs.ReadRaw(storage.InfoFile)
-	parsed, err := domain.ParseInfo(raw)
-	if err != nil || parsed.ActiveCharacter == "" {
+	parsed, parseErr := domain.ParseInfo(raw)
+	if parseErr == nil && parsed.ActiveCharacter == "" {
 		return "Нет активного персонажа. /launch сначала.", nil
+	}
+	if parseErr != nil {
+		return "", parseErr
 	}
 	snap, err := d.tools.Read(parsed.ActiveCharacter, parsed.ActiveWorld)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("wrap: %w", err)
 	}
 	return usecase.FormatCharacterSnapshot(snap, 40), nil
 }
@@ -273,7 +280,7 @@ func (d *Dispatcher) cmdCommit(msg messaging.IncomingMessage) (string, error) {
 	}
 	res, err := d.git.CommitAll(commitMsg)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("cmd_commit: CommitAll failed: %w", err)
 	}
 	return d.formatCommitResult(res, false), nil
 }
@@ -288,7 +295,7 @@ func (d *Dispatcher) cmdSave(verbose bool) (string, error) {
 	}
 	res, err := d.git.CommitAll("auto: save")
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("cmd_save: CommitAll failed: %w", err)
 	}
 	body := d.formatCommitResult(res, verbose)
 	if d.git.RemoteDisabled() || res.Empty {
@@ -348,24 +355,24 @@ func (d *Dispatcher) cmdPush() (string, error) {
 		return "git push пропущен: remote_disabled=true (только локальные коммиты).", nil
 	}
 	if err := d.git.SyncRebase(); err != nil {
-		return "", err
+		return "", fmt.Errorf("cmd_push: %w", err)
 	}
 	return "git push выполнен.", nil
 }
 
-func (d *Dispatcher) cmdMaintenance() (string, error) {
+func (d *Dispatcher) cmdMaintenance(ctx context.Context) (string, error) {
 	if !d.fs.Exists(storage.InfoFile) {
 		return "Нет активного мира.", nil
 	}
 	sc, err := d.ss.Start()
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("cmd_maintenance: Start failed: %w", err)
 	}
 	touched, err := d.tools.MaintainNPCs(sc.World)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("cmd_maintenance: MaintainNPCs failed: %w", err)
 	}
-	d.commit(fmt.Sprintf("maintenance: %s", sc.World))
+	d.commit("maintenance: " + sc.World)
 	// Lore is compacted in the same /maintenance call
 	// so an operator can run the bot's daily cleanup
 	// with one command. Both paths are LLM-driven and
@@ -386,7 +393,7 @@ func (d *Dispatcher) cmdMaintenance() (string, error) {
 	return "Обслуживание выполнено. Выжимка NPC: не требуется.", nil
 }
 
-func (d *Dispatcher) cmdEndDay(msg messaging.IncomingMessage) (string, error) {
+func (d *Dispatcher) cmdEndDay(ctx context.Context, msg messaging.IncomingMessage) (string, error) {
 	if len(msg.Args) < 2 {
 		return "Использование: /endday <номер_дня> <краткая_выжимка...>", nil
 	}
@@ -397,10 +404,10 @@ func (d *Dispatcher) cmdEndDay(msg messaging.IncomingMessage) (string, error) {
 	summary := strings.Join(msg.Args[1:], " ")
 	sc, err := d.ss.Start()
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("cmd_archive: Start failed: %w", err)
 	}
 	if err := d.tools.ArchiveChronicleDay(context.Background(), sc.World, day, summary); err != nil {
-		return "", err
+		return "", fmt.Errorf("wrap: %w", err)
 	}
 	d.commit(fmt.Sprintf("День %d", day))
 	return fmt.Sprintf("День %d заархивирован в chronicle.", day), nil
@@ -417,11 +424,11 @@ func (d *Dispatcher) cmdLeave(msg messaging.IncomingMessage) (string, error) {
 	}
 	sc, err := d.ss.Start()
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("cmd_leave: Start failed: %w", err)
 	}
 	res, err := d.tools.Leave(sc.World, to, skip, sc.Character)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("wrap: %w", err)
 	}
 	d.commit(fmt.Sprintf("world leave: %s -> %s", sc.World, to))
 	out := fmt.Sprintf("Мир %s (день %d) покинут.\nАктивный мир: %s", res.FromWorld, res.FromDay, res.NewWorld)
@@ -439,9 +446,9 @@ func (d *Dispatcher) cmdReturn(msg messaging.IncomingMessage) (string, error) {
 	days := msg.Args[1]
 	note, err := d.tools.ReturnWorld(world, days)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("cmd_return: ReturnWorld failed: %w", err)
 	}
-	d.commit(fmt.Sprintf("world return: %s", world))
+	d.commit("world return: " + world)
 	return note, nil
 }
 
@@ -465,7 +472,7 @@ func (d *Dispatcher) cmdReload() (string, error) {
 	}
 	if r, ok := d.tools.(usecase.Reloadable); ok {
 		if err := r.Reload(); err != nil {
-			return "⚠️ reload: " + err.Error(), nil
+			return "⚠️ reload: " + err.Error(), nil //nolint:nilerr // UX: surface reload failure as a user-facing warning, not a transport error
 		}
 	}
 	// /reload forces the operator's hand-edited state.md /

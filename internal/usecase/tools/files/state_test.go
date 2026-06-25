@@ -2,6 +2,7 @@ package files
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -21,7 +22,11 @@ import (
 // readFile is a tiny shim around os.ReadFile kept here so
 // captureSlowlog doesn't need to import "os" itself.
 func readFile(path string) ([]byte, error) {
-	return os.ReadFile(path)
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read_file: %w", err)
+	}
+	return body, nil
 }
 
 // newTestToolset is the canonical fixture for state-level tests.
@@ -82,6 +87,7 @@ func captureSlowlog(t *testing.T) (*slowlog.Logger, func(kind string) []slowlog.
 // whitespace-normalised key against the existing list and
 // drops duplicates silently.
 func TestUpdateState_DedupesAppendEvents(t *testing.T) {
+	t.Parallel()
 	ts := newTestToolset(t)
 	// First call: seed the chronology with one event.
 	require.NoError(t, ts.UpdateState(tools.StateSnapshot{
@@ -126,6 +132,7 @@ func TestUpdateState_DedupesAppendEvents(t *testing.T) {
 // objects are NOT duplicates. "Ирука привёл" and
 // "Ирука повёл" are different beats.
 func TestUpdateState_PreservesGenuineNarrativeVariation(t *testing.T) {
+	t.Parallel()
 	ts := newTestToolset(t)
 	require.NoError(t, ts.UpdateState(tools.StateSnapshot{
 		Day:      1,
@@ -156,6 +163,7 @@ func TestUpdateState_PreservesGenuineNarrativeVariation(t *testing.T) {
 // "pad" the events array to its declared min length. The
 // normaliser drops empty events before the dedupe check.
 func TestUpdateState_EmptyEventIgnored(t *testing.T) {
+	t.Parallel()
 	ts := newTestToolset(t)
 	require.NoError(t, ts.UpdateState(tools.StateSnapshot{
 		Day:      1,
@@ -182,6 +190,7 @@ func TestUpdateState_EmptyEventIgnored(t *testing.T) {
 // description and this test together enforce the
 // "include all NPCs you mentioned" rule.
 func TestUpdateState_ReplacesNPCList(t *testing.T) {
+	t.Parallel()
 	ts := newTestToolset(t)
 	require.NoError(t, ts.UpdateState(tools.StateSnapshot{
 		Day: 1, InFlight: true, Moment: "m",
@@ -228,6 +237,7 @@ func newStateWithSlowlog(t *testing.T) (*State, func(kind string) []slowlog.Entr
 // after a session only sees "npcs: 5→7" but cannot tell
 // which 2 joined the roster.
 func TestUpdateState_SlowlogDeltaNPCAddedRemoved(t *testing.T) {
+	t.Parallel()
 	st, read := newStateWithSlowlog(t)
 	require.NoError(t, st.UpdateState(tools.StateSnapshot{
 		Day: 1, InFlight: true, Moment: "утро",
@@ -244,12 +254,12 @@ func TestUpdateState_SlowlogDeltaNPCAddedRemoved(t *testing.T) {
 
 	// First call: cold roster.
 	first := entries[0].Fields
-	assert.Equal(t, float64(1), first["day"])
+	assert.InDelta(t, float64(1), first["day"], 1e-9)
 	assert.Equal(t, "утро", first["moment"])
 	added := toStrSlice(t, first["npcs_added"])
 	assert.ElementsMatch(t, []string{"Ирука", "Какаши"}, added)
 	assert.Empty(t, toStrSlice(t, first["npcs_removed"]))
-	assert.Equal(t, float64(0), first["events_added"])
+	assert.InDelta(t, float64(0), first["events_added"], 1e-9)
 	assert.Equal(t, "worlds/naruto/state.yaml", first["path"])
 	assert.Greater(t, first["bytes"], float64(0))
 
@@ -258,7 +268,7 @@ func TestUpdateState_SlowlogDeltaNPCAddedRemoved(t *testing.T) {
 	assert.Equal(t, "день", second["moment"])
 	assert.ElementsMatch(t, []string{"Хината"}, toStrSlice(t, second["npcs_added"]))
 	assert.ElementsMatch(t, []string{"Какаши"}, toStrSlice(t, second["npcs_removed"]))
-	assert.Equal(t, float64(1), second["events_added"])
+	assert.InDelta(t, float64(1), second["events_added"], 1e-9)
 }
 
 // TestUpdateState_SlowlogNilSafe verifies that UpdateState
@@ -267,6 +277,7 @@ func TestUpdateState_SlowlogDeltaNPCAddedRemoved(t *testing.T) {
 // firstlaunch → newWorld.Launch, which constructs a
 // bare-bones State without a logger.
 func TestUpdateState_SlowlogNilSafe(t *testing.T) {
+	t.Parallel()
 	fs, err := storage.NewFileStore(t.TempDir())
 	require.NoError(t, err)
 	require.NoError(t, fs.EnsureDir("worlds/naruto/characters"))
@@ -313,12 +324,15 @@ func toStrSlice(t *testing.T, v any) []string {
 func renderStateBodyForTest(t *testing.T, ts *Toolset) (string, error) {
 	t.Helper()
 	info, err := ts.repos.Info.Load()
-	if err != nil || info.ActiveWorld == "" {
+	if err != nil {
+		return "", nil
+	}
+	if info.ActiveWorld == "" {
 		return "", nil
 	}
 	snap, err := ts.repos.WorldState.Load(info.ActiveWorld)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("snapshot_state: WorldState.Load failed: %w", err)
 	}
 	return yaml.RenderStateBody(snap)
 }

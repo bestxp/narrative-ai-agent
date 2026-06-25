@@ -17,8 +17,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/bestxp/narrative-ai-agent/internal/limits"
 	"gopkg.in/yaml.v3"
+
+	"github.com/bestxp/narrative-ai-agent/internal/limits"
 )
 
 // MaxStageRenderBytes is the hard cap on the rendered size of the
@@ -465,29 +466,29 @@ func normalizeDays(v interface{}) string {
 	}
 }
 
-func parseDaysRange(s string) (min, max int, err error) {
+func parseDaysRange(s string) (lo, hi int, err error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return 0, 0, nil
 	}
 	if strings.Contains(s, "-") {
 		parts := strings.SplitN(s, "-", 2)
-		min, err = strconv.Atoi(strings.TrimSpace(parts[0]))
+		lo, err = strconv.Atoi(strings.TrimSpace(parts[0]))
 		if err != nil {
-			return 0, 0, err
+			return 0, 0, fmt.Errorf("parse_days_range: Atoi failed: %w", err)
 		}
-		max, err = strconv.Atoi(strings.TrimSpace(parts[1]))
+		hi, err = strconv.Atoi(strings.TrimSpace(parts[1]))
 		if err != nil {
-			return 0, 0, err
+			return 0, 0, fmt.Errorf("wrap: %w", err)
 		}
-		if min > max {
-			return 0, 0, fmt.Errorf("min > max")
+		if lo > hi {
+			return 0, 0, errors.New("min > max")
 		}
-		return min, max, nil
+		return lo, hi, nil
 	}
 	n, err := strconv.Atoi(s)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, fmt.Errorf("wrap: %w", err)
 	}
 	return n, n, nil
 }

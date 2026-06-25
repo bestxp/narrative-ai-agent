@@ -43,6 +43,7 @@ func (e *testEnv) newChronicleRepo() *ChronicleYaml   { return NewChronicleYaml(
 func (e *testEnv) fs() storage.Storage { return e.store }
 
 func TestInfoYaml_RoundTrip(t *testing.T) {
+	t.Parallel()
 	env := newTestEnv(t)
 	r := env.newInfoRepo()
 	in := domain.Info{
@@ -62,6 +63,7 @@ func TestInfoYaml_RoundTrip(t *testing.T) {
 }
 
 func TestInfoYaml_LoadMissing(t *testing.T) {
+	t.Parallel()
 	env := newTestEnv(t)
 	out, err := env.newInfoRepo().Load()
 	require.NoError(t, err)
@@ -69,6 +71,7 @@ func TestInfoYaml_LoadMissing(t *testing.T) {
 }
 
 func TestWorldStateYaml_RoundTrip(t *testing.T) {
+	t.Parallel()
 	env := newTestEnv(t)
 	r := env.newWorldStateRepo()
 	in := domain.StateSnapshot{
@@ -88,6 +91,7 @@ func TestWorldStateYaml_RoundTrip(t *testing.T) {
 }
 
 func TestWorldStateYaml_AppendEvent(t *testing.T) {
+	t.Parallel()
 	env := newTestEnv(t)
 	r := env.newWorldStateRepo()
 	require.NoError(t, r.Save("naruto", domain.StateSnapshot{
@@ -104,6 +108,7 @@ func TestWorldStateYaml_AppendEvent(t *testing.T) {
 }
 
 func TestWorldStateYaml_EnsureExists(t *testing.T) {
+	t.Parallel()
 	env := newTestEnv(t)
 	r := env.newWorldStateRepo()
 	require.NoError(t, r.EnsureExists("naruto", 1, true))
@@ -119,6 +124,7 @@ func TestWorldStateYaml_EnsureExists(t *testing.T) {
 }
 
 func TestPlanYaml_RoundTrip(t *testing.T) {
+	t.Parallel()
 	env := newTestEnv(t)
 	r := env.newPlanRepo()
 	body := "## План\n- event 1\n- event 2\n- event 3\n"
@@ -129,6 +135,7 @@ func TestPlanYaml_RoundTrip(t *testing.T) {
 }
 
 func TestPlanYaml_ReplaceEvents(t *testing.T) {
+	t.Parallel()
 	env := newTestEnv(t)
 	r := env.newPlanRepo()
 	require.NoError(t, r.ReplaceEvents(t.Context(), "naruto", []string{"a", "b", "c"}))
@@ -138,15 +145,17 @@ func TestPlanYaml_ReplaceEvents(t *testing.T) {
 }
 
 func TestPlanYaml_ReplaceEvents_OutOfRange(t *testing.T) {
+	t.Parallel()
 	env := newTestEnv(t)
 	r := env.newPlanRepo()
 	err := r.ReplaceEvents(t.Context(), "naruto", []string{"a", "b"})
-	assert.Error(t, err)
+	require.Error(t, err)
 	err = r.ReplaceEvents(t.Context(), "naruto", []string{"a", "b", "c", "d", "e", "f"})
-	assert.Error(t, err)
+	require.Error(t, err)
 }
 
 func TestLoreYaml_RoundTrip(t *testing.T) {
+	t.Parallel()
 	env := newTestEnv(t)
 	r := env.newLoreRepo()
 	body := "## Header 1\n- bullet\n\n## Header 2\n- bullet 2\n"
@@ -157,6 +166,7 @@ func TestLoreYaml_RoundTrip(t *testing.T) {
 }
 
 func TestLoreYaml_AppendEntry(t *testing.T) {
+	t.Parallel()
 	env := newTestEnv(t)
 	r := env.newLoreRepo()
 	require.NoError(t, r.AppendEntry("naruto", "Header 1", "bullet 1"))
@@ -170,22 +180,24 @@ func TestLoreYaml_AppendEntry(t *testing.T) {
 }
 
 func TestLoreYaml_AppendEntry_EmptyRejected(t *testing.T) {
+	t.Parallel()
 	env := newTestEnv(t)
 	r := env.newLoreRepo()
 	err := r.AppendEntry("naruto", "", "x")
-	assert.Error(t, err)
+	require.Error(t, err)
 	err = r.AppendEntry("naruto", "x", "")
-	assert.Error(t, err)
+	require.Error(t, err)
 }
 
 func TestCanonYaml_Load(t *testing.T) {
+	t.Parallel()
 	env := newTestEnv(t)
 	r := env.newCanonRepo()
 	out, err := r.Load("naruto")
 	require.NoError(t, err)
-	assert.Equal(t, "", out)
+	assert.Empty(t, out)
 	body, _ := r.Load("naruto")
-	assert.Equal(t, "", body)
+	assert.Empty(t, body)
 
 	require.NoError(t, env.fs().Write("worlds/naruto/canon.md", []byte("# canon\n")))
 	out, _ = r.Load("naruto")
@@ -195,6 +207,7 @@ func TestCanonYaml_Load(t *testing.T) {
 }
 
 func TestChronicleYaml_RoundTrip(t *testing.T) {
+	t.Parallel()
 	env := newTestEnv(t)
 	r := env.newChronicleRepo()
 	in := chronicle.Chronicle{
@@ -207,16 +220,17 @@ func TestChronicleYaml_RoundTrip(t *testing.T) {
 
 	out, err := r.Load("naruto")
 	require.NoError(t, err)
-	assert.Equal(t, len(in.Periods), len(out.Periods))
+	assert.Len(t, out.Periods, len(in.Periods))
 	assert.Equal(t, in.Periods[0], out.Periods[0])
 	assert.Equal(t, "raw day 5", out.Days[5])
 }
 
 func TestChronicleYaml_LoadMissingReturnsEmpty(t *testing.T) {
+	t.Parallel()
 	env := newTestEnv(t)
 	r := env.newChronicleRepo()
 	out, err := r.Load("naruto")
 	require.NoError(t, err)
-	assert.Equal(t, 0, len(out.Periods))
-	assert.Equal(t, 0, len(out.Days))
+	assert.Empty(t, out.Periods)
+	assert.Empty(t, out.Days)
 }

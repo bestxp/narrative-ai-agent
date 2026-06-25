@@ -2,6 +2,7 @@ package usecase
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -599,7 +600,7 @@ func (s *Summarizer) SummarizeCharacterMemory(ctx context.Context, world, charac
 		return res, nil
 	}
 	if s.characterMemoryPrompt == "" {
-		return res, fmt.Errorf("summarizer: character_memory prompt not wired")
+		return res, errors.New("summarizer: character_memory prompt not wired")
 	}
 	if len(memoryBody) == 0 {
 		return res, nil
@@ -855,7 +856,7 @@ func (s *Summarizer) SummarizeInPlace(ctx context.Context, world string, day int
 		return res, nil
 	}
 	if s.compactionInPlacePrompt == "" {
-		return res, fmt.Errorf("summarizer: in-place compaction prompt not wired")
+		return res, errors.New("summarizer: in-place compaction prompt not wired")
 	}
 	if len(messages) == 0 {
 		return res, nil
@@ -934,7 +935,7 @@ func (s *Summarizer) SummarizeEndOfDay(ctx context.Context, world string, day in
 		return res, nil
 	}
 	if s.endOfDayPrompt == "" {
-		return res, fmt.Errorf("summarizer: end-of-day prompt not wired")
+		return res, errors.New("summarizer: end-of-day prompt not wired")
 	}
 	if len(messages) == 0 {
 		return res, nil

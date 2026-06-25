@@ -38,16 +38,19 @@ func newBufLogger() (zerolog.Logger, *strings.Builder) {
 }
 
 func TestIsRepo_True(t *testing.T) {
+	t.Parallel()
 	dir := initRepo(t)
 	assert.True(t, IsRepo(dir))
 }
 
 func TestIsRepo_False(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	assert.False(t, IsRepo(dir))
 }
 
 func TestCommitAll_NothingToCommitIsNoop(t *testing.T) {
+	t.Parallel()
 	dir := initRepo(t)
 	op := New(dir, "origin", "master", "Bot", "bot@x")
 	res, err := op.CommitAll("noop")
@@ -56,8 +59,9 @@ func TestCommitAll_NothingToCommitIsNoop(t *testing.T) {
 }
 
 func TestCommitAll_CommitsNewFile(t *testing.T) {
+	t.Parallel()
 	dir := initRepo(t)
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "a.md"), []byte("x"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "a.md"), []byte("x"), 0o600))
 	op := New(dir, "origin", "master", "Bot", "bot@x")
 	res, err := op.CommitAll("test commit")
 	require.NoError(t, err)
@@ -70,8 +74,9 @@ func TestCommitAll_CommitsNewFile(t *testing.T) {
 }
 
 func TestStatus_PorcelainOutput(t *testing.T) {
+	t.Parallel()
 	dir := initRepo(t)
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "a.md"), []byte("y"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "a.md"), []byte("y"), 0o600))
 	op := New(dir, "origin", "master", "Bot", "bot@x")
 	out, err := op.Status()
 	require.NoError(t, err)
@@ -79,16 +84,18 @@ func TestStatus_PorcelainOutput(t *testing.T) {
 }
 
 func TestCommitAll_LogsInfo(t *testing.T) {
+	t.Parallel()
 	dir := initRepo(t)
 	log, buf := newBufLogger()
 	op := NewWithLogger(dir, "origin", "master", "Bot", "bot@x", false, log)
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "a.md"), []byte("x"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "a.md"), []byte("x"), 0o600))
 	_, err := op.CommitAll("logged commit")
 	require.NoError(t, err)
 	assert.Contains(t, buf.String(), "git commit")
 }
 
 func TestCommitAll_LogsDebugOnNoop(t *testing.T) {
+	t.Parallel()
 	dir := initRepo(t)
 	log, buf := newBufLogger()
 	op := NewWithLogger(dir, "origin", "master", "Bot", "bot@x", false, log)
@@ -98,6 +105,7 @@ func TestCommitAll_LogsDebugOnNoop(t *testing.T) {
 }
 
 func TestRun_LogsFailure(t *testing.T) {
+	t.Parallel()
 	dir := initRepo(t)
 	log, buf := newBufLogger()
 	op := NewWithLogger(dir, "origin", "master", "Bot", "bot@x", false, log)
@@ -106,6 +114,7 @@ func TestRun_LogsFailure(t *testing.T) {
 }
 
 func TestSyncRebase_RemoteDisabledReturnsError(t *testing.T) {
+	t.Parallel()
 	dir := initRepo(t)
 	op := New(dir, "origin", "master", "Bot", "bot@x")
 	op.remoteDisabled = true
@@ -114,6 +123,7 @@ func TestSyncRebase_RemoteDisabledReturnsError(t *testing.T) {
 }
 
 func TestSyncRebase_RemoteDisabled_DoesNotTouchNetwork(t *testing.T) {
+	t.Parallel()
 	// If SyncRebase were to call `git pull` while remoteDisabled
 	// is true, the test would try to talk to a non-existent remote
 	// and fail with a different error. We assert that no network
@@ -122,17 +132,19 @@ func TestSyncRebase_RemoteDisabled_DoesNotTouchNetwork(t *testing.T) {
 	log, buf := newBufLogger()
 	op := NewWithLogger(dir, "origin", "master", "Bot", "bot@x", true, log)
 	err := op.SyncRebase()
-	assert.ErrorIs(t, err, ErrRemoteDisabled)
+	require.ErrorIs(t, err, ErrRemoteDisabled)
 	assert.Contains(t, buf.String(), "git push skipped")
 }
 
 func TestRemoteDisabled_DefaultFalse(t *testing.T) {
+	t.Parallel()
 	dir := initRepo(t)
 	op := New(dir, "origin", "master", "Bot", "bot@x")
 	assert.False(t, op.RemoteDisabled())
 }
 
 func TestRemoteDisabled_ReflectsConfig(t *testing.T) {
+	t.Parallel()
 	dir := initRepo(t)
 	op := NewWithLogger(dir, "origin", "master", "Bot", "bot@x", true, zerolog.Nop())
 	assert.True(t, op.RemoteDisabled())

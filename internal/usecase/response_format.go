@@ -24,14 +24,14 @@ func NewResponseFormat(wordLimit int, language string) *ResponseFormat {
 }
 
 type Validation struct {
-	HasDialogue       bool
-	HasContextBlock   bool
-	HasFutureBlock    bool
-	HasValidationBlk  bool
-	WordCount         int
-	OverLimit         bool
-	LatinOnly         bool
-	ForbiddenForms    []string
+	HasDialogue      bool
+	HasContextBlock  bool
+	HasFutureBlock   bool
+	HasValidationBlk bool
+	WordCount        int
+	OverLimit        bool
+	LatinOnly        bool
+	ForbiddenForms   []string
 }
 
 // Validate checks structural compliance. It is intentionally lenient:
@@ -60,8 +60,8 @@ func (r *ResponseFormat) Validate(body string) Validation {
 }
 
 var (
-	cjkRe       = regexp.MustCompile(`[\p{Han}\p{Hiragana}\p{Katakana}]`)
-	cyrillicRe  = regexp.MustCompile(`[\p{Cyrillic}]`)
+	cjkRe      = regexp.MustCompile(`[\p{Han}\p{Hiragana}\p{Katakana}]`)
+	cyrillicRe = regexp.MustCompile(`[\p{Cyrillic}]`)
 )
 
 // looksLikePlayerOutput returns true if the body is mostly latin —

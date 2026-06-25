@@ -2,6 +2,7 @@ package yaml
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -31,14 +32,17 @@ func NewPlanYaml(store storage.Storage) *PlanYaml {
 func (r *PlanYaml) Load(world string) (string, error) {
 	body, err := r.store.Read(planKey(world))
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("plan_load: Read failed: %w", err)
 	}
 	return string(body), nil
 }
 
 // Save persists the plan body.
 func (r *PlanYaml) Save(world, body string) error {
-	return r.store.Write(planKey(world), []byte(body))
+	if err := r.store.Write(planKey(world), []byte(body)); err != nil {
+		return fmt.Errorf("save: %w", err)
+	}
+	return nil
 }
 
 // ReplaceEvents rewrites plan.md with the given
@@ -82,14 +86,17 @@ func NewLoreYaml(store storage.Storage) *LoreYaml {
 func (r *LoreYaml) Load(world string) (string, error) {
 	body, err := r.store.Read(loreKey(world))
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("lore_load: Read failed: %w", err)
 	}
 	return string(body), nil
 }
 
 // Save persists the lore body.
 func (r *LoreYaml) Save(world, body string) error {
-	return r.store.Write(loreKey(world), []byte(body))
+	if err := r.store.Write(loreKey(world), []byte(body)); err != nil {
+		return fmt.Errorf("save: %w", err)
+	}
+	return nil
 }
 
 // AppendEntry adds a new `## header\n- bullet` block to
@@ -98,7 +105,7 @@ func (r *LoreYaml) AppendEntry(world, header, bullet string) error {
 	header = strings.TrimSpace(header)
 	bullet = strings.TrimSpace(bullet)
 	if header == "" || bullet == "" {
-		return fmt.Errorf("lore: empty header or bullet")
+		return errors.New("lore: empty header or bullet")
 	}
 	current, err := r.Load(world)
 	if err != nil {
@@ -132,7 +139,7 @@ func NewCanonYaml(store storage.Storage) *CanonYaml {
 func (r *CanonYaml) Load(world string) (string, error) {
 	body, err := r.store.Read(canonKey(world))
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("canon_load: Read failed: %w", err)
 	}
 	return string(body), nil
 }

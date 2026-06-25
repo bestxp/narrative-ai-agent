@@ -18,6 +18,7 @@ import (
 )
 
 func TestSummarizer_NotConfigured(t *testing.T) {
+	t.Parallel()
 	// nil summarizer is the "no summary role wired" case.
 	var s *Summarizer
 	assert.False(t, s.IsConfigured())
@@ -27,6 +28,7 @@ func TestSummarizer_NotConfigured(t *testing.T) {
 }
 
 func TestSummarizer_EmptyMessagesSkips(t *testing.T) {
+	t.Parallel()
 	fake := &fakeLLM{}
 	s := NewSummarizer(fake, llm.RoleConfig{Model: "summary", MaxTokens: 500, Temperature: 0.2}, "system", slowlog.Discard(), discardLogger())
 	assert.True(t, s.IsConfigured())
@@ -36,6 +38,7 @@ func TestSummarizer_EmptyMessagesSkips(t *testing.T) {
 }
 
 func TestSummarizer_HappyPath(t *testing.T) {
+	t.Parallel()
 	fake := &fakeLLM{}
 	fake.rounds = [][]fakeChunk{
 		{
@@ -55,12 +58,13 @@ func TestSummarizer_HappyPath(t *testing.T) {
 	res, err := s.SummarizeOldTurns(context.Background(), msgs)
 	require.NoError(t, err)
 	assert.Equal(t, "summary", res.Source)
-	assert.Greater(t, res.Tokens, 0)
+	assert.Positive(t, res.Tokens)
 	assert.Contains(t, res.Text, "Аньбу")
 	assert.Contains(t, res.Text, "Хокаге")
 }
 
 func TestSummarizer_FallbackMode(t *testing.T) {
+	t.Parallel()
 	fake := &fakeLLM{}
 	fake.rounds = [][]fakeChunk{
 		{{content: "- compact summary", finish: "stop"}},
@@ -73,7 +77,7 @@ func TestSummarizer_FallbackMode(t *testing.T) {
 	}, "system-prompt", slowlog.Discard(), discardLogger())
 	assert.True(t, s.IsFallback())
 	assert.Equal(t, 500, s.role.MaxTokens, "fallback must clamp max_tokens")
-	assert.Equal(t, 0.2, s.role.Temperature, "fallback must clamp temperature")
+	assert.InDelta(t, 0.2, s.role.Temperature, 1e-9, "fallback must clamp temperature")
 
 	res, err := s.SummarizeOldTurns(context.Background(), []llm.Message{
 		{Role: "user", Content: "hello"},
@@ -83,6 +87,7 @@ func TestSummarizer_FallbackMode(t *testing.T) {
 }
 
 func TestSummarizer_FallbackKeepsLowValues(t *testing.T) {
+	t.Parallel()
 	// If the operator already configured a tame narrative
 	// role (low temp, small max_tokens) the fallback
 	// constructor should not inflate them.
@@ -90,10 +95,11 @@ func TestSummarizer_FallbackKeepsLowValues(t *testing.T) {
 		Model: "narrative", MaxTokens: 200, Temperature: 0.3,
 	}, "system", slowlog.Discard(), discardLogger())
 	assert.Equal(t, 200, s.role.MaxTokens)
-	assert.Equal(t, 0.3, s.role.Temperature, "fallback should not lower a temperature that is already in the safe range")
+	assert.InDelta(t, 0.3, s.role.Temperature, 1e-9, "fallback should not lower a temperature that is already in the safe range")
 }
 
 func TestSummarizer_StreamErrorReturned(t *testing.T) {
+	t.Parallel()
 	// Empty rounds means fakeLLM fires no chunks and returns
 	// nil — our summarizer treats empty response as error.
 	fake := &fakeLLM{}
@@ -103,6 +109,7 @@ func TestSummarizer_StreamErrorReturned(t *testing.T) {
 }
 
 func TestRenderTurnsForSummary_AllRoles(t *testing.T) {
+	t.Parallel()
 	msgs := []llm.Message{
 		{Role: "user", Content: "hello"},
 		{Role: "assistant", Content: "hi there"},
@@ -117,6 +124,7 @@ func TestRenderTurnsForSummary_AllRoles(t *testing.T) {
 }
 
 func TestRenderTurnsForSummary_AssistantWithToolCalls(t *testing.T) {
+	t.Parallel()
 	msgs := []llm.Message{
 		{Role: "assistant", ToolCalls: []llm.ToolCall{
 			{Function: llm.FunctionCall{Name: "end_day", Arguments: `{}`}},
@@ -130,6 +138,7 @@ func TestRenderTurnsForSummary_AssistantWithToolCalls(t *testing.T) {
 }
 
 func TestAppendHistoryToState_AppendsToEnd(t *testing.T) {
+	t.Parallel()
 	fs, _ := storage.NewFileStore(t.TempDir())
 	require.NoError(t, fs.WriteRawAtomic("info.yaml", "active_world: naruto\n"))
 	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/state.yaml",
@@ -148,6 +157,7 @@ func TestAppendHistoryToState_AppendsToEnd(t *testing.T) {
 }
 
 func TestAppendHistoryToState_EmptySummaryNoop(t *testing.T) {
+	t.Parallel()
 	fs, _ := storage.NewFileStore(t.TempDir())
 	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/state.yaml", "state:\n  world: naruto\n"))
 	yamlStore, _ := yamlfs.New(fs.Root())
@@ -159,6 +169,7 @@ func TestAppendHistoryToState_EmptySummaryNoop(t *testing.T) {
 }
 
 func TestAppendHistoryToState_EmptyWorldErrors(t *testing.T) {
+	t.Parallel()
 	fs, _ := storage.NewFileStore(t.TempDir())
 	yamlStore, _ := yamlfs.New(fs.Root())
 	repos := api.NewYamlRepositories(yamlStore)

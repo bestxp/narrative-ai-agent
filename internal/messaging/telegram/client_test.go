@@ -2,7 +2,6 @@ package telegram
 
 import (
 	"context"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -22,6 +21,7 @@ func discardLogger() zerolog.Logger {
 }
 
 func TestIsAllowed(t *testing.T) {
+	t.Parallel()
 	c := &Client{cfg: Config{AllowedUserIDs: []int{1, 2, 3}}}
 	assert.True(t, c.IsAllowed("1"))
 	assert.True(t, c.IsAllowed("2"))
@@ -30,23 +30,27 @@ func TestIsAllowed(t *testing.T) {
 }
 
 func TestName(t *testing.T) {
+	t.Parallel()
 	c := &Client{}
 	assert.Equal(t, "telegram", c.Name())
 }
 
 func TestParseChatID(t *testing.T) {
+	t.Parallel()
 	assert.Equal(t, int64(12345), parseChatID("12345"))
 	assert.Equal(t, int64(0), parseChatID("garbage"))
 	assert.Equal(t, int64(-1), parseChatID("-1"))
 }
 
 func TestNew_RejectsEmptyToken(t *testing.T) {
+	t.Parallel()
 	_, err := New(Config{Token: ""}, discardLogger())
 	require.Error(t, err)
-	assert.True(t, strings.Contains(err.Error(), "token"))
+	assert.Contains(t, err.Error(), "token")
 }
 
 func TestThrottledStream_FirstAppendGoesImmediately(t *testing.T) {
+	t.Parallel()
 	inner := &recordingStream{}
 	th := NewThrottledStream(inner)
 
@@ -67,6 +71,7 @@ func TestThrottledStream_FirstAppendGoesImmediately(t *testing.T) {
 // from the throttle layer's perspective both calls return
 // promptly without sleeping.
 func TestThrottledStream_FinalIsIdempotent(t *testing.T) {
+	t.Parallel()
 	rec := &recordingStream{}
 	th := NewThrottledStream(rec)
 	start := time.Now()

@@ -2,6 +2,7 @@ package files
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/rs/zerolog"
@@ -132,8 +133,8 @@ func (n *NPC) Create(world string, p tools.NPCProfile) error {
 	if err == nil {
 		return ErrNPCExists
 	}
-	if err != npcprofile.ErrNotFound {
-		return err
+	if !errors.Is(err, npcprofile.ErrNotFound) {
+		return fmt.Errorf("create_npc: NPCProfile.Load failed: %w", err)
 	}
 
 	// Build the canonical profile.
@@ -187,7 +188,7 @@ func (n *NPC) Create(world string, p tools.NPCProfile) error {
 	profile.LastUpdate = strings.TrimSpace(p.LastUpdate)
 
 	if err := n.repos.NPCProfile.Save(world, slug, profile); err != nil {
-		return err
+		return fmt.Errorf("create_npc: NPCProfile.Save failed: %w", err)
 	}
 
 	// Append to the YAML registry. We dedup on slug via
@@ -241,7 +242,7 @@ func (n *NPC) LoadLOD(world, npc string, lod tools.NPCLOD) (string, error) {
 	}
 	profile, err := n.repos.NPCProfile.Load(world, slug)
 	if err != nil {
-		if err == npcprofile.ErrNotFound {
+		if errors.Is(err, npcprofile.ErrNotFound) {
 			return "", ErrNPCNotFound
 		}
 		return "", err
@@ -250,7 +251,7 @@ func (n *NPC) LoadLOD(world, npc string, lod tools.NPCLOD) (string, error) {
 	case tools.LODFull:
 		body, err := profile.BuildMarkdown()
 		if err != nil {
-			return "", err
+			return "", fmt.Errorf("load_lod: BuildMarkdown failed: %w", err)
 		}
 		return body, nil
 	case tools.LODCompact:
@@ -260,7 +261,7 @@ func (n *NPC) LoadLOD(world, npc string, lod tools.NPCLOD) (string, error) {
 	}
 	body, err := profile.BuildMarkdown()
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("load_lod: BuildMarkdown failed: %w", err)
 	}
 	return body, nil
 }
@@ -270,11 +271,11 @@ func (n *NPC) LoadLOD(world, npc string, lod tools.NPCLOD) (string, error) {
 func (n *NPC) UpdateNPC(world, npc, section, appendText string) error {
 	slug, err := n.resolveSlug(world, npc)
 	if err != nil {
-		return err
+		return fmt.Errorf("update_npc: resolveSlug failed: %w", err)
 	}
 	ok, err := n.repos.NPCProfile.UpdateSection(world, slug, section, appendText)
 	if err != nil {
-		return err
+		return fmt.Errorf("update_npc: UpdateSection failed: %w", err)
 	}
 	if !ok {
 		n.log.Debug().
@@ -310,12 +311,9 @@ type SearchResult struct {
 
 // Search resolves a free-form query against the world's
 // NPC registry and returns a compact description.
-func (n *NPC) Search(world, query string) (result *SearchResult, err error) {
+func (n *NPC) Search(world, query string) (*SearchResult, error) {
 	defer func() {
-		if r := recover(); r != nil {
-			result = nil
-			err = nil
-		}
+		_ = recover()
 	}()
 	r := n.loadRegistry(world)
 	entry, ok := r.Lookup(query)

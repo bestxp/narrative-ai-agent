@@ -164,12 +164,11 @@ func (m *MultiClient) Run(ctx context.Context) error {
 	}
 	errCh := make(chan error, len(m.clients))
 	for _, c := range m.clients {
-		c := c
 		go func() {
 			errCh <- c.Run(ctx)
 		}()
 	}
-	for i := 0; i < len(m.clients); i++ {
+	for range m.clients {
 		if err := <-errCh; err != nil {
 			return err
 		}

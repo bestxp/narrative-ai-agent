@@ -3,6 +3,7 @@ package yaml
 import (
 	"strings"
 
+	"fmt"
 	"github.com/bestxp/narrative-ai-agent/internal/domain"
 	"github.com/bestxp/narrative-ai-agent/internal/storage"
 )
@@ -32,7 +33,7 @@ func NewInfoYaml(store storage.Storage) *InfoYaml {
 func (r *InfoYaml) Load() (domain.Info, error) {
 	body, err := r.store.Read(infoYamlKey)
 	if err != nil {
-		return domain.Info{}, err
+		return domain.Info{}, fmt.Errorf("info_load: Read failed: %w", err)
 	}
 	bodyStr := string(body)
 	if strings.TrimSpace(bodyStr) == "" {
@@ -45,7 +46,7 @@ func (r *InfoYaml) Load() (domain.Info, error) {
 func (r *InfoYaml) Save(info domain.Info) error {
 	body, err := info.MarshalInfo()
 	if err != nil {
-		return err
+		return fmt.Errorf("save: MarshalInfo failed: %w", err)
 	}
 	return r.store.Write(infoYamlKey, []byte(body))
 }

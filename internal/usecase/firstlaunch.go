@@ -6,11 +6,12 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/rs/zerolog"
+
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
 	"github.com/bestxp/narrative-ai-agent/internal/charprofile"
 	"github.com/bestxp/narrative-ai-agent/internal/domain"
 	"github.com/bestxp/narrative-ai-agent/internal/repository/api"
-	"github.com/rs/zerolog"
 )
 
 // FirstLaunch creates the entire on-disk skeleton for a new player +
@@ -68,7 +69,7 @@ func (f *FirstLaunch) Launch(char CharacterSpec, world WorldSpec) error {
 		return err
 	}
 	if err := f.fs.WriteRawAtomic(storage.InfoFile, domain.BuildInfo(charDir, worldDir, nil, nil)); err != nil {
-		return err
+		return fmt.Errorf("wrap: %w", err)
 	}
 	f.log.Info().Str("character", charDir).Str("world", worldDir).Msg("first_launch")
 	return nil
@@ -102,16 +103,16 @@ func (f *FirstLaunch) ensureStateExists(world string, day int, inFlight bool) er
 func (f *FirstLaunch) writeCharacter(dir string, c CharacterSpec) error {
 	root := "characters/" + dir
 	if err := f.fs.EnsureDir(root); err != nil {
-		return err
+		return fmt.Errorf("write_character: %w", err)
 	}
 	if err := f.fs.WriteRawAtomic(root+"/SOUL.yaml", buildSeedSoul(c)); err != nil {
-		return err
+		return fmt.Errorf("write_character: %w", err)
 	}
 	if err := f.fs.WriteRawAtomic(root+"/skill.yaml", buildSeedSkill(c)); err != nil {
-		return err
+		return fmt.Errorf("write_character: %w", err)
 	}
 	if err := f.fs.WriteRawAtomic(root+"/memory.yaml", buildSeedMemory(c)); err != nil {
-		return err
+		return fmt.Errorf("write_character: %w", err)
 	}
 	return f.fs.WriteRawAtomic(root+"/inventory.yaml", buildSeedInventory(c))
 }
@@ -157,7 +158,7 @@ func buildSeedSoul(c CharacterSpec) string {
 // is the canonical place for the display name; the
 // other three files (skill / memory / inventory)
 // derive their identity from the directory.
-func buildSeedSkill(c CharacterSpec) string {
+func buildSeedSkill(_ CharacterSpec) string {
 	s := charprofile.Skill{}
 	for _, name := range charprofile.SkillFixedSections {
 		s.Data = append(s.Data, charprofile.Section{Name: name})
@@ -174,7 +175,7 @@ func buildSeedSkill(c CharacterSpec) string {
 // section headers are self-describing.
 //
 // The character name is NOT seeded here.
-func buildSeedMemory(c CharacterSpec) string {
+func buildSeedMemory(_ CharacterSpec) string {
 	m := charprofile.Memory{}
 	for _, name := range charprofile.MemoryFixedSections {
 		m.Data = append(m.Data, charprofile.Section{Name: name})
@@ -187,7 +188,7 @@ func buildSeedMemory(c CharacterSpec) string {
 // inventory.yaml seed: an empty file with empty
 // currency and items arrays. The model will
 // start adding items on the first scene.
-func buildSeedInventory(c CharacterSpec) string {
+func buildSeedInventory(_ CharacterSpec) string {
 	inv := charprofile.Inventory{}
 	out, _ := inv.Save()
 	return out
@@ -196,11 +197,11 @@ func buildSeedInventory(c CharacterSpec) string {
 func (f *FirstLaunch) writeWorld(dir string, w WorldSpec) error {
 	root := "worlds/" + dir
 	if err := f.fs.EnsureDir(root + "/characters"); err != nil {
-		return err
+		return fmt.Errorf("write_world: %w", err)
 	}
 	canon := "# " + strings.TrimSpace(w.DisplayName) + " — канон/сценарий\n" + strings.TrimSpace(w.Canon) + "\n"
 	if err := f.fs.WriteRawAtomic(root+"/canon.md", canon); err != nil {
-		return err
+		return fmt.Errorf("write_world: %w", err)
 	}
 	// planning/0001: state.yaml is the single
 	// runtime snapshot file. ensureStateExists
@@ -217,16 +218,16 @@ func (f *FirstLaunch) writeWorld(dir string, w WorldSpec) error {
 	}
 	lore := "# Мир " + strings.TrimSpace(w.DisplayName) + "\nКанон актуален, если игрок не вносит изменения.\n"
 	if err := f.fs.WriteRawAtomic(root+"/lore.md", lore); err != nil {
-		return err
+		return fmt.Errorf("write_world: %w", err)
 	}
 	if err := f.fs.WriteRawAtomic(root+"/plan.md", defaultPlan(dir)); err != nil {
-		return err
+		return fmt.Errorf("write_world: %w", err)
 	}
 	if err := f.fs.WriteRawAtomic(root+"/chronicle.yaml", "days: {}\nperiods: []\n"); err != nil {
-		return err
+		return fmt.Errorf("write_world: %w", err)
 	}
 	if err := f.fs.WriteRawAtomic(root+"/staging.yaml", defaultStaging(dir)); err != nil {
-		return err
+		return fmt.Errorf("write_world: %w", err)
 	}
 	// The NPC registry (characters.yaml) is NOT seeded
 	// here. It is created lazily on the first

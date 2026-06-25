@@ -67,7 +67,7 @@ func (s *SessionStart) Start() (*SessionContext, error) {
 	}
 	infoRaw, err := s.fs.ReadRaw(storage.InfoFile)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("start: ReadRaw failed: %w", err)
 	}
 	if infoRaw == "" {
 		return nil, ErrNoActiveSession

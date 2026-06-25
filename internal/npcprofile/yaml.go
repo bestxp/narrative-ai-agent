@@ -147,6 +147,7 @@ func Load(body string) (Profile, error) {
 	if err := yaml.Unmarshal([]byte(body), &p); err != nil {
 		return Profile{}, fmt.Errorf("npcprofile: yaml.Unmarshal: %w", err)
 	}
+
 	return p, nil
 }
 
@@ -161,6 +162,7 @@ func (p Profile) Save() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("npcprofile: yaml.Marshal: %w", err)
 	}
+
 	return string(out), nil
 }
 
@@ -214,6 +216,7 @@ func (p Profile) BuildMarkdown() (string, error) {
 	return prompts.Render("npc_profile.md.tmpl", prompts.PromptData{
 		NPCProfile: data,
 	})
+
 }
 
 // BuildCompact renders a medium-detail view of the
@@ -350,6 +353,8 @@ func (k SectionKind) CanonicalSectionName() string {
 		return "Никнеймы"
 	case SectionLastUpdate:
 		return "Последнее обновление"
+	case SectionUnknown:
+		return ""
 	}
 	return ""
 }
@@ -470,6 +475,8 @@ func (p *Profile) UpdateSection(kind SectionKind, text string) bool {
 		return appendUnique(&p.Nicknames, text)
 	case SectionRelationsNPCs:
 		return p.updateRelation(text)
+	case SectionUnknown:
+		return false
 	}
 	return false
 }

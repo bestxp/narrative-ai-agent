@@ -1,6 +1,7 @@
 package usecase
 
 import (
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -32,7 +33,11 @@ func discardLogger() zerolog.Logger {
 // directly in the body works too — the helper just keeps the test
 // code symmetrical with the production code that uses io.
 func readWhole(path string) ([]byte, error) {
-	return os.ReadFile(path)
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read_whole: %w", err)
+	}
+	return body, nil
 }
 
 // seedWorld bootstraps an empty `world` directory so tests

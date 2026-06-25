@@ -32,6 +32,7 @@ last_update: "День 3, обед в Ичираку"
 `
 
 func TestLoad_OK(t *testing.T) {
+	t.Parallel()
 	p, err := Load(fullYAML)
 	require.NoError(t, err)
 	assert.Equal(t, "Хината Хьюга", p.DisplayName)
@@ -56,18 +57,21 @@ func TestLoad_OK(t *testing.T) {
 }
 
 func TestLoad_Empty(t *testing.T) {
+	t.Parallel()
 	_, err := Load("")
-	assert.ErrorIs(t, err, ErrNotFound)
+	require.ErrorIs(t, err, ErrNotFound)
 	_, err = Load("   \n\t  ")
-	assert.ErrorIs(t, err, ErrNotFound)
+	require.ErrorIs(t, err, ErrNotFound)
 }
 
 func TestLoad_BadYAML(t *testing.T) {
+	t.Parallel()
 	_, err := Load("display_name: [unclosed")
 	assert.Error(t, err)
 }
 
 func TestSave_RoundTrip(t *testing.T) {
+	t.Parallel()
 	p, err := Load(fullYAML)
 	require.NoError(t, err)
 	out, err := p.Save()
@@ -78,6 +82,7 @@ func TestSave_RoundTrip(t *testing.T) {
 }
 
 func TestBuildMarkdown_AllSections(t *testing.T) {
+	t.Parallel()
 	p, err := Load(fullYAML)
 	require.NoError(t, err)
 	md, err := p.BuildMarkdown()
@@ -105,6 +110,7 @@ func TestBuildMarkdown_AllSections(t *testing.T) {
 }
 
 func TestBuildMarkdown_EmptySectionsOmitted(t *testing.T) {
+	t.Parallel()
 	p := Profile{
 		DisplayName: "Ирука",
 		FileSlug:    "iruka",
@@ -120,6 +126,7 @@ func TestBuildMarkdown_EmptySectionsOmitted(t *testing.T) {
 }
 
 func TestMatchSection(t *testing.T) {
+	t.Parallel()
 	cases := map[string]SectionKind{
 		"темперамент":          SectionTemperament,
 		"Темперамент":          SectionTemperament,
@@ -150,6 +157,7 @@ func TestMatchSection(t *testing.T) {
 }
 
 func TestUpdateSection_Replace(t *testing.T) {
+	t.Parallel()
 	p, _ := Load(fullYAML)
 	changed := p.UpdateSection(SectionTemperament, "Другая черта")
 	assert.True(t, changed)
@@ -157,12 +165,14 @@ func TestUpdateSection_Replace(t *testing.T) {
 }
 
 func TestUpdateSection_ReplaceSameTextNoop(t *testing.T) {
+	t.Parallel()
 	p, _ := Load(fullYAML)
 	changed := p.UpdateSection(SectionTemperament, p.Temperament)
 	assert.False(t, changed)
 }
 
 func TestUpdateSection_EmptyTextNoop(t *testing.T) {
+	t.Parallel()
 	p, _ := Load(fullYAML)
 	changed := p.UpdateSection(SectionTemperament, "   ")
 	assert.False(t, changed)
@@ -170,6 +180,7 @@ func TestUpdateSection_EmptyTextNoop(t *testing.T) {
 }
 
 func TestUpdateSection_AppendAbility(t *testing.T) {
+	t.Parallel()
 	p, _ := Load(fullYAML)
 	changed := p.UpdateSection(SectionAbilities, "Илливой техника")
 	assert.True(t, changed)
@@ -177,14 +188,16 @@ func TestUpdateSection_AppendAbility(t *testing.T) {
 }
 
 func TestUpdateSection_DedupAbility(t *testing.T) {
+	t.Parallel()
 	p, _ := Load(fullYAML)
 	before := len(p.Abilities)
 	changed := p.UpdateSection(SectionAbilities, p.Abilities[0])
 	assert.False(t, changed)
-	assert.Equal(t, before, len(p.Abilities))
+	assert.Len(t, p.Abilities, before)
 }
 
 func TestUpdateSection_AppendPersonalMemory(t *testing.T) {
+	t.Parallel()
 	p, _ := Load(fullYAML)
 	changed := p.UpdateSection(SectionPersonalMemory, "День 4: новый факт")
 	assert.True(t, changed)
@@ -192,14 +205,16 @@ func TestUpdateSection_AppendPersonalMemory(t *testing.T) {
 }
 
 func TestUpdateSection_PersonalMemoryCaseInsensitiveDedup(t *testing.T) {
+	t.Parallel()
 	p, _ := Load(fullYAML)
 	before := len(p.PersonalMemory)
 	changed := p.UpdateSection(SectionPersonalMemory, strings.ToUpper(p.PersonalMemory[0]))
 	assert.False(t, changed)
-	assert.Equal(t, before, len(p.PersonalMemory))
+	assert.Len(t, p.PersonalMemory, before)
 }
 
 func TestUpdateSection_AppendRelation(t *testing.T) {
+	t.Parallel()
 	p, _ := Load(fullYAML)
 	changed := p.UpdateSection(SectionRelationsNPCs, "Саске: неприязнь")
 	assert.True(t, changed)
@@ -209,6 +224,7 @@ func TestUpdateSection_AppendRelation(t *testing.T) {
 }
 
 func TestUpdateSection_ReplaceExistingRelation(t *testing.T) {
+	t.Parallel()
 	p, _ := Load(fullYAML)
 	changed := p.UpdateSection(SectionRelationsNPCs, "Наруто: помирились, отклонение от канона")
 	assert.True(t, changed)
@@ -219,15 +235,17 @@ func TestUpdateSection_ReplaceExistingRelation(t *testing.T) {
 }
 
 func TestUpdateSection_RelationNoColon(t *testing.T) {
+	t.Parallel()
 	p := Profile{DisplayName: "X"}
 	changed := p.UpdateSection(SectionRelationsNPCs, "Саске")
 	assert.True(t, changed)
 	require.Len(t, p.RelationsNPCs, 1)
 	assert.Equal(t, "Саске", p.RelationsNPCs[0].Target)
-	assert.Equal(t, "", p.RelationsNPCs[0].Note)
+	assert.Empty(t, p.RelationsNPCs[0].Note)
 }
 
 func TestUpdateSection_AppendNickname(t *testing.T) {
+	t.Parallel()
 	p, _ := Load(fullYAML)
 	changed := p.UpdateSection(SectionNicknames, "Хината-сама")
 	assert.True(t, changed)
@@ -235,6 +253,7 @@ func TestUpdateSection_AppendNickname(t *testing.T) {
 }
 
 func TestUpdateSection_AppendCriticalKnowledge(t *testing.T) {
+	t.Parallel()
 	p, _ := Load(fullYAML)
 	changed := p.UpdateSection(SectionCriticalKnowledge, "Тайна клана Хьюга")
 	assert.True(t, changed)
@@ -242,6 +261,7 @@ func TestUpdateSection_AppendCriticalKnowledge(t *testing.T) {
 }
 
 func TestUpdateSection_LastUpdateReplace(t *testing.T) {
+	t.Parallel()
 	p, _ := Load(fullYAML)
 	changed := p.UpdateSection(SectionLastUpdate, "День 5, новая сцена")
 	assert.True(t, changed)
@@ -249,12 +269,14 @@ func TestUpdateSection_LastUpdateReplace(t *testing.T) {
 }
 
 func TestUpdateSection_UnknownSectionNoop(t *testing.T) {
+	t.Parallel()
 	p, _ := Load(fullYAML)
 	changed := p.UpdateSection(SectionUnknown, "anything")
 	assert.False(t, changed)
 }
 
 func TestMigrateFromMarkdown_OK(t *testing.T) {
+	t.Parallel()
 	body := `# Хината Хьюга
 
 ## Темперамент
@@ -304,11 +326,13 @@ func TestMigrateFromMarkdown_OK(t *testing.T) {
 }
 
 func TestMigrateFromMarkdown_Empty(t *testing.T) {
+	t.Parallel()
 	_, err := MigrateFromMarkdown("", "slug")
 	assert.ErrorIs(t, err, ErrNotFound)
 }
 
 func TestMigrateFromMarkdown_Minimal(t *testing.T) {
+	t.Parallel()
 	body := "# Ирука"
 	p, err := MigrateFromMarkdown(body, "iruka")
 	require.NoError(t, err)
@@ -319,6 +343,7 @@ func TestMigrateFromMarkdown_Minimal(t *testing.T) {
 }
 
 func TestMigrateFromMarkdown_NumberedList(t *testing.T) {
+	t.Parallel()
 	body := `# X
 
 ## Личная память/факты
@@ -334,23 +359,26 @@ func TestMigrateFromMarkdown_NumberedList(t *testing.T) {
 }
 
 func TestSortedKeys(t *testing.T) {
+	t.Parallel()
 	p, _ := Load(fullYAML)
 	keys := p.SortedKeys()
 	// All 9 sections populated.
 	assert.Len(t, keys, 9)
 	// Alphabetical.
 	for i := 1; i < len(keys); i++ {
-		assert.True(t, keys[i-1] < keys[i], "not sorted: %v", keys)
+		assert.Less(t, keys[i-1], keys[i], "not sorted: %v", keys)
 	}
 }
 
 func TestSortedKeys_Partial(t *testing.T) {
+	t.Parallel()
 	p := Profile{DisplayName: "X", Temperament: "Y"}
 	keys := p.SortedKeys()
 	assert.Equal(t, []string{"Темперамент"}, keys)
 }
 
 func TestNPCPersonalMemoryLimit(t *testing.T) {
+	t.Parallel()
 	// Sanity: the constant is what the dispatcher /
 	// summarizer will compare against. If we change
 	// it we need to update both call sites in
@@ -365,6 +393,7 @@ func TestNPCPersonalMemoryLimit(t *testing.T) {
 // this to keep the world block under the cache budget
 // when the cast grows past 4-5 NPCs.
 func TestProfile_BuildCompact(t *testing.T) {
+	t.Parallel()
 	p, err := Load(`display_name: "Какаши"
 file_slug: "kakashi"
 temperament: "хладнокровный, методичный"
@@ -409,6 +438,7 @@ last_update: "тренировал ГГ"
 // in 10+ scenes where even the compact form is too
 // expensive.
 func TestProfile_BuildOneLine(t *testing.T) {
+	t.Parallel()
 	p, err := Load(`display_name: "Хината"
 file_slug: "hinata"
 temperament: "застенчивая, добрая"
@@ -435,6 +465,7 @@ personal_memory:
 // when temperament is empty). The model never sees
 // empty placeholders.
 func TestProfile_BuildCompact_EmptyFieldsDropped(t *testing.T) {
+	t.Parallel()
 	p, err := Load(`display_name: "Безликий"
 file_slug: "x"
 `)
@@ -453,6 +484,7 @@ file_slug: "x"
 // much prose the operator or model crammed into
 // the field.
 func TestProfile_BuildOneLine_TruncatesLongFields(t *testing.T) {
+	t.Parallel()
 	long := strings.Repeat("X", 200)
 	p, err := Load("display_name: \"Long\"\nfile_slug: \"x\"\ntemperament: \"" + long + "\"\ncurrent_status: \"" + long + "\"\n")
 	require.NoError(t, err)

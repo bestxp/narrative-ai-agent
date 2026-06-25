@@ -230,13 +230,13 @@ func (c Chronicle) LastDay() (int, bool) {
 	if len(c.Days) == 0 {
 		return 0, false
 	}
-	max := 0
+	highest := 0
 	for k := range c.Days {
-		if k > max {
-			max = k
+		if k > highest {
+			highest = k
 		}
 	}
-	return max, true
+	return highest, true
 }
 
 // LastPeriodEnd returns the highest "to" day across

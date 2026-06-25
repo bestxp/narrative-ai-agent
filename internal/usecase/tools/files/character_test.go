@@ -26,6 +26,7 @@ func newTestCharacter(t *testing.T) (*Character, *storage.FileStore) {
 // --- Soul ---
 
 func TestSoulYaml_AppendSection(t *testing.T) {
+	t.Parallel()
 	c, _ := newTestCharacter(t)
 	ok, err := c.AppendSoul("markus", "Предпочтения", "Ирука-сенсей")
 	require.NoError(t, err)
@@ -37,6 +38,7 @@ func TestSoulYaml_AppendSection(t *testing.T) {
 // --- Skill ---
 
 func TestSkillYaml_AppendSection(t *testing.T) {
+	t.Parallel()
 	c, _ := newTestCharacter(t)
 	ok, err := c.AppendSkill("markus", "Ранг", "генин")
 	require.NoError(t, err)
@@ -46,6 +48,7 @@ func TestSkillYaml_AppendSection(t *testing.T) {
 // --- Memory ---
 
 func TestMemoryYaml_AppendSection(t *testing.T) {
+	t.Parallel()
 	c, _ := newTestCharacter(t)
 	ok, err := c.AppendMemorySection("markus", "Яркие моменты", "день 1: встреча с Какаши")
 	require.NoError(t, err)
@@ -55,6 +58,7 @@ func TestMemoryYaml_AppendSection(t *testing.T) {
 // --- Inventory ---
 
 func TestInventoryYaml_AppendItem(t *testing.T) {
+	t.Parallel()
 	c, _ := newTestCharacter(t)
 	ok, err := c.AppendInventoryItem("markus", charprofile.Item{
 		Name: "Кунай", Description: "стандартный", Equip: true,

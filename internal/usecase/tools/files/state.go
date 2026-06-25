@@ -3,23 +3,29 @@ package files
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/rs/zerolog"
+	gyaml "gopkg.in/yaml.v3"
 
 	"github.com/bestxp/narrative-ai-agent/internal/domain"
 	"github.com/bestxp/narrative-ai-agent/internal/repository/api"
 	"github.com/bestxp/narrative-ai-agent/internal/repository/yaml"
 	"github.com/bestxp/narrative-ai-agent/internal/slowlog"
 	"github.com/bestxp/narrative-ai-agent/internal/usecase/tools"
-	"github.com/rs/zerolog"
-	gyaml "gopkg.in/yaml.v3"
 )
 
 // renderStateBody delegates to the yaml package's
 // canonical renderer (state.md.tmpl).
 func renderStateBody(s domain.StateSnapshot) (string, error) {
-	return yaml.RenderStateBody(s)
+	body, err := yaml.RenderStateBody(s)
+	if err != nil {
+		return "", fmt.Errorf("render_state_body: %w", err)
+	}
+	return body, nil
 }
 
 // State is the repository-backed implementation of
@@ -95,7 +101,7 @@ func (s *State) UpdateState(snap tools.StateSnapshot) error {
 	}
 	existing, err := s.repos.WorldState.Load(snap.World)
 	if err != nil {
-		return err
+		return fmt.Errorf("update_state: WorldState.Load failed: %w", err)
 	}
 	// Snapshot the BEFORE picture for the slowlog diff.
 	prevNPCs := append([]string(nil), existing.NPCs...)
@@ -141,7 +147,7 @@ func (s *State) UpdateState(snap tools.StateSnapshot) error {
 		Int("events", len(existing.Events)).
 		Msg("update_state")
 	if err := s.repos.WorldState.Save(snap.World, existing); err != nil {
-		return err
+		return fmt.Errorf("update_state: WorldState.Save failed: %w", err)
 	}
 	if s.slow != nil {
 		_ = s.slow.Write("tool.update_state", "", map[string]any{
@@ -269,7 +275,10 @@ func ParseStateYAMLFull(body string) domain.StateSnapshot {
 
 // RotatePlan replaces plan.md content via repos.Plan.
 func (s *State) RotatePlan(world string, events []string) error {
-	return s.repos.Plan.ReplaceEvents(context.Background(), world, events)
+	if err := s.repos.Plan.ReplaceEvents(context.Background(), world, events); err != nil {
+		return fmt.Errorf("rotate_plan: ReplaceEvents failed: %w", err)
+	}
+	return nil
 }
 
 // PlanRangeError signals that the caller passed a
@@ -291,7 +300,7 @@ func (s *State) ArchiveChronicleDay(ctx context.Context, world string, day int, 
 	}
 	c, err := s.repos.Chronicle.Load(world)
 	if err != nil {
-		return err
+		return fmt.Errorf("archive_chronicle_day: Chronicle.Load failed: %w", err)
 	}
 	if !c.AppendDay(day, summary) {
 		s.log.Debug().Int("day", day).Msg("archive_chronicle_day: duplicate day, skipping")
@@ -299,7 +308,7 @@ func (s *State) ArchiveChronicleDay(ctx context.Context, world string, day int, 
 	}
 	s.log.Info().Str("world", world).Int("day", day).Msg("archive_chronicle_day")
 	if err := s.repos.Chronicle.Save(world, c); err != nil {
-		return err
+		return fmt.Errorf("archive_chronicle_day: Chronicle.Save failed: %w", err)
 	}
 	// Always run the compression hook. The hook
 	// (ChronicleCompressWindow) is a no-op when:
@@ -322,13 +331,13 @@ func (s *State) ArchiveChronicleDay(ctx context.Context, world string, day int, 
 	if world != "" {
 		st, err := s.repos.WorldState.Load(world)
 		if err != nil {
-			return err
+			return fmt.Errorf("archive_chronicle_day: WorldState.Load failed: %w", err)
 		}
 		st.Day = day + 1
 		st.InFlight = true
 		st.Events = nil
 		if err := s.repos.WorldState.Save(world, st); err != nil {
-			return err
+			return fmt.Errorf("archive_chronicle_day: WorldState.Save failed: %w", err)
 		}
 	}
 	if s.worldStateInvalidate != nil {
@@ -358,11 +367,14 @@ func (s *State) AppendHistoryToState(world, summary string, at time.Time) error 
 	}
 	st, err := s.repos.WorldState.Load(world)
 	if err != nil {
-		return err
+		return fmt.Errorf("append_history_to_state: WorldState.Load failed: %w", err)
 	}
 	header := "[history сжато " + at.UTC().Format("2006-01-02 15:04") + " UTC]"
 	st.Events = append(st.Events, header+"\n"+summary)
-	return s.repos.WorldState.Save(world, st)
+	if err := s.repos.WorldState.Save(world, st); err != nil {
+		return fmt.Errorf("append_history_to_state: WorldState.Save failed: %w", err)
+	}
+	return nil
 }
 
 // EndSceneResult describes the state after end_scene.
@@ -381,7 +393,7 @@ func (s *State) EndScene(world string, permanentParty []string) (*EndSceneResult
 	}
 	exists, err := s.repos.WorldState.Load(world)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("end_scene: WorldState.Load failed: %w", err)
 	}
 	if permanentParty == nil {
 		return &EndSceneResult{KeptNPCs: exists.NPCs, PrunedNPCsLen: 0}, nil
@@ -399,7 +411,7 @@ func (s *State) EndScene(world string, permanentParty []string) (*EndSceneResult
 	pruned := len(exists.NPCs) - len(newRoster)
 	exists.NPCs = newRoster
 	if err := s.repos.WorldState.Save(world, exists); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("end_scene: WorldState.Save failed: %w", err)
 	}
 	return &EndSceneResult{KeptNPCs: newRoster, PrunedNPCsLen: pruned}, nil
 }

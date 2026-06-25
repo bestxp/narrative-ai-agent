@@ -15,6 +15,7 @@ func (e *testEnv) newMemoryRepo() *CharacterMemoryYaml { return NewCharacterMemo
 func (e *testEnv) newInventoryRepo() *InventoryYaml    { return NewInventoryYaml(e.store) }
 
 func TestSoulYaml_RoundTrip(t *testing.T) {
+	t.Parallel()
 	env := newTestEnv(t)
 	in := charprofile.Soul{
 		Name: "Маркус",
@@ -35,6 +36,7 @@ func TestSoulYaml_RoundTrip(t *testing.T) {
 }
 
 func TestSoulYaml_AppendSection(t *testing.T) {
+	t.Parallel()
 	env := newTestEnv(t)
 	ok, err := env.newSoulRepo().AppendSection("markus", "Предпочтения", "Ирука-сенсей")
 	require.NoError(t, err)
@@ -45,6 +47,7 @@ func TestSoulYaml_AppendSection(t *testing.T) {
 }
 
 func TestSkillYaml_RoundTrip(t *testing.T) {
+	t.Parallel()
 	env := newTestEnv(t)
 	in := charprofile.Skill{}
 	in.Data = []charprofile.Section{
@@ -60,6 +63,7 @@ func TestSkillYaml_RoundTrip(t *testing.T) {
 }
 
 func TestCharacterMemoryYaml_RoundTrip(t *testing.T) {
+	t.Parallel()
 	env := newTestEnv(t)
 	in := charprofile.Memory{}
 	in.Data = []charprofile.Section{
@@ -74,6 +78,7 @@ func TestCharacterMemoryYaml_RoundTrip(t *testing.T) {
 }
 
 func TestInventoryYaml_RoundTrip(t *testing.T) {
+	t.Parallel()
 	env := newTestEnv(t)
 	inv := charprofile.Inventory{
 		Currency: []charprofile.Currency{
@@ -95,6 +100,7 @@ func TestInventoryYaml_RoundTrip(t *testing.T) {
 }
 
 func TestInventoryYaml_AppendItem(t *testing.T) {
+	t.Parallel()
 	env := newTestEnv(t)
 	ok, err := env.newInventoryRepo().AppendItem("markus", charprofile.Item{
 		Name: "Кунай", Description: "стандартный", Equip: true,
@@ -112,6 +118,7 @@ func TestInventoryYaml_AppendItem(t *testing.T) {
 }
 
 func TestInventoryYaml_SetCurrency(t *testing.T) {
+	t.Parallel()
 	env := newTestEnv(t)
 	ok, err := env.newInventoryRepo().SetCurrency("markus", "Рё", 1000)
 	require.NoError(t, err)
@@ -124,6 +131,7 @@ func TestInventoryYaml_SetCurrency(t *testing.T) {
 }
 
 func TestInventoryYaml_RemoveItem(t *testing.T) {
+	t.Parallel()
 	env := newTestEnv(t)
 	_, err := env.newInventoryRepo().AppendItem("markus", charprofile.Item{Name: "Кунай"})
 	require.NoError(t, err)

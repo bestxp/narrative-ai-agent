@@ -123,7 +123,7 @@ func Parse(text string) (*Narrative, error) {
 
 // StripThinkingTags removes RouterAPI/Anthropic thinking leak
 // artifacts: XML-like tags that appear after the JSON payload.
-// Examples: <arg_key>...</arg_key>, </arg_value></tool_call>
+// Examples: <arg_key>...</arg_key>, </arg_value>.</tool_call>
 func StripThinkingTags(data string) string {
 	b := []byte(data)
 	// Find the first occurrence of </arg_value> or <arg_key>
@@ -226,11 +226,13 @@ func sanitizeJSONQuotes(data []byte) []byte {
 		if escape {
 			out.WriteByte(c)
 			escape = false
+
 			continue
 		}
 		if c == '\\' && inStr {
 			out.WriteByte(c)
 			escape = true
+
 			continue
 		}
 		if c == '"' {
@@ -239,10 +241,12 @@ func sanitizeJSONQuotes(data []byte) []byte {
 				// but STAY inside the string.
 				out.WriteByte('\\')
 				out.WriteByte(c)
+
 				continue
 			}
 			out.WriteByte(c)
 			inStr = !inStr
+
 			continue
 		}
 		out.WriteByte(c)

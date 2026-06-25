@@ -62,7 +62,7 @@ func (w *World) Leave(fromWorld, toWorld, skipNote, character string) (*tools.Le
 	fromSnap.InFlight = false
 	fromSnap.Moment = note
 	if err := w.repos.WorldState.Save(from, fromSnap); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("leave: WorldState.Save failed: %w", err)
 	}
 	// Freeze plan.
 	planRaw, _ := w.repos.Plan.Load(from)
@@ -116,16 +116,16 @@ func (w *World) initialiseBlankWorld(dir string) error {
 
 	// State.
 	if err := w.repos.WorldState.EnsureExists(dir, 1, true); err != nil {
-		return err
+		return fmt.Errorf("initialise_blank_world: EnsureExists failed: %w", err)
 	}
 	// Lore.
 	if err := w.repos.Lore.Save(dir, "# Мир "+dir+"\nКанон актуален, если игрок не вносит изменения.\n"); err != nil {
-		return err
+		return fmt.Errorf("initialise_blank_world: Lore.Save failed: %w", err)
 	}
 	// Chronicle — empty skeleton.
 	c := newEmptyChronicle()
 	if err := w.repos.Chronicle.Save(dir, c); err != nil {
-		return err
+		return fmt.Errorf("initialise_blank_world: Chronicle.Save failed: %w", err)
 	}
 	// NPC registry (worlds/<dir>/characters.yaml) is NOT
 	// seeded here — the registry is owned by the
@@ -133,11 +133,14 @@ func (w *World) initialiseBlankWorld(dir string) error {
 	// first create_npc call. An empty world has no
 	// characters until the GM introduces them.
 	// Plan — 3 default events.
-	return w.repos.Plan.ReplaceEvents(context.Background(), dir, []string{
+	if err := w.repos.Plan.ReplaceEvents(context.Background(), dir, []string{
 		"вводная сцена: знакомство с миром",
 		"первая зацепка / конфликт",
 		"первая развилка",
-	})
+	}); err != nil {
+		return fmt.Errorf("initialise_blank_world: Plan.ReplaceEvents failed: %w", err)
+	}
+	return nil
 }
 
 // newEmptyChronicle returns a Chronicle with both
@@ -160,7 +163,7 @@ func newEmptyChronicle() chronicle.Chronicle {
 func (w *World) ReturnWorld(world, days string) (string, error) {
 	wDir, err := domain.SanitizeName(world)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("return_world: SanitizeName failed: %w", err)
 	}
 	d, err := strconv.Atoi(strings.TrimSpace(days))
 	if err != nil {
@@ -171,7 +174,7 @@ func (w *World) ReturnWorld(world, days string) (string, error) {
 	}
 	snap, err := w.repos.WorldState.Load(wDir)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("return_world: WorldState.Load failed: %w", err)
 	}
 	cur := snap.Day
 	note := fmt.Sprintf("Возврат в мир %s. Прошло %d дн. с последней записи (день %d).",
@@ -180,10 +183,10 @@ func (w *World) ReturnWorld(world, days string) (string, error) {
 	snap.InFlight = true
 	snap.Moment = note
 	if err := w.repos.WorldState.Save(wDir, snap); err != nil {
-		return "", err
+		return "", fmt.Errorf("return_world: WorldState.Save failed: %w", err)
 	}
 	if err := w.switchActive(wDir, ""); err != nil {
-		return "", err
+		return "", fmt.Errorf("return_world: switchActive failed: %w", err)
 	}
 	w.log.Info().Str("world", wDir).Int("days", d).Int("new_day", cur+d).Msg("world_return")
 	return note, nil

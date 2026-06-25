@@ -2,7 +2,7 @@ package telegram
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"strings"
 	"sync"
 	"time"
@@ -20,14 +20,13 @@ type stream struct {
 	chatID   string
 	msgID    int
 	chat     int64
-	ctx      context.Context
 	closed   bool
 	lastSent string
 }
 
 func (s *stream) Append(ctx context.Context, text string) error {
 	if s.closed {
-		return fmt.Errorf("stream closed")
+		return errors.New("stream closed")
 	}
 	if s.lastSent == text {
 		return nil

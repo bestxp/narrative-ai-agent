@@ -13,6 +13,7 @@ import (
 )
 
 func TestSystemState_LoadMissingReturnsZero(t *testing.T) {
+	t.Parallel()
 	fs, _ := storage.NewFileStore(t.TempDir())
 	ss := NewSystemState(fs, discardLogger(), slowlog.Discard())
 	state, err := ss.Load()
@@ -21,6 +22,7 @@ func TestSystemState_LoadMissingReturnsZero(t *testing.T) {
 }
 
 func TestSystemState_LoadEmptyReturnsZero(t *testing.T) {
+	t.Parallel()
 	fs, _ := storage.NewFileStore(t.TempDir())
 	require.NoError(t, fs.WriteRawAtomic(domain.SystemStateFile, ""))
 	ss := NewSystemState(fs, discardLogger(), slowlog.Discard())
@@ -30,6 +32,7 @@ func TestSystemState_LoadEmptyReturnsZero(t *testing.T) {
 }
 
 func TestSystemState_LoadBadYAMLErrors(t *testing.T) {
+	t.Parallel()
 	fs, _ := storage.NewFileStore(t.TempDir())
 	require.NoError(t, fs.WriteRawAtomic(domain.SystemStateFile, "session: : :"))
 	ss := NewSystemState(fs, discardLogger(), slowlog.Discard())
@@ -38,17 +41,18 @@ func TestSystemState_LoadBadYAMLErrors(t *testing.T) {
 }
 
 func TestSystemState_AppendCompaction_RoundTrip(t *testing.T) {
+	t.Parallel()
 	fs, _ := storage.NewFileStore(t.TempDir())
 	ss := NewSystemState(fs, discardLogger(), slowlog.Discard())
 	now := time.Now().UTC().Truncate(time.Second)
 	_, err := ss.AppendCompaction(domain.CompactionEvent{
-		At:            now,
-		Trigger:       "context_window*0.7",
-		Role:          "narrative",
-		BeforeTokens:  22000,
-		AfterTokens:   5500,
-		DroppedTurns:  23,
-		KeptRecent:    5,
+		At:           now,
+		Trigger:      "context_window*0.7",
+		Role:         "narrative",
+		BeforeTokens: 22000,
+		AfterTokens:  5500,
+		DroppedTurns: 23,
+		KeptRecent:   5,
 	})
 	require.NoError(t, err)
 	state, err := ss.Load()
@@ -60,6 +64,7 @@ func TestSystemState_AppendCompaction_RoundTrip(t *testing.T) {
 }
 
 func TestSystemState_AppendCompaction_Multiple(t *testing.T) {
+	t.Parallel()
 	fs, _ := storage.NewFileStore(t.TempDir())
 	ss := NewSystemState(fs, discardLogger(), slowlog.Discard())
 	for i := 0; i < 3; i++ {
@@ -76,16 +81,18 @@ func TestSystemState_AppendCompaction_Multiple(t *testing.T) {
 }
 
 func TestSystemState_RecordAutosave_EmptyHashIsNoop(t *testing.T) {
+	t.Parallel()
 	fs, _ := storage.NewFileStore(t.TempDir())
 	ss := NewSystemState(fs, discardLogger(), slowlog.Discard())
 	_, err := ss.RecordAutosave("", time.Now())
 	require.NoError(t, err)
 	state, _ := ss.Load()
 	assert.Equal(t, 0, state.Autosave.TotalSaves)
-	assert.Equal(t, "", state.Autosave.LastHash)
+	assert.Empty(t, state.Autosave.LastHash)
 }
 
 func TestSystemState_RecordAutosave_HashUpdates(t *testing.T) {
+	t.Parallel()
 	fs, _ := storage.NewFileStore(t.TempDir())
 	ss := NewSystemState(fs, discardLogger(), slowlog.Discard())
 	now := time.Now().UTC()
@@ -98,6 +105,7 @@ func TestSystemState_RecordAutosave_HashUpdates(t *testing.T) {
 }
 
 func TestSystemState_TouchSession_BumpsCounters(t *testing.T) {
+	t.Parallel()
 	fs, _ := storage.NewFileStore(t.TempDir())
 	ss := NewSystemState(fs, discardLogger(), slowlog.Discard())
 	state, _ := ss.Load()
@@ -110,6 +118,7 @@ func TestSystemState_TouchSession_BumpsCounters(t *testing.T) {
 }
 
 func TestSystemState_SetSessionContext_OneShot(t *testing.T) {
+	t.Parallel()
 	fs, _ := storage.NewFileStore(t.TempDir())
 	ss := NewSystemState(fs, discardLogger(), slowlog.Discard())
 	state, _ := ss.Load()
@@ -122,6 +131,7 @@ func TestSystemState_SetSessionContext_OneShot(t *testing.T) {
 }
 
 func TestSystemState_SlowlogOnCompaction(t *testing.T) {
+	t.Parallel()
 	fs, _ := storage.NewFileStore(t.TempDir())
 	dir := t.TempDir()
 	sl, err := slowlog.File(dir + "/slow.log")

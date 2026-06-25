@@ -13,7 +13,7 @@ func writeTempConfig(t *testing.T, body string) string {
 	t.Helper()
 	dir := t.TempDir()
 	p := filepath.Join(dir, "config.yaml")
-	require.NoError(t, os.WriteFile(p, []byte(body), 0o644))
+	require.NoError(t, os.WriteFile(p, []byte(body), 0o600))
 	return p
 }
 
@@ -32,6 +32,7 @@ llm:
 `
 
 func TestLoad_OK(t *testing.T) {
+	t.Parallel()
 	body := `
 messaging:
   telegram:
@@ -65,6 +66,7 @@ llm:
 }
 
 func TestLoad_RejectsPlaceholderToken(t *testing.T) {
+	t.Parallel()
 	body := `
 messaging:
   telegram:
@@ -80,6 +82,7 @@ llm:
 }
 
 func TestLoad_RejectsEmptyAllowed(t *testing.T) {
+	t.Parallel()
 	body := `
 messaging:
   telegram:
@@ -94,6 +97,7 @@ llm:
 }
 
 func TestLoad_RejectsMissingToken(t *testing.T) {
+	t.Parallel()
 	// Token completely absent — also rejected (the bot cannot talk
 	// to anyone if the transport is not configured).
 	body := `
@@ -109,6 +113,7 @@ llm:
 }
 
 func TestLoad_AppliesDefaults(t *testing.T) {
+	t.Parallel()
 	cfg, err := Load(writeTempConfig(t, minimalValidYAML))
 	require.NoError(t, err)
 	assert.NotEmpty(t, cfg.Paths.DataRoot)
@@ -119,7 +124,7 @@ func TestLoad_AppliesDefaults(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, "qwen2.5:7b-instruct", role.Model)
 	assert.Equal(t, "http://localhost:11434/v1", role.APIURL)
-	assert.Equal(t, 0.8, role.Temperature)
+	assert.InDelta(t, 0.8, role.Temperature, 1e-9)
 	assert.Equal(t, 2500, role.MaxTokens)
 	assert.Equal(t, 120, role.RequestTimeoutSeconds)
 	// system_prompt_path is empty by default — the embed.FS
@@ -128,6 +133,7 @@ func TestLoad_AppliesDefaults(t *testing.T) {
 }
 
 func TestLoad_MultipleRoles(t *testing.T) {
+	t.Parallel()
 	body := `
 messaging:
   telegram:
@@ -150,16 +156,17 @@ llm:
 	assert.Len(t, cfg.LLM.Roles, 2)
 	narr, ok := cfg.Role("narrative")
 	require.True(t, ok)
-	assert.Equal(t, 0.8, narr.Temperature)
+	assert.InDelta(t, 0.8, narr.Temperature, 1e-9)
 	sum, ok := cfg.Role("summary")
 	require.True(t, ok)
-	assert.Equal(t, 0.2, sum.Temperature)
+	assert.InDelta(t, 0.2, sum.Temperature, 1e-9)
 	assert.Equal(t, 400, sum.MaxTokens)
 	// Roles without explicit timeout fall back to default_timeout_seconds.
 	assert.Equal(t, 60, sum.RequestTimeoutSeconds)
 }
 
 func TestLoad_RoleFallsBackToDefaults(t *testing.T) {
+	t.Parallel()
 	// Role exists but no fields filled in — defaults kick in.
 	body := `
 messaging:
@@ -175,7 +182,7 @@ llm:
 	require.NoError(t, err)
 	role, ok := cfg.Role(NarrativeRole)
 	require.True(t, ok)
-	assert.Equal(t, 0.8, role.Temperature)
+	assert.InDelta(t, 0.8, role.Temperature, 1e-9)
 	assert.Equal(t, 2500, role.MaxTokens)
 	// system_prompt_path is empty by default — main.go will fall
 	// back to the embed.FS copy in internal/prompts/narrative.md.
@@ -183,6 +190,7 @@ llm:
 }
 
 func TestRole_UnknownReturnsFalse(t *testing.T) {
+	t.Parallel()
 	cfg, err := Load(writeTempConfig(t, minimalValidYAML))
 	require.NoError(t, err)
 	_, ok := cfg.Role("does-not-exist")
@@ -190,6 +198,7 @@ func TestRole_UnknownReturnsFalse(t *testing.T) {
 }
 
 func TestRole_EmptyModelReturnsFalse(t *testing.T) {
+	t.Parallel()
 	// Role key present but model empty — should be treated as
 	// "not configured" so callers can default to a healthy fallback.
 	body := `
@@ -209,12 +218,14 @@ llm:
 }
 
 func TestMustRole_PanicsOnMissing(t *testing.T) {
+	t.Parallel()
 	cfg, err := Load(writeTempConfig(t, minimalValidYAML))
 	require.NoError(t, err)
 	assert.Panics(t, func() { cfg.MustRole("ghost") })
 }
 
 func TestMustRole_ReturnsConfigured(t *testing.T) {
+	t.Parallel()
 	cfg, err := Load(writeTempConfig(t, minimalValidYAML))
 	require.NoError(t, err)
 	r := cfg.MustRole(NarrativeRole)
@@ -222,12 +233,14 @@ func TestMustRole_ReturnsConfigured(t *testing.T) {
 }
 
 func TestTelegramIsAllowed_EmptyList(t *testing.T) {
+	t.Parallel()
 	cfg := &Config{}
 	assert.False(t, cfg.TelegramIsAllowed(0))
 	assert.False(t, cfg.TelegramIsAllowed(42))
 }
 
 func TestLoad_RemoteDisabled_DefaultsFalse(t *testing.T) {
+	t.Parallel()
 	// Absent `remote_disabled` key → push is enabled.
 	cfg, err := Load(writeTempConfig(t, minimalValidYAML))
 	require.NoError(t, err)
@@ -235,6 +248,7 @@ func TestLoad_RemoteDisabled_DefaultsFalse(t *testing.T) {
 }
 
 func TestLoad_RemoteDisabled_TrueHonoured(t *testing.T) {
+	t.Parallel()
 	body := `
 messaging:
   telegram:

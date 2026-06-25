@@ -7,6 +7,7 @@ import (
 )
 
 func TestResponseFormat_AllBlocksPresent(t *testing.T) {
+	t.Parallel()
 	rf := NewResponseFormat(350, "ru")
 	body := `**диалоги и действия**
 Привет.
@@ -31,6 +32,7 @@ files: state.md
 }
 
 func TestResponseFormat_OverLimit(t *testing.T) {
+	t.Parallel()
 	rf := NewResponseFormat(5, "ru")
 	body := "один два три четыре пять шесть семь"
 	v := rf.Validate(body)
@@ -38,6 +40,7 @@ func TestResponseFormat_OverLimit(t *testing.T) {
 }
 
 func TestResponseFormat_ForbiddenForms(t *testing.T) {
+	t.Parallel()
 	rf := NewResponseFormat(350, "ru")
 	body := "ты усмехнулся, потом подумал."
 	v := rf.Validate(body)
@@ -45,12 +48,14 @@ func TestResponseFormat_ForbiddenForms(t *testing.T) {
 }
 
 func TestResponseFormat_WordCount_Russian(t *testing.T) {
+	t.Parallel()
 	rf := NewResponseFormat(350, "ru")
 	body := "раз два три"
 	assert.Equal(t, 3, rf.Validate(body).WordCount)
 }
 
 func TestResponseFormat_RejectsCJK(t *testing.T) {
+	t.Parallel()
 	rf := NewResponseFormat(350, "ru")
 	body := "Привет 日本語"
 	v := rf.Validate(body)

@@ -10,6 +10,7 @@ import (
 // values) pairs and assert it round-trips through
 // yaml.Marshal.
 func TestSoul_LoadSave_RoundTrip(t *testing.T) {
+	t.Parallel()
 	body := `name: Маркус Мрачный
 soul: "13 лет"
 data:
@@ -53,6 +54,7 @@ data:
 }
 
 func TestSoul_Load_Empty(t *testing.T) {
+	t.Parallel()
 	_, err := LoadSoul("")
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("want ErrNotFound, got %v", err)
@@ -60,6 +62,7 @@ func TestSoul_Load_Empty(t *testing.T) {
 }
 
 func TestSoul_Append_NewSection(t *testing.T) {
+	t.Parallel()
 	var s Soul
 	s.Name = "X"
 	changed := s.Append("Предпочтения", "Любит кошек")
@@ -76,6 +79,7 @@ func TestSoul_Append_NewSection(t *testing.T) {
 }
 
 func TestSoul_Append_AnySection(t *testing.T) {
+	t.Parallel()
 	var s Soul
 	// Soul is free-form: an unknown section
 	// is accepted, not dropped.
@@ -85,6 +89,7 @@ func TestSoul_Append_AnySection(t *testing.T) {
 }
 
 func TestSkill_Append_StrictEnum(t *testing.T) {
+	t.Parallel()
 	var s Skill
 	// Known section → accepted.
 	if !s.Append("Оружие", "Кунай — 3 шт.") {
@@ -103,6 +108,7 @@ func TestSkill_Append_StrictEnum(t *testing.T) {
 }
 
 func TestSkill_Append_AllFixedSections(t *testing.T) {
+	t.Parallel()
 	var s Skill
 	for _, sec := range SkillFixedSections {
 		if !s.Append(sec, "v") {
@@ -115,6 +121,7 @@ func TestSkill_Append_AllFixedSections(t *testing.T) {
 }
 
 func TestMemory_Append_StrictEnum(t *testing.T) {
+	t.Parallel()
 	var m Memory
 	for _, sec := range MemoryFixedSections {
 		if !m.Append(sec, "v") {
@@ -127,6 +134,7 @@ func TestMemory_Append_StrictEnum(t *testing.T) {
 }
 
 func TestBase_ReplaceSection(t *testing.T) {
+	t.Parallel()
 	var s Soul
 	s.Append("X", "old1")
 	s.Append("X", "old2")
@@ -143,6 +151,7 @@ func TestBase_ReplaceSection(t *testing.T) {
 }
 
 func TestBase_SortedSectionNames(t *testing.T) {
+	t.Parallel()
 	var s Skill
 	s.Append("Ограничения", "x")
 	s.Append("Оружие", "y")
@@ -157,6 +166,7 @@ func TestBase_SortedSectionNames(t *testing.T) {
 // --- Inventory ---
 
 func TestInventory_LoadSave_RoundTrip(t *testing.T) {
+	t.Parallel()
 	body := `currency:
   - name: Рё
     count: 5000
@@ -204,6 +214,7 @@ items:
 }
 
 func TestInventory_Load_Empty(t *testing.T) {
+	t.Parallel()
 	_, err := LoadInventory("")
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("want ErrNotFound, got %v", err)
@@ -211,6 +222,7 @@ func TestInventory_Load_Empty(t *testing.T) {
 }
 
 func TestInventory_AppendItem_New(t *testing.T) {
+	t.Parallel()
 	var inv Inventory
 	if !inv.AppendItem(Item{Name: "Кунай", Equip: false, Special: "нет"}) {
 		t.Fatal("expected change on first item")
@@ -227,6 +239,7 @@ func TestInventory_AppendItem_New(t *testing.T) {
 }
 
 func TestInventory_AppendItem_NoOpOnIdentical(t *testing.T) {
+	t.Parallel()
 	var inv Inventory
 	inv.AppendItem(Item{Name: "X", Description: "d", Equip: true, Special: "s"})
 	if inv.AppendItem(Item{Name: "X", Description: "d", Equip: true, Special: "s"}) {
@@ -235,6 +248,7 @@ func TestInventory_AppendItem_NoOpOnIdentical(t *testing.T) {
 }
 
 func TestInventory_RemoveItem(t *testing.T) {
+	t.Parallel()
 	var inv Inventory
 	inv.AppendItem(Item{Name: "A"})
 	inv.AppendItem(Item{Name: "B"})
@@ -250,6 +264,7 @@ func TestInventory_RemoveItem(t *testing.T) {
 }
 
 func TestInventory_RemoveItem_EmptyName(t *testing.T) {
+	t.Parallel()
 	var inv Inventory
 	if err := inv.RemoveItem(""); !errors.Is(err, ErrItemNotFound) {
 		t.Fatalf("expected ErrItemNotFound, got %v", err)
@@ -257,6 +272,7 @@ func TestInventory_RemoveItem_EmptyName(t *testing.T) {
 }
 
 func TestInventory_SetCurrency(t *testing.T) {
+	t.Parallel()
 	var inv Inventory
 	if !inv.SetCurrency("Рё", 5000) {
 		t.Fatal("expected change on new currency")
@@ -273,6 +289,7 @@ func TestInventory_SetCurrency(t *testing.T) {
 }
 
 func TestInventory_SetCurrency_Clamp(t *testing.T) {
+	t.Parallel()
 	var inv Inventory
 	inv.SetCurrency("Рё", -1)
 	if inv.Currency[0].Count != 0 {
@@ -285,6 +302,7 @@ func TestInventory_SetCurrency_Clamp(t *testing.T) {
 }
 
 func TestInventory_RemoveCurrency(t *testing.T) {
+	t.Parallel()
 	var inv Inventory
 	inv.SetCurrency("Рё", 100)
 	if err := inv.RemoveCurrency("Рё"); err != nil {
@@ -301,6 +319,7 @@ func TestInventory_RemoveCurrency(t *testing.T) {
 // --- Migration ---
 
 func TestMigrateFromMarkdown_Soul(t *testing.T) {
+	t.Parallel()
 	body := "# Маркус\n\n## Истинная сущность\n- Ребёнок\n- Сирота\n\n## Предпочтения\n- Любит кошек\n"
 	got, err := MigrateFromMarkdown("SOUL", body, "markus")
 	if err != nil {
@@ -322,18 +341,26 @@ func TestMigrateFromMarkdown_Soul(t *testing.T) {
 }
 
 func TestMigrateFromMarkdown_Skill(t *testing.T) {
+	t.Parallel()
 	body := "# M\n\n## Оружие\n- Кунай\n- Сюрикен\n\n## Ранг\n- Генин\n"
 	got, err := MigrateFromMarkdown("skill", body, "m")
-	s := got.(Skill)
+	s, ok := got.(Skill)
+	if !ok {
+		t.Fatalf("MigrateFromMarkdown: unexpected type %T", got)
+	}
 	if err != nil || len(s.Data) != 2 {
 		t.Fatalf("MigrateFromMarkdown: %v / %+v", err, s)
 	}
 }
 
 func TestMigrateFromMarkdown_Memory_NumberedList(t *testing.T) {
+	t.Parallel()
 	body := "# M\n\n## Яркие моменты\n1. Видение с Кагуей\n2. Первый поцелуй с Ино\n"
 	got, err := MigrateFromMarkdown("memory", body, "m")
-	m := got.(Memory)
+	m, ok := got.(Memory)
+	if !ok {
+		t.Fatalf("MigrateFromMarkdown: unexpected type %T", got)
+	}
 	if err != nil {
 		t.Fatalf("MigrateFromMarkdown: %v", err)
 	}
@@ -346,6 +373,7 @@ func TestMigrateFromMarkdown_Memory_NumberedList(t *testing.T) {
 }
 
 func TestMigrateFromMarkdown_Empty(t *testing.T) {
+	t.Parallel()
 	_, err := MigrateFromMarkdown("SOUL", "", "x")
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("want ErrNotFound, got %v", err)
@@ -353,6 +381,7 @@ func TestMigrateFromMarkdown_Empty(t *testing.T) {
 }
 
 func TestMigrateFromMarkdown_UnknownKind(t *testing.T) {
+	t.Parallel()
 	_, err := MigrateFromMarkdown("garbage", "body", "x")
 	if !errors.Is(err, ErrUnknownFile) {
 		t.Fatalf("want ErrUnknownFile, got %v", err)
@@ -360,6 +389,7 @@ func TestMigrateFromMarkdown_UnknownKind(t *testing.T) {
 }
 
 func TestMigrateFromMarkdown_Skill_DropsUnknownSection(t *testing.T) {
+	t.Parallel()
 	body := "# M\n\n## Ранг\n- Генин\n\n## MiscGarbage\n- drop me\n"
 	got, _ := MigrateFromMarkdown("skill", body, "m")
 	s := got.(Skill)
@@ -369,6 +399,7 @@ func TestMigrateFromMarkdown_Skill_DropsUnknownSection(t *testing.T) {
 }
 
 func TestMigrateFromMarkdown_Soul_KeepsUnknownSection(t *testing.T) {
+	t.Parallel()
 	// Soul is free-form — non-canonical section
 	// names are kept verbatim. (Legacy free-form
 	// files used headings like "Внешность",
@@ -393,6 +424,7 @@ func TestMigrateFromMarkdown_Soul_KeepsUnknownSection(t *testing.T) {
 // data-preservation contract. The strict enum is
 // enforced only at Append / ReplaceSection.
 func TestMigrateFromMarkdown_Memory_KeepsAllSections(t *testing.T) {
+	t.Parallel()
 	body := "# M\n\n## Видения Кагуи\n- сон 1\n- сон 2\n\n## Контакт с семьёй Яманака\n- тётя\n\n## Яркие моменты\n- первый поцелуй\n\n## Действия дня 1\n- душ\n- завтрак\n"
 	got, err := MigrateFromMarkdown("memory", body, "m")
 	if err != nil {

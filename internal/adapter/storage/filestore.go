@@ -109,7 +109,7 @@ func (f *FileStore) ReadRaw(rel string) (string, error) {
 		return "", nil
 	}
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("read_raw: ReadFile failed: %w", err)
 	}
 	return string(b), nil
 }
@@ -121,7 +121,7 @@ func (f *FileStore) WriteRaw(rel, content string) error {
 	clean := stripIndexPollution(content)
 	p := filepath.Join(f.root, rel)
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-		return err
+		return fmt.Errorf("write_raw: %w", err)
 	}
 	f.log.Debug().Str("path", rel).Int("bytes", len(clean)).Msg("write_raw")
 	return os.WriteFile(p, []byte(clean), 0o644)
@@ -132,11 +132,11 @@ func (f *FileStore) WriteRawAtomic(rel, content string) error {
 	clean := stripIndexPollution(content)
 	p := filepath.Join(f.root, rel)
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-		return err
+		return fmt.Errorf("write_raw_atomic: %w", err)
 	}
 	tmp := p + ".tmp"
 	if err := os.WriteFile(tmp, []byte(clean), 0o644); err != nil {
-		return err
+		return fmt.Errorf("write_raw_atomic: %w", err)
 	}
 	f.log.Debug().Str("path", rel).Int("bytes", len(clean)).Msg("write_atomic")
 	return os.Rename(tmp, p)
@@ -201,7 +201,7 @@ func (f *FileStore) ListChildren(rel string) ([]string, error) {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("list_children: ReadDir failed: %w", err)
 	}
 	out := make([]string, 0, len(entries))
 	for _, e := range entries {
@@ -212,7 +212,10 @@ func (f *FileStore) ListChildren(rel string) ([]string, error) {
 
 // EnsureDir makes rel a directory tree.
 func (f *FileStore) EnsureDir(rel string) error {
-	return os.MkdirAll(filepath.Join(f.root, rel), 0o755)
+	if err := os.MkdirAll(filepath.Join(f.root, rel), 0o755); err != nil {
+		return fmt.Errorf("ensure_dir: %w", err)
+	}
+	return nil
 }
 
 // --- index pollution guard ---
@@ -247,7 +250,7 @@ func (f *FileStore) PipeCat(rel string, w io.Writer) error {
 		return nil
 	}
 	if err != nil {
-		return err
+		return fmt.Errorf("pipe_cat: Open failed: %w", err)
 	}
 	defer func() { _ = fp.Close() }()
 	_, err = io.Copy(w, fp)

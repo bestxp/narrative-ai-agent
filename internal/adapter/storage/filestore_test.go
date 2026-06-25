@@ -19,6 +19,7 @@ func newTestStore(t *testing.T) *FileStore {
 }
 
 func TestWriteRaw_StripsIndexPollution(t *testing.T) {
+	t.Parallel()
 	fs := newTestStore(t)
 	polluted := "1| День 1.\n2| NPC говорит.\n3| Конец.\n"
 	require.NoError(t, fs.WriteRaw("worlds/naruto/state.md", polluted))
@@ -27,6 +28,7 @@ func TestWriteRaw_StripsIndexPollution(t *testing.T) {
 }
 
 func TestPatch_OK(t *testing.T) {
+	t.Parallel()
 	fs := newTestStore(t)
 	require.NoError(t, fs.WriteRawAtomic("a.md", "alpha\nbeta\ngamma\n"))
 	require.NoError(t, fs.Patch("a.md", "beta", "BETA"))
@@ -35,6 +37,7 @@ func TestPatch_OK(t *testing.T) {
 }
 
 func TestPatch_NotFound(t *testing.T) {
+	t.Parallel()
 	fs := newTestStore(t)
 	require.NoError(t, fs.WriteRawAtomic("a.md", "x"))
 	err := fs.Patch("a.md", "y", "z")
@@ -42,6 +45,7 @@ func TestPatch_NotFound(t *testing.T) {
 }
 
 func TestPatch_Ambiguous(t *testing.T) {
+	t.Parallel()
 	fs := newTestStore(t)
 	require.NoError(t, fs.WriteRawAtomic("a.md", "x\nx\n"))
 	err := fs.Patch("a.md", "x", "y")
@@ -49,6 +53,7 @@ func TestPatch_Ambiguous(t *testing.T) {
 }
 
 func TestAppendIfMissing(t *testing.T) {
+	t.Parallel()
 	fs := newTestStore(t)
 	added, err := fs.AppendIfMissing("a.md", "д00001: x")
 	require.NoError(t, err)
@@ -60,6 +65,7 @@ func TestAppendIfMissing(t *testing.T) {
 }
 
 func TestReadRaw_Missing(t *testing.T) {
+	t.Parallel()
 	fs := newTestStore(t)
 	got, err := fs.ReadRaw("missing.md")
 	require.NoError(t, err)
@@ -67,6 +73,7 @@ func TestReadRaw_Missing(t *testing.T) {
 }
 
 func TestCountLines(t *testing.T) {
+	t.Parallel()
 	fs := newTestStore(t)
 	require.NoError(t, fs.WriteRawAtomic("a.md", "1\n2\n3\n"))
 	assert.Equal(t, 3, fs.CountLines("a.md"))
@@ -74,6 +81,7 @@ func TestCountLines(t *testing.T) {
 }
 
 func TestListChildren(t *testing.T) {
+	t.Parallel()
 	fs := newTestStore(t)
 	require.NoError(t, fs.EnsureDir("worlds/naruto/characters"))
 	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/state.md", "x"))
@@ -83,6 +91,7 @@ func TestListChildren(t *testing.T) {
 }
 
 func TestWriteRaw_CreatesParentDirs(t *testing.T) {
+	t.Parallel()
 	fs := newTestStore(t)
 	require.NoError(t, fs.WriteRaw("deep/nested/file.md", "hi"))
 	_, err := os.Stat(filepath.Join(fs.Root(), "deep", "nested", "file.md"))
@@ -90,14 +99,16 @@ func TestWriteRaw_CreatesParentDirs(t *testing.T) {
 }
 
 func TestStripPollution_HandlesClean(t *testing.T) {
+	t.Parallel()
 	fs := newTestStore(t)
 	body := "line1\nline2\n"
 	require.NoError(t, fs.WriteRaw("a.md", body))
 	got, _ := fs.ReadRaw("a.md")
-	assert.True(t, strings.Contains(got, "line1"), "clean input mangled: %q", got)
+	assert.Contains(t, got, "line1", "clean input mangled: %q", got)
 }
 
 func TestWriteRaw_LogsAtDebugLevel(t *testing.T) {
+	t.Parallel()
 	var buf strings.Builder
 	dir := t.TempDir()
 	fsI, err := NewFileStoreWithLogger(dir, newBufLogger(&buf, "debug"))
@@ -108,6 +119,7 @@ func TestWriteRaw_LogsAtDebugLevel(t *testing.T) {
 }
 
 func TestPatch_LogsWarningOnMissing(t *testing.T) {
+	t.Parallel()
 	var buf strings.Builder
 	dir := t.TempDir()
 	fsI, err := NewFileStoreWithLogger(dir, newBufLogger(&buf, "debug"))

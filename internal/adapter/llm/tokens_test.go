@@ -7,14 +7,16 @@ import (
 )
 
 func TestEstimateTokens(t *testing.T) {
+	t.Parallel()
 	assert.Equal(t, 0, EstimateTokens(""))
-	assert.Equal(t, 1, EstimateTokens("abcd"))     // 4 chars → 1 token
-	assert.Equal(t, 2, EstimateTokens("abcdefgh")) // 8 chars → 2 tokens
+	assert.Equal(t, 1, EstimateTokens("abcd"))      // 4 chars → 1 token
+	assert.Equal(t, 2, EstimateTokens("abcdefgh"))  // 8 chars → 2 tokens
 	assert.Equal(t, 3, EstimateTokens("abcdefghi")) // 9 chars → 3 tokens (rounded up)
 	assert.Equal(t, 25, EstimateTokens(string(make([]byte, 100))))
 }
 
 func TestEstimateMessages(t *testing.T) {
+	t.Parallel()
 	// The numbers below are deliberately computed from
 	// EstimateTokens so the test does not lock in any
 	// particular "right" answer for the underlying rule of
@@ -35,5 +37,5 @@ func TestEstimateMessages(t *testing.T) {
 		EstimateTokens("end_day") +
 		EstimateTokens(`{"day":1}`)
 	assert.Equal(t, want, got)
-	assert.Greater(t, got, 0)
+	assert.Positive(t, got)
 }

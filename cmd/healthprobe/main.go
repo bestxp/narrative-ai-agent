@@ -24,7 +24,7 @@ func main() {
 		}
 	}
 	c := &http.Client{Timeout: time.Duration(timeoutSec) * time.Second}
-	r, err := c.Get(os.Args[1])
+	r, err := c.Get(os.Args[1]) //nolint:gosec // URL comes from k8s HEALTHCHECK argument, intentionally user-supplied
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "healthprobe: get:", err)
 		os.Exit(1)
@@ -34,5 +34,5 @@ func main() {
 		fmt.Fprintf(os.Stderr, "healthprobe: status %d\n", r.StatusCode)
 		os.Exit(1)
 	}
-	fmt.Printf("ok %d\n", r.StatusCode)
+	fmt.Printf("ok %d\n", r.StatusCode) //nolint:forbidigo // healthprobe stdout contract: "ok <code>"
 }

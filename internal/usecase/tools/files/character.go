@@ -89,7 +89,7 @@ func (c *Character) AppendSoul(character, section, value string) (bool, error) {
 	}
 	ok, err := c.repos.Soul.AppendSection(character, section, value)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("wrap: %w", err)
 	}
 	if ok {
 		c.logEvent(character, "SOUL.yaml")
@@ -116,7 +116,7 @@ func (c *Character) AppendSkill(character, section, value string) (bool, error) 
 	}
 	ok, err := c.repos.Skill.AppendSection(character, section, value)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("wrap: %w", err)
 	}
 	if ok {
 		c.logEvent(character, "skill.yaml")
@@ -141,7 +141,7 @@ func (c *Character) AppendMemorySection(character, section, value string) (bool,
 	}
 	ok, err := c.repos.Memory.AppendSection(character, section, value)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("wrap: %w", err)
 	}
 	if ok {
 		c.logEvent(character, "memory.yaml")
@@ -160,7 +160,7 @@ func (c *Character) AppendInventoryItem(character string, item charprofile.Item)
 	}
 	ok, err := c.repos.Inventory.AppendItem(character, item)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("append_inventory_item: AppendItem failed: %w", err)
 	}
 	if ok {
 		c.logEvent(character, "inventory.yaml")
@@ -190,7 +190,7 @@ func (c *Character) SetCurrency(character, name string, count int) (bool, error)
 	}
 	ok, err := c.repos.Inventory.SetCurrency(character, name, count)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("set_currency: SetCurrency failed: %w", err)
 	}
 	if ok {
 		c.logEvent(character, "inventory.yaml")
@@ -319,15 +319,15 @@ func FormatSnapshot(s *tools.CharacterSnapshot, maxPerSection int) string {
 	return strings.TrimSpace(b.String())
 }
 
-func truncateForMe(s string, max int) string {
-	if max <= 0 {
+func truncateForMe(s string, maxLines int) string {
+	if maxLines <= 0 {
 		return s
 	}
 	lines := strings.Split(s, "\n")
-	if len(lines) <= max {
+	if len(lines) <= maxLines {
 		return s
 	}
-	return strings.Join(lines[:max], "\n") + fmt.Sprintf("\n[…+%d строк обрезано…]", len(lines)-max)
+	return strings.Join(lines[:maxLines], "\n") + fmt.Sprintf("\n[…+%d строк обрезано…]", len(lines)-maxLines)
 }
 
 // extractDayNumber parses the "День N" line out of

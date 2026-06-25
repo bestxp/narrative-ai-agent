@@ -1,8 +1,10 @@
 package yaml
 
 import (
+	"errors"
 	"strings"
 
+	"fmt"
 	"github.com/bestxp/narrative-ai-agent/internal/charprofile"
 	"github.com/bestxp/narrative-ai-agent/internal/storage"
 )
@@ -48,14 +50,14 @@ func NewSoulYaml(store storage.Storage) *SoulYaml {
 func (r *SoulYaml) Load(character string) (charprofile.Soul, error) {
 	body, err := r.store.Read(soulKey(character))
 	if err != nil {
-		return charprofile.Soul{}, err
+		return charprofile.Soul{}, fmt.Errorf("load: Read failed: %w", err)
 	}
 	if strings.TrimSpace(string(body)) == "" {
 		return charprofile.Soul{}, nil
 	}
 	s, err := charprofile.LoadSoul(string(body))
 	if err != nil {
-		return charprofile.Soul{}, err
+		return charprofile.Soul{}, fmt.Errorf("load: LoadSoul failed: %w", err)
 	}
 	return s, nil
 }
@@ -64,7 +66,7 @@ func (r *SoulYaml) Load(character string) (charprofile.Soul, error) {
 func (r *SoulYaml) Save(character string, s charprofile.Soul) error {
 	body, err := s.Save()
 	if err != nil {
-		return err
+		return fmt.Errorf("save: Save failed: %w", err)
 	}
 	return r.store.Write(soulKey(character), []byte(body))
 }
@@ -107,14 +109,14 @@ func NewSkillYaml(store storage.Storage) *SkillYaml {
 func (r *SkillYaml) Load(character string) (charprofile.Skill, error) {
 	body, err := r.store.Read(skillKey(character))
 	if err != nil {
-		return charprofile.Skill{}, err
+		return charprofile.Skill{}, fmt.Errorf("load: Read failed: %w", err)
 	}
 	if strings.TrimSpace(string(body)) == "" {
 		return charprofile.Skill{}, nil
 	}
 	s, err := charprofile.LoadSkill(string(body))
 	if err != nil {
-		return charprofile.Skill{}, err
+		return charprofile.Skill{}, fmt.Errorf("load: LoadSkill failed: %w", err)
 	}
 	return s, nil
 }
@@ -123,7 +125,7 @@ func (r *SkillYaml) Load(character string) (charprofile.Skill, error) {
 func (r *SkillYaml) Save(character string, s charprofile.Skill) error {
 	body, err := s.Save()
 	if err != nil {
-		return err
+		return fmt.Errorf("save: Save failed: %w", err)
 	}
 	return r.store.Write(skillKey(character), []byte(body))
 }
@@ -161,14 +163,14 @@ func NewCharacterMemoryYaml(store storage.Storage) *CharacterMemoryYaml {
 func (r *CharacterMemoryYaml) Load(character string) (charprofile.Memory, error) {
 	body, err := r.store.Read(characterMemoryKey(character))
 	if err != nil {
-		return charprofile.Memory{}, err
+		return charprofile.Memory{}, fmt.Errorf("load: Read failed: %w", err)
 	}
 	if strings.TrimSpace(string(body)) == "" {
 		return charprofile.Memory{}, nil
 	}
 	m, err := charprofile.LoadMemory(string(body))
 	if err != nil {
-		return charprofile.Memory{}, err
+		return charprofile.Memory{}, fmt.Errorf("load: LoadMemory failed: %w", err)
 	}
 	return m, nil
 }
@@ -177,7 +179,7 @@ func (r *CharacterMemoryYaml) Load(character string) (charprofile.Memory, error)
 func (r *CharacterMemoryYaml) Save(character string, m charprofile.Memory) error {
 	body, err := m.Save()
 	if err != nil {
-		return err
+		return fmt.Errorf("save: Save failed: %w", err)
 	}
 	return r.store.Write(characterMemoryKey(character), []byte(body))
 }
@@ -213,14 +215,14 @@ func NewInventoryYaml(store storage.Storage) *InventoryYaml {
 func (r *InventoryYaml) Load(character string) (charprofile.Inventory, error) {
 	body, err := r.store.Read(inventoryKey(character))
 	if err != nil {
-		return charprofile.Inventory{}, err
+		return charprofile.Inventory{}, fmt.Errorf("inventory_load: Read failed: %w", err)
 	}
 	if strings.TrimSpace(string(body)) == "" {
 		return charprofile.Inventory{}, nil
 	}
 	inv, err := charprofile.LoadInventory(string(body))
 	if err != nil {
-		return charprofile.Inventory{}, err
+		return charprofile.Inventory{}, fmt.Errorf("load: LoadInventory failed: %w", err)
 	}
 	return inv, nil
 }
@@ -229,7 +231,7 @@ func (r *InventoryYaml) Load(character string) (charprofile.Inventory, error) {
 func (r *InventoryYaml) Save(character string, inv charprofile.Inventory) error {
 	body, err := inv.Save()
 	if err != nil {
-		return err
+		return fmt.Errorf("save: Save failed: %w", err)
 	}
 	return r.store.Write(inventoryKey(character), []byte(body))
 }
@@ -265,7 +267,7 @@ func (r *InventoryYaml) RemoveItem(character, name string) error {
 		// repository level — the dispatcher treats
 		// "remove a non-existent item" the same as
 		// "remove it successfully".
-		if err == charprofile.ErrItemNotFound {
+		if errors.Is(err, charprofile.ErrItemNotFound) {
 			return nil
 		}
 		return err
@@ -296,7 +298,10 @@ func (r *InventoryYaml) RemoveCurrency(character, name string) error {
 		return err
 	}
 	if err := inv.RemoveCurrency(name); err != nil {
-		return nil
+		if errors.Is(err, charprofile.ErrItemNotFound) {
+			return nil
+		}
+		return err
 	}
 	return r.Save(character, inv)
 }

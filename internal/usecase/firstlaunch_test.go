@@ -3,15 +3,17 @@ package usecase
 import (
 	"testing"
 
-	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
-	"github.com/bestxp/narrative-ai-agent/internal/repository/api"
-	yamlfs "github.com/bestxp/narrative-ai-agent/internal/storage/fs"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
+	"github.com/bestxp/narrative-ai-agent/internal/repository/api"
+	yamlfs "github.com/bestxp/narrative-ai-agent/internal/storage/fs"
 )
 
 func TestFirstLaunch_CreatesSkeleton(t *testing.T) {
+	t.Parallel()
 	fs, _ := storage.NewFileStore(t.TempDir())
 	ys, _ := yamlfs.New(fs.Root())
 	repos := api.NewYamlRepositories(ys)
@@ -48,6 +50,7 @@ func TestFirstLaunch_CreatesSkeleton(t *testing.T) {
 }
 
 func TestFirstLaunch_Idempotent(t *testing.T) {
+	t.Parallel()
 	fs, _ := storage.NewFileStore(t.TempDir())
 	ys, _ := yamlfs.New(fs.Root())
 	repos := api.NewYamlRepositories(ys)
@@ -58,6 +61,7 @@ func TestFirstLaunch_Idempotent(t *testing.T) {
 }
 
 func TestFirstLaunch_TransliteratesCyrillic(t *testing.T) {
+	t.Parallel()
 	fs, _ := storage.NewFileStore(t.TempDir())
 	ys, _ := yamlfs.New(fs.Root())
 	repos := api.NewYamlRepositories(ys)

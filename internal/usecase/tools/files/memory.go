@@ -59,7 +59,7 @@ func newMemory(log zerolog.Logger, summarizer tools.NPCSummarizer, loreSummarize
 // the world's lore file via repos.Lore.
 func (m *Memory) AppendLore(world, header, bullet string) error {
 	if err := m.repos.Lore.AppendEntry(world, header, bullet); err != nil {
-		return err
+		return fmt.Errorf("append_lore: %w", err)
 	}
 	m.log.Info().Str("world", world).Str("header", header).Msg("append_lore")
 	return nil
@@ -86,7 +86,7 @@ func (m *Memory) AppendMemory(character, line string) error {
 func (m *Memory) MaintainLore(ctx context.Context, world string) (bool, error) {
 	body, err := m.repos.Lore.Load(world)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("maintain_lore: Load failed: %w", err)
 	}
 	if strings.TrimSpace(body) == "" {
 		return false, nil
@@ -109,7 +109,7 @@ func (m *Memory) MaintainLore(ctx context.Context, world string) (bool, error) {
 	}
 	newBody, err := m.loreSummarizer.SummarizeLore(ctx, world, []byte(body), nil, nil)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("wrap: %w", err)
 	}
 	if len(newBody) == 0 || len(newBody) >= len(body) {
 		m.log.Info().
@@ -127,7 +127,7 @@ func (m *Memory) MaintainLore(ctx context.Context, world string) (bool, error) {
 		return false, nil
 	}
 	if err := m.repos.Lore.Save(world, string(newBody)); err != nil {
-		return false, err
+		return false, fmt.Errorf("wrap: %w", err)
 	}
 	afterLines := lineCount(string(newBody))
 	m.log.Info().
@@ -215,7 +215,7 @@ func (m *Memory) ChronicleCompressWindow(ctx context.Context, world string, star
 	}
 	c, err := m.repos.Chronicle.Load(world)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("wrap: %w", err)
 	}
 	lastEnd, hasPeriod := c.LastPeriodEnd()
 	from := startDay
@@ -245,7 +245,7 @@ func (m *Memory) ChronicleCompressWindow(ctx context.Context, world string, star
 	actualEnd := inWindow[len(inWindow)-1].Number
 	body, err := m.repos.Chronicle.Load(world)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("wrap: %w", err)
 	}
 	rawBytes, err := yamlOrBytes(body)
 	if err != nil {
@@ -253,7 +253,7 @@ func (m *Memory) ChronicleCompressWindow(ctx context.Context, world string, star
 	}
 	summarizerBody, err := m.chronicleSummarizer.SummarizeChronicle(ctx, world, actualStart, actualEnd, string(rawBytes))
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("wrap: %w", err)
 	}
 	if len(summarizerBody) == 0 {
 		return false, nil
@@ -263,10 +263,10 @@ func (m *Memory) ChronicleCompressWindow(ctx context.Context, world string, star
 		return false, nil
 	}
 	if err := c.CompressWindow(actualStart, actualEnd, memory); err != nil {
-		return false, err
+		return false, fmt.Errorf("wrap: %w", err)
 	}
 	if err := m.repos.Chronicle.Save(world, c); err != nil {
-		return false, err
+		return false, fmt.Errorf("wrap: %w", err)
 	}
 	m.log.Info().
 		Str("world", world).
@@ -287,7 +287,7 @@ func (m *Memory) ChronicleCompressWindow(ctx context.Context, world string, star
 func yamlOrBytes(c chronicle.Chronicle) ([]byte, error) {
 	body, err := c.Save()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("yaml_or_bytes: Save failed: %w", err)
 	}
 	return []byte(body), nil
 }
@@ -344,7 +344,11 @@ func (m *Memory) listNPCSlugs(world string) ([]string, error) {
 	// from "list children". The yaml ChronicleYaml
 	// has both via its storage. For listing we use
 	// the underlying storage through a small seam.
-	return m.repos.NPCProfile.ListSlugs(world)
+	slugs, err := m.repos.NPCProfile.ListSlugs(world)
+	if err != nil {
+		return nil, fmt.Errorf("list_npcslugs: %w", err)
+	}
+	return slugs, nil
 }
 
 // maintainOne runs the LLM summarizer on a single
@@ -353,7 +357,7 @@ func (m *Memory) listNPCSlugs(world string) ([]string, error) {
 func (m *Memory) maintainOne(world, slug string) (bool, error) {
 	profile, err := m.repos.NPCProfile.Load(world, slug)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("maintain_one: Load failed: %w", err)
 	}
 	if len(profile.PersonalMemory) < npcprofile.NPCPersonalMemoryLimit {
 		return false, nil
@@ -367,11 +371,11 @@ func (m *Memory) maintainOne(world, slug string) (bool, error) {
 	}
 	body, err := profile.Save()
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("wrap: %w", err)
 	}
 	newBody, err := m.summarizer.SummarizeNPC(context.Background(), profile.DisplayName, world, []byte(body), nil)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("wrap: %w", err)
 	}
 	if len(newBody) == 0 || len(newBody) >= len(body) {
 		m.log.Info().
@@ -397,7 +401,7 @@ func (m *Memory) maintainOne(world, slug string) (bool, error) {
 		return false, nil
 	}
 	if err := m.repos.NPCProfile.Save(world, slug, newProfile); err != nil {
-		return false, err
+		return false, fmt.Errorf("wrap: %w", err)
 	}
 	m.log.Info().
 		Str("world", world).
@@ -424,11 +428,11 @@ func (m *Memory) MaintainCharacterMemory(ctx context.Context, world, character s
 	}
 	mem, err := m.repos.Memory.Load(character)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("maintain_character_memory: Load failed: %w", err)
 	}
 	body, err := mem.Save()
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("wrap: %w", err)
 	}
 	if len(body) < tools.CharacterMemoryMaintainBytes {
 		m.log.Debug().
@@ -443,7 +447,7 @@ func (m *Memory) MaintainCharacterMemory(ctx context.Context, world, character s
 	chronicleBody, _ := yamlMarshalChronicle(chronicleRaw)
 	newBody, err := m.characterMemorySummarizer.SummarizeCharacterMemory(ctx, world, character, []byte(body), []byte(chronicleBody))
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("wrap: %w", err)
 	}
 	if len(newBody) == 0 || len(newBody) >= len(body) {
 		m.log.Info().
@@ -459,7 +463,7 @@ func (m *Memory) MaintainCharacterMemory(ctx context.Context, world, character s
 		return false, fmt.Errorf("character_memory_maintain: LLM response not parseable YAML: %w", err)
 	}
 	if err := m.repos.Memory.Save(character, newMem); err != nil {
-		return false, err
+		return false, fmt.Errorf("wrap: %w", err)
 	}
 	m.log.Info().
 		Str("world", world).
@@ -474,7 +478,11 @@ func (m *Memory) MaintainCharacterMemory(ctx context.Context, world, character s
 // on-disk YAML form. Used as context for the LLM
 // summarizer.
 func yamlMarshalChronicle(c chronicle.Chronicle) (string, error) {
-	return c.Save()
+	body, err := c.Save()
+	if err != nil {
+		return "", fmt.Errorf("yaml_marshal_chronicle: %w", err)
+	}
+	return body, nil
 }
 
 // Reference imports that are part of the public

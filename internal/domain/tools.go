@@ -142,10 +142,10 @@ func ArrayOfStrings(description string) Schema {
 // ArrayOfStringsBounded is ArrayOfStrings with minItems/maxItems
 // constraints, used for the rotate_plan tool where the skill
 // mandates 3-5 events.
-func ArrayOfStringsBounded(description string, min, max int) Schema {
+func ArrayOfStringsBounded(description string, minItems, maxItems int) Schema {
 	s := ArrayOfStrings(description)
-	s.MinItems = &min
-	s.MaxItems = &max
+	s.MinItems = &minItems
+	s.MaxItems = &maxItems
 	return s
 }
 

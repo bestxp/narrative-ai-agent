@@ -9,6 +9,7 @@ import (
 )
 
 func TestNew_CreatesRootDir(t *testing.T) {
+	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "data")
 	s, err := New(dir)
 	if err != nil {
@@ -27,6 +28,7 @@ func TestNew_CreatesRootDir(t *testing.T) {
 }
 
 func TestReadWrite_RoundTrip(t *testing.T) {
+	t.Parallel()
 	s, _ := New(t.TempDir())
 	want := []byte("hello world")
 	if err := s.Write("a/b.txt", want); err != nil {
@@ -42,6 +44,7 @@ func TestReadWrite_RoundTrip(t *testing.T) {
 }
 
 func TestRead_Missing(t *testing.T) {
+	t.Parallel()
 	s, _ := New(t.TempDir())
 	got, err := s.Read("does/not/exist.txt")
 	if err != nil {
@@ -53,6 +56,7 @@ func TestRead_Missing(t *testing.T) {
 }
 
 func TestExists(t *testing.T) {
+	t.Parallel()
 	s, _ := New(t.TempDir())
 	ok, err := s.Exists("nonexistent")
 	if err != nil {
@@ -74,6 +78,7 @@ func TestExists(t *testing.T) {
 }
 
 func TestWrite_Overwrites(t *testing.T) {
+	t.Parallel()
 	s, _ := New(t.TempDir())
 	if err := s.Write("f.txt", []byte("first")); err != nil {
 		t.Fatal(err)
@@ -88,6 +93,7 @@ func TestWrite_Overwrites(t *testing.T) {
 }
 
 func TestWrite_AtomicViaTmpRename(t *testing.T) {
+	t.Parallel()
 	s, _ := New(t.TempDir())
 	if err := s.Write("a.txt", []byte("v1")); err != nil {
 		t.Fatal(err)
@@ -100,6 +106,7 @@ func TestWrite_AtomicViaTmpRename(t *testing.T) {
 }
 
 func TestListChildren(t *testing.T) {
+	t.Parallel()
 	s, _ := New(t.TempDir())
 	if err := s.Write("d/a.txt", []byte("x")); err != nil {
 		t.Fatal(err)
@@ -137,6 +144,7 @@ func TestListChildren(t *testing.T) {
 }
 
 func TestListChildren_MissingDir(t *testing.T) {
+	t.Parallel()
 	s, _ := New(t.TempDir())
 	got, err := s.ListChildren("does/not/exist")
 	if err != nil {
@@ -148,6 +156,7 @@ func TestListChildren_MissingDir(t *testing.T) {
 }
 
 func TestEnsureDir_Idempotent(t *testing.T) {
+	t.Parallel()
 	s, _ := New(t.TempDir())
 	if err := s.EnsureDir("a/b/c.txt"); err != nil {
 		t.Fatalf("EnsureDir: %v", err)
@@ -161,6 +170,7 @@ func TestEnsureDir_Idempotent(t *testing.T) {
 }
 
 func TestStripIndexPollutionBytes(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		in   string
@@ -173,6 +183,7 @@ func TestStripIndexPollutionBytes(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
 			got := string(stripIndexPollutionBytes([]byte(c.in)))
 			if got != c.want {
 				t.Errorf("got %q, want %q", got, c.want)
@@ -182,6 +193,7 @@ func TestStripIndexPollutionBytes(t *testing.T) {
 }
 
 func TestJoin(t *testing.T) {
+	t.Parallel()
 	s, _ := New(t.TempDir())
 	got := s.Join("worlds/naruto/chronicle.yaml")
 	want := filepath.Join(s.Root(), "worlds/naruto/chronicle.yaml")
@@ -191,6 +203,7 @@ func TestJoin(t *testing.T) {
 }
 
 func TestIsDirKey(t *testing.T) {
+	t.Parallel()
 	if IsDirKey("worlds/naruto/") != true {
 		t.Error("trailing slash should be a dir key")
 	}
@@ -200,6 +213,7 @@ func TestIsDirKey(t *testing.T) {
 }
 
 func TestRoot_Absolute(t *testing.T) {
+	t.Parallel()
 	s, _ := New(t.TempDir())
 	if !strings.HasPrefix(s.Root(), "/") {
 		t.Errorf("Root() should be absolute, got %q", s.Root())

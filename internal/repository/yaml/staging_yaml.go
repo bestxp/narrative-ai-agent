@@ -29,7 +29,7 @@ type stagingAdapter struct {
 func (a *stagingAdapter) ReadRaw(rel string) (string, error) {
 	body, err := a.store.Read(rel)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("read_raw: Read failed: %w", err)
 	}
 	return string(body), nil
 }
@@ -98,7 +98,7 @@ func (r *StagingYaml) UpdateStage(world, nextID string, runtime staging.StageRun
 	}
 	before := s.Next
 	if err := s.UpdateStage(r.adapter, world, nextID); err != nil {
-		return false, err
+		return false, fmt.Errorf("update_stage: Load failed: %w", err)
 	}
 	return s.Next != before, nil
 }
@@ -112,7 +112,7 @@ func (r *StagingYaml) AdvanceTimeline(world string, runtime staging.StageRuntime
 	}
 	before := s.TimelineIndex
 	if err := s.AdvanceTimeline(r.adapter, world); err != nil {
-		return false, err
+		return false, fmt.Errorf("advance_timeline: Load failed: %w", err)
 	}
 	return s.TimelineIndex != before, nil
 }

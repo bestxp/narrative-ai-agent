@@ -61,6 +61,7 @@ stages:
 `
 
 func TestLoad_Sandbox(t *testing.T) {
+	t.Parallel()
 	fs := newMemFS()
 	// No staging.yaml at all.
 	s, err := Load(fs, "naruto", StageRuntime{})
@@ -73,6 +74,7 @@ func TestLoad_Sandbox(t *testing.T) {
 }
 
 func TestLoad_DisabledExplicit(t *testing.T) {
+	t.Parallel()
 	fs := newMemFS()
 	fs.files["worlds/naruto/staging.yaml"] = "enabled: false\ninit: []\nstages: []\n"
 
@@ -86,6 +88,7 @@ func TestLoad_DisabledExplicit(t *testing.T) {
 }
 
 func TestLoad_BrokenYAML(t *testing.T) {
+	t.Parallel()
 	fs := newMemFS()
 	fs.files["worlds/naruto/staging.yaml"] = "enabled: true\nstages: : :\n"
 	if _, err := Load(fs, "naruto", StageRuntime{}); err == nil {
@@ -94,6 +97,7 @@ func TestLoad_BrokenYAML(t *testing.T) {
 }
 
 func TestLoad_EnabledInitialisesFromInit(t *testing.T) {
+	t.Parallel()
 	fs := newMemFS()
 	fs.files["worlds/naruto/staging.yaml"] = validYAML
 
@@ -116,6 +120,7 @@ func TestLoad_EnabledInitialisesFromInit(t *testing.T) {
 }
 
 func TestLoad_ReusesStageState(t *testing.T) {
+	t.Parallel()
 	fs := newMemFS()
 	fs.files["worlds/naruto/staging.yaml"] = validYAML
 
@@ -131,6 +136,7 @@ func TestLoad_ReusesStageState(t *testing.T) {
 }
 
 func TestLoad_RepairsUnknownNext(t *testing.T) {
+	t.Parallel()
 	fs := newMemFS()
 	fs.files["worlds/naruto/staging.yaml"] = validYAML
 
@@ -144,6 +150,7 @@ func TestLoad_RepairsUnknownNext(t *testing.T) {
 }
 
 func TestLoad_RepairsTimelineIndex(t *testing.T) {
+	t.Parallel()
 	fs := newMemFS()
 	fs.files["worlds/naruto/staging.yaml"] = validYAML
 
@@ -157,6 +164,7 @@ func TestLoad_RepairsTimelineIndex(t *testing.T) {
 }
 
 func TestUpdateStage_Valid(t *testing.T) {
+	t.Parallel()
 	fs := newMemFS()
 	fs.files["worlds/naruto/staging.yaml"] = validYAML
 
@@ -180,6 +188,7 @@ func TestUpdateStage_Valid(t *testing.T) {
 }
 
 func TestUpdateStage_InvalidTransition(t *testing.T) {
+	t.Parallel()
 	fs := newMemFS()
 	fs.files["worlds/naruto/staging.yaml"] = validYAML
 
@@ -193,6 +202,7 @@ func TestUpdateStage_InvalidTransition(t *testing.T) {
 }
 
 func TestUpdateStage_Idempotent(t *testing.T) {
+	t.Parallel()
 	fs := newMemFS()
 	fs.files["worlds/naruto/staging.yaml"] = validYAML
 
@@ -213,6 +223,7 @@ func TestUpdateStage_Idempotent(t *testing.T) {
 }
 
 func TestAdvanceTimeline(t *testing.T) {
+	t.Parallel()
 	fs := newMemFS()
 	fs.files["worlds/naruto/staging.yaml"] = validYAML
 
@@ -234,6 +245,7 @@ func TestAdvanceTimeline(t *testing.T) {
 }
 
 func TestApplyPending(t *testing.T) {
+	t.Parallel()
 	fs := newMemFS()
 	fs.files["worlds/naruto/staging.yaml"] = validYAML
 
@@ -260,6 +272,7 @@ func TestApplyPending(t *testing.T) {
 }
 
 func TestApplyPending_NoopIfEmpty(t *testing.T) {
+	t.Parallel()
 	fs := newMemFS()
 	fs.files["worlds/naruto/staging.yaml"] = validYAML
 
@@ -277,6 +290,7 @@ func TestApplyPending_NoopIfEmpty(t *testing.T) {
 }
 
 func TestRender_Basic(t *testing.T) {
+	t.Parallel()
 	fs := newMemFS()
 	fs.files["worlds/naruto/staging.yaml"] = validYAML
 
@@ -303,6 +317,7 @@ func TestRender_Basic(t *testing.T) {
 }
 
 func TestRender_SandboxEmpty(t *testing.T) {
+	t.Parallel()
 	fs := newMemFS()
 
 	s, _ := Load(fs, "naruto", StageRuntime{})
@@ -312,6 +327,7 @@ func TestRender_SandboxEmpty(t *testing.T) {
 }
 
 func TestRender_PendingShown(t *testing.T) {
+	t.Parallel()
 	fs := newMemFS()
 	fs.files["worlds/naruto/staging.yaml"] = validYAML
 
@@ -324,6 +340,7 @@ func TestRender_PendingShown(t *testing.T) {
 }
 
 func TestValidation_DuplicateID(t *testing.T) {
+	t.Parallel()
 	bad := `enabled: true
 init: [a]
 stages:
@@ -350,6 +367,7 @@ stages:
 }
 
 func TestValidation_MixedDays(t *testing.T) {
+	t.Parallel()
 	bad := `enabled: true
 init: [a]
 stages:
@@ -374,6 +392,7 @@ stages:
 }
 
 func TestValidation_UnknownTransition(t *testing.T) {
+	t.Parallel()
 	bad := `enabled: true
 init: [a]
 stages:

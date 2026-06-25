@@ -5,6 +5,7 @@ import (
 
 	"github.com/rs/zerolog"
 
+	"fmt"
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
 	"github.com/bestxp/narrative-ai-agent/internal/domain"
 	"github.com/bestxp/narrative-ai-agent/internal/slowlog"
@@ -43,7 +44,7 @@ func NewSystemState(fs *storage.FileStore, log zerolog.Logger, slow *slowlog.Log
 func (s *SystemState) Load() (domain.SystemState, error) {
 	body, err := s.fs.ReadRaw(domain.SystemStateFile)
 	if err != nil {
-		return domain.SystemState{}, err
+		return domain.SystemState{}, fmt.Errorf("load: ReadRaw failed: %w", err)
 	}
 	if body == "" {
 		return domain.DefaultSystemState(), nil
@@ -57,10 +58,10 @@ func (s *SystemState) Load() (domain.SystemState, error) {
 func (s *SystemState) Save(state domain.SystemState) error {
 	body, err := state.MarshalSystemState()
 	if err != nil {
-		return err
+		return fmt.Errorf("save: MarshalSystemState failed: %w", err)
 	}
 	if err := s.fs.WriteRawAtomic(domain.SystemStateFile, body); err != nil {
-		return err
+		return fmt.Errorf("save: WriteRawAtomic failed: %w", err)
 	}
 	s.log.Debug().Msg("system_state saved")
 	return nil
@@ -114,12 +115,12 @@ func (s *SystemState) AppendCompaction(ev domain.CompactionEvent) (domain.System
 		Msg("compaction logged")
 	if s.slow != nil {
 		_ = s.slow.Write("compaction", "", map[string]any{
-			"trigger":        ev.Trigger,
-			"role":           ev.Role,
-			"before_tokens":  ev.BeforeTokens,
-			"after_tokens":   ev.AfterTokens,
-			"dropped_turns":  ev.DroppedTurns,
-			"kept_recent":    ev.KeptRecent,
+			"trigger":       ev.Trigger,
+			"role":          ev.Role,
+			"before_tokens": ev.BeforeTokens,
+			"after_tokens":  ev.AfterTokens,
+			"dropped_turns": ev.DroppedTurns,
+			"kept_recent":   ev.KeptRecent,
 		})
 	}
 	return state, nil

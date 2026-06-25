@@ -13,12 +13,14 @@ import (
 )
 
 func TestDiscard_NeverPanics(t *testing.T) {
+	t.Parallel()
 	l := Discard()
 	assert.NoError(t, l.WriteOK("test", ""))
 	assert.NoError(t, l.Write("test", "", map[string]any{"x": 1}))
 }
 
 func TestFile_AppendsJSONLines(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	l, err := File(dir + "/slow.log")
 	require.NoError(t, err)
@@ -37,16 +39,17 @@ func TestFile_AppendsJSONLines(t *testing.T) {
 
 	second := parseLine(t, lines[1])
 	assert.Equal(t, "tool.update_state", second.Kind)
-	assert.Equal(t, float64(42), second.Fields["bytes"])
+	assert.InDelta(t, float64(42), second.Fields["bytes"], 1e-9)
 	assert.Equal(t, "state.md", second.Fields["path"])
 }
 
 func TestFile_ConcurrentWrites(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	l, err := File(dir + "/slow.log")
 	require.NoError(t, err)
 	var wg sync.WaitGroup
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -64,6 +67,7 @@ func TestFile_ConcurrentWrites(t *testing.T) {
 }
 
 func TestFile_MissingDirIsCreated(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	l, err := File(dir + "/nested/dir/slow.log")
 	require.NoError(t, err)
@@ -71,6 +75,7 @@ func TestFile_MissingDirIsCreated(t *testing.T) {
 }
 
 func TestFile_TimestampFormatting(t *testing.T) {
+	t.Parallel()
 	l := Discard()
 	fixed := time.Date(2026, 6, 5, 22, 30, 0, 123_000_000, time.UTC)
 	l.now = func() time.Time { return fixed }

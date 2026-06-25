@@ -9,6 +9,7 @@ import (
 )
 
 func TestSystemState_RoundTrip(t *testing.T) {
+	t.Parallel()
 	in := SystemState{
 		Session: SessionState{
 			StartedAt:         time.Date(2026, 6, 5, 22, 0, 0, 0, time.UTC),
@@ -24,18 +25,18 @@ func TestSystemState_RoundTrip(t *testing.T) {
 			LastCompactionAt: time.Date(2026, 6, 6, 13, 45, 0, 0, time.UTC),
 			History: []CompactionEvent{
 				{
-					At:            time.Date(2026, 6, 6, 12, 30, 0, 0, time.UTC),
-					Trigger:       "context_window*0.7",
-					Role:          "narrative",
-					BeforeTokens:  22000,
-					AfterTokens:   5500,
-					DroppedTurns:  23,
-					KeptRecent:    5,
+					At:           time.Date(2026, 6, 6, 12, 30, 0, 0, time.UTC),
+					Trigger:      "context_window*0.7",
+					Role:         "narrative",
+					BeforeTokens: 22000,
+					AfterTokens:  5500,
+					DroppedTurns: 23,
+					KeptRecent:   5,
 				},
 			},
 		},
 		Autosave: AutosaveState{
-			LastHash:  "abc1234",
+			LastHash:   "abc1234",
 			LastSaveAt: time.Date(2026, 6, 6, 13, 30, 0, 0, time.UTC),
 			TotalSaves: 12,
 		},
@@ -52,27 +53,31 @@ func TestSystemState_RoundTrip(t *testing.T) {
 }
 
 func TestParseSystemState_EmptyErrors(t *testing.T) {
+	t.Parallel()
 	_, err := ParseSystemState("")
 	assert.Error(t, err)
 }
 
 func TestParseSystemState_BadYAMLErrors(t *testing.T) {
+	t.Parallel()
 	_, err := ParseSystemState("session: : :")
 	assert.Error(t, err)
 }
 
 func TestCompactionLog_AppendEvictsOldest(t *testing.T) {
+	t.Parallel()
 	c := &CompactionLog{}
 	for i := 0; i < 5; i++ {
 		c.AppendCompactionEvent(CompactionEvent{At: time.Unix(int64(i), 0), KeptRecent: i}, 3)
 	}
-	assert.Equal(t, 3, len(c.History), "history should be capped at 3")
+	assert.Len(t, c.History, 3, "history should be capped at 3")
 	assert.Equal(t, 5, c.TotalCompactions, "total counts all appends")
 	assert.Equal(t, 2, c.History[0].KeptRecent, "oldest two should be evicted")
 	assert.Equal(t, 4, c.History[2].KeptRecent, "newest survives")
 }
 
 func TestCompactionLog_AppendHonoursMaxEntries1(t *testing.T) {
+	t.Parallel()
 	c := &CompactionLog{}
 	c.AppendCompactionEvent(CompactionEvent{KeptRecent: 1}, 1)
 	c.AppendCompactionEvent(CompactionEvent{KeptRecent: 2}, 1)
@@ -82,15 +87,18 @@ func TestCompactionLog_AppendHonoursMaxEntries1(t *testing.T) {
 }
 
 func TestCompactionLog_AppendHonoursZeroMax(t *testing.T) {
+	t.Parallel()
 	c := &CompactionLog{}
 	c.AppendCompactionEvent(CompactionEvent{KeptRecent: 1}, 0)
 	assert.Len(t, c.History, 1, "maxEntries < 1 is clamped to 1")
 }
 
 func TestDefaultSystemState_IsZero(t *testing.T) {
+	t.Parallel()
 	assert.Equal(t, SystemState{}, DefaultSystemState())
 }
 
 func TestSystemStateFile_Constant(t *testing.T) {
+	t.Parallel()
 	assert.Equal(t, "system_state.md", SystemStateFile)
 }

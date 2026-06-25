@@ -10,6 +10,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/rs/zerolog"
+	"gopkg.in/yaml.v3"
+
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/llm"
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
 	"github.com/bestxp/narrative-ai-agent/internal/charprofile"
@@ -20,8 +23,6 @@ import (
 	"github.com/bestxp/narrative-ai-agent/internal/structured"
 	"github.com/bestxp/narrative-ai-agent/internal/usecase/tools"
 	"github.com/bestxp/narrative-ai-agent/internal/usecase/tools/files"
-	"github.com/rs/zerolog"
-	"gopkg.in/yaml.v3"
 )
 
 // DefaultProtocolWindowDays is the number of past days for
@@ -654,7 +655,7 @@ func (g *GM) runConversation(ctx context.Context, chatID string, cb Callbacks) (
 			return nil
 		})
 		if streamErr != nil {
-			return totals, streamErr
+			return totals, fmt.Errorf("stream: %w", streamErr)
 		}
 
 		// Slowlog: log the full response immediately after the
@@ -917,6 +918,7 @@ func (g *GM) runConversation(ctx context.Context, chatID string, cb Callbacks) (
 			history = append(history, nudge)
 			consecutiveToolOnlyRounds = 0
 			toolCalls = nil
+
 			continue
 		}
 
@@ -1033,15 +1035,13 @@ func extractProperNamesFromDialogue(answer string) []string {
 			runes := []rune(cleaned)
 			if runes[0] >= 'A' && runes[0] <= 'Z' || runes[0] >= 'А' && runes[0] <= 'Я' {
 				current = append(current, cleaned)
-			} else {
-				if len(current) > 0 {
-					name := strings.Join(current, " ")
-					if !seen[name] {
-						seen[name] = true
-						out = append(out, name)
-					}
-					current = nil
+			} else if len(current) > 0 {
+				name := strings.Join(current, " ")
+				if !seen[name] {
+					seen[name] = true
+					out = append(out, name)
 				}
+				current = nil
 			}
 		}
 		if len(current) > 0 {
@@ -1522,6 +1522,7 @@ func parseKeyValuePairs(s, sep string) map[string]string {
 				continue
 			}
 			out[lastKey] = out[lastKey] + sep + " " + part
+
 			continue
 		}
 		key := strings.ToLower(strings.TrimSpace(part[:idx]))
@@ -1584,6 +1585,7 @@ func (g *GM) executeExtractedCommands(ctx context.Context, chatID, world string,
 		default:
 			g.log.Warn().Str("kind", c.Kind).Str("raw", c.Raw).Msg("context.extracted: unknown kind")
 			failed++
+
 			continue
 		}
 		if err != nil {
@@ -1617,13 +1619,13 @@ func (g *GM) dispatchUpdateNpcDirective(_ context.Context, world string, c extra
 	section := strings.TrimSpace(c.Args["section"])
 	appendText := c.Args["append"]
 	if name == "" {
-		return fmt.Errorf("update_npc: npc name required")
+		return errors.New("update_npc: npc name required")
 	}
 	if section == "" {
-		return fmt.Errorf("update_npc: section required")
+		return errors.New("update_npc: section required")
 	}
 	if strings.TrimSpace(appendText) == "" {
-		return fmt.Errorf("update_npc: append text required (no empty updates)")
+		return errors.New("update_npc: append text required (no empty updates)")
 	}
 	return g.tools.UpdateNPC(world, name, section, appendText)
 }
@@ -1634,7 +1636,7 @@ func (g *GM) dispatchUpdateNpcDirective(_ context.Context, world string, c extra
 func (g *GM) dispatchUpdateStateDirective(_ context.Context, world string, c extractedCommand) error {
 	moment := strings.TrimSpace(c.Args["moment"])
 	if moment == "" {
-		return fmt.Errorf("update_state: moment required")
+		return errors.New("update_state: moment required")
 	}
 	inFlight := parseBoolArg(c.Args["in_flight"])
 	npcs := splitCSV(c.Args["npcs"])
@@ -1653,7 +1655,7 @@ func (g *GM) dispatchAppendLoreDirective(_ context.Context, world string, c extr
 	header := strings.TrimSpace(c.Args["header"])
 	bullet := strings.TrimSpace(c.Args["bullet"])
 	if header == "" || bullet == "" {
-		return fmt.Errorf("append_lore: header and bullet required")
+		return errors.New("append_lore: header and bullet required")
 	}
 	return g.tools.AppendLore(world, header, bullet)
 }
@@ -1667,10 +1669,10 @@ func (g *GM) dispatchUpdateSoulDirective(_ context.Context, c extractedCommand) 
 	section := strings.TrimSpace(c.Args["section"])
 	appendText := c.Args["append"]
 	if section == "" {
-		return fmt.Errorf("update_soul: section required")
+		return errors.New("update_soul: section required")
 	}
 	if strings.TrimSpace(appendText) == "" {
-		return fmt.Errorf("update_soul: append text required (no empty updates)")
+		return errors.New("update_soul: append text required (no empty updates)")
 	}
 	sc, err := g.ss.Start()
 	if err != nil {
@@ -1688,10 +1690,10 @@ func (g *GM) dispatchUpdateSkillDirective(_ context.Context, c extractedCommand)
 	section := strings.TrimSpace(c.Args["section"])
 	appendText := c.Args["append"]
 	if section == "" {
-		return fmt.Errorf("update_skill: section required")
+		return errors.New("update_skill: section required")
 	}
 	if strings.TrimSpace(appendText) == "" {
-		return fmt.Errorf("update_skill: append text required (no empty updates)")
+		return errors.New("update_skill: append text required (no empty updates)")
 	}
 	sc, err := g.ss.Start()
 	if err != nil {
@@ -1708,10 +1710,10 @@ func (g *GM) dispatchUpdateMemoryDirective(_ context.Context, c extractedCommand
 	section := strings.TrimSpace(c.Args["section"])
 	appendText := c.Args["append"]
 	if section == "" {
-		return fmt.Errorf("update_memory: section required")
+		return errors.New("update_memory: section required")
 	}
 	if strings.TrimSpace(appendText) == "" {
-		return fmt.Errorf("update_memory: append text required (no empty updates)")
+		return errors.New("update_memory: append text required (no empty updates)")
 	}
 	sc, err := g.ss.Start()
 	if err != nil {
@@ -1731,10 +1733,10 @@ func (g *GM) dispatchUpdateInventoryDirective(_ context.Context, c extractedComm
 	name := strings.TrimSpace(c.Args["name"])
 	typ := strings.TrimSpace(c.Args["type"])
 	if name == "" {
-		return fmt.Errorf("update_inventory: name required")
+		return errors.New("update_inventory: name required")
 	}
 	if typ == "" {
-		return fmt.Errorf("update_inventory: type required")
+		return errors.New("update_inventory: type required")
 	}
 	sc, err := g.ss.Start()
 	if err != nil {
@@ -1752,7 +1754,7 @@ func (g *GM) dispatchUpdateInventoryDirective(_ context.Context, c extractedComm
 func (g *GM) dispatchRemoveInventoryItemDirective(_ context.Context, c extractedCommand) error {
 	name := strings.TrimSpace(c.Args["name"])
 	if name == "" {
-		return fmt.Errorf("remove_inventory_item: name required")
+		return errors.New("remove_inventory_item: name required")
 	}
 	sc, err := g.ss.Start()
 	if err != nil {
@@ -1764,7 +1766,7 @@ func (g *GM) dispatchRemoveInventoryItemDirective(_ context.Context, c extracted
 func (g *GM) dispatchSetCurrencyDirective(_ context.Context, c extractedCommand) error {
 	name := strings.TrimSpace(c.Args["name"])
 	if name == "" {
-		return fmt.Errorf("set_currency: name required")
+		return errors.New("set_currency: name required")
 	}
 	count := toInt(c.Args["count"])
 	sc, err := g.ss.Start()
@@ -1778,7 +1780,7 @@ func (g *GM) dispatchSetCurrencyDirective(_ context.Context, c extractedCommand)
 func (g *GM) dispatchRemoveCurrencyDirective(_ context.Context, c extractedCommand) error {
 	name := strings.TrimSpace(c.Args["name"])
 	if name == "" {
-		return fmt.Errorf("remove_currency: name required")
+		return errors.New("remove_currency: name required")
 	}
 	sc, err := g.ss.Start()
 	if err != nil {
@@ -1803,7 +1805,7 @@ func (g *GM) dispatchCreateNpcDirective(_ context.Context, world string, c extra
 		Abilities:   []string{strings.TrimSpace(c.Args["abilities"])},
 	}
 	if spec.DisplayName == "" || spec.File == "" {
-		return fmt.Errorf("create_npc: display_name and file_slug required")
+		return errors.New("create_npc: display_name and file_slug required")
 	}
 	return g.tools.Create(world, spec)
 }
@@ -1842,7 +1844,7 @@ func splitCSV(s string) []string {
 // When tracking is "estimate" we always estimate regardless of
 // what the provider reported. When tracking is "usage" we trust
 // the provider; if it returned nothing, we estimate and warn.
-func (g *GM) accountRound(messages []llm.Message, compChars int, compText string, gotUsage bool, usage llm.Usage) TokenUsage {
+func (g *GM) accountRound(messages []llm.Message, _ int, compText string, gotUsage bool, usage llm.Usage) TokenUsage {
 	switch g.tracking {
 	case "", "off":
 		return TokenUsage{Source: "off"}
@@ -1920,7 +1922,7 @@ func (g *GM) buildContext() (systemMsg, worldMsg string, err error) {
 			g.systemSnapshot = domain.BuildSystemPrompt(g.staticPrompt, domain.CharacterContext{}, g.role.DisableThinking)
 			ws, werr := domain.BuildWorldStateMessage(domain.WorldContext{}, domain.CharacterContext{})
 			if werr != nil {
-				return "", "", werr
+				return "", "", fmt.Errorf("ensure_snapshots: BuildWorldStateMessage failed: %w", werr)
 			}
 			g.worldSnapshot = ws
 			g.contextSceneKey = ""
@@ -1992,7 +1994,7 @@ func (g *GM) buildContext() (systemMsg, worldMsg string, err error) {
 	builtSystem := domain.BuildSystemPrompt(g.staticPrompt, charCtx, g.role.DisableThinking)
 	builtWorld, err := domain.BuildWorldStateMessage(worldCtx, charCtx)
 	if err != nil {
-		return "", "", err
+		return "", "", fmt.Errorf("wrap: %w", err)
 	}
 
 	g.contextMu.Lock()

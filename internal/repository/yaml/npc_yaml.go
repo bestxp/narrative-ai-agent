@@ -3,6 +3,7 @@ package yaml
 import (
 	"strings"
 
+	"fmt"
 	"github.com/bestxp/narrative-ai-agent/internal/npcprofile"
 	"github.com/bestxp/narrative-ai-agent/internal/storage"
 )
@@ -39,7 +40,7 @@ func NewNPCProfileYaml(store storage.Storage) *NPCProfileYaml {
 func (r *NPCProfileYaml) ListSlugs(world string) ([]string, error) {
 	entries, err := r.store.ListChildren("worlds/" + world + "/characters")
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("list_slugs: ListChildren failed: %w", err)
 	}
 	out := make([]string, 0, len(entries))
 	for _, name := range entries {
@@ -58,14 +59,14 @@ func (r *NPCProfileYaml) ListSlugs(world string) ([]string, error) {
 func (r *NPCProfileYaml) Load(world, slug string) (npcprofile.Profile, error) {
 	body, err := r.store.Read(npcProfileKey(world, slug))
 	if err != nil {
-		return npcprofile.Profile{}, err
+		return npcprofile.Profile{}, fmt.Errorf("npc_load: Read failed: %w", err)
 	}
 	if strings.TrimSpace(string(body)) == "" {
 		return npcprofile.Profile{}, npcprofile.ErrNotFound
 	}
 	p, err := npcprofile.Load(string(body))
 	if err != nil {
-		return npcprofile.Profile{}, err
+		return npcprofile.Profile{}, fmt.Errorf("load: Load failed: %w", err)
 	}
 	return p, nil
 }
@@ -74,7 +75,7 @@ func (r *NPCProfileYaml) Load(world, slug string) (npcprofile.Profile, error) {
 func (r *NPCProfileYaml) Save(world, slug string, p npcprofile.Profile) error {
 	body, err := p.Save()
 	if err != nil {
-		return err
+		return fmt.Errorf("save: Save failed: %w", err)
 	}
 	return r.store.Write(npcProfileKey(world, slug), []byte(body))
 }

@@ -17,6 +17,7 @@ worlds:
 `
 
 func TestParseInfo_FromYAML(t *testing.T) {
+	t.Parallel()
 	info, err := ParseInfo(sampleInfo)
 	require.NoError(t, err)
 	assert.Equal(t, "markus", info.ActiveCharacter)
@@ -26,6 +27,7 @@ func TestParseInfo_FromYAML(t *testing.T) {
 }
 
 func TestParseInfo_Pointers(t *testing.T) {
+	t.Parallel()
 	info, err := ParseInfo(sampleInfo)
 	require.NoError(t, err)
 	assert.Equal(t, "characters/markus", info.ActiveCharacterPointer())
@@ -33,27 +35,31 @@ func TestParseInfo_Pointers(t *testing.T) {
 }
 
 func TestParseInfo_EmptyPlaceholdersAllowed(t *testing.T) {
+	t.Parallel()
 	// Freshly bootstrapped registry is a valid Info with zero values —
 	// SessionStart will fill it in via /launch.
 	info, err := ParseInfo(BuildInfo("", "", nil, nil))
 	require.NoError(t, err)
-	assert.Equal(t, "", info.ActiveCharacter)
-	assert.Equal(t, "", info.ActiveWorld)
+	assert.Empty(t, info.ActiveCharacter)
+	assert.Empty(t, info.ActiveWorld)
 	assert.Empty(t, info.Characters)
 	assert.Empty(t, info.Worlds)
 }
 
 func TestParseInfo_EmptyBodyErrors(t *testing.T) {
+	t.Parallel()
 	_, err := ParseInfo("")
 	assert.Error(t, err)
 }
 
 func TestParseInfo_BadYAMLErrors(t *testing.T) {
+	t.Parallel()
 	_, err := ParseInfo("active_character: : :")
 	assert.Error(t, err)
 }
 
 func TestBuildInfo_RoundTrip(t *testing.T) {
+	t.Parallel()
 	out := BuildInfo("markus", "naruto", []string{"alice"}, []string{"bleach"})
 	info, err := ParseInfo(out)
 	require.NoError(t, err)
@@ -64,6 +70,7 @@ func TestBuildInfo_RoundTrip(t *testing.T) {
 }
 
 func TestBuildInfo_Dedupes(t *testing.T) {
+	t.Parallel()
 	out := BuildInfo("markus", "naruto", []string{"markus", "alice"}, []string{"naruto", "bleach"})
 	info, err := ParseInfo(out)
 	require.NoError(t, err)
@@ -72,16 +79,18 @@ func TestBuildInfo_Dedupes(t *testing.T) {
 }
 
 func TestBuildInfo_EmptyProducesValidYAML(t *testing.T) {
+	t.Parallel()
 	out := BuildInfo("", "", nil, nil)
 	info, err := ParseInfo(out)
 	require.NoError(t, err)
-	assert.Equal(t, "", info.ActiveCharacter)
-	assert.Equal(t, "", info.ActiveWorld)
+	assert.Empty(t, info.ActiveCharacter)
+	assert.Empty(t, info.ActiveWorld)
 	assert.Empty(t, info.Characters)
 	assert.Empty(t, info.Worlds)
 }
 
 func TestRenderSample(t *testing.T) {
+	t.Parallel()
 	// Sanity-check the file shape the bot will write to disk.
 	out := BuildInfo("markus", "naruto", []string{"alice"}, []string{"bleach"})
 	t.Logf("\n%s", out)

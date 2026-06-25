@@ -328,7 +328,7 @@ func TestGM_CompactionFiresOnLongHistory(t *testing.T) {
 	var compacted CompactionResult
 	var compactedMu sync.Mutex
 	cb := Callbacks{
-		OnDelta: func(s string) error { return nil },
+		OnDelta: func(_ string) error { return nil },
 		OnCompaction: func(r CompactionResult) {
 			compactedMu.Lock()
 			compacted = r

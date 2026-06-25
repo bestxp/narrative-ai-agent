@@ -5,9 +5,10 @@ import (
 	"fmt"
 	"strings"
 
+	gyaml "gopkg.in/yaml.v3"
+
 	"github.com/bestxp/narrative-ai-agent/internal/domain"
 	"github.com/bestxp/narrative-ai-agent/internal/storage"
-	gyaml "gopkg.in/yaml.v3"
 )
 
 // stateKey returns the canonical storage key for a
@@ -46,7 +47,7 @@ func NewWorldStateYaml(store storage.Storage) *WorldStateYaml {
 func (r *WorldStateYaml) Load(world string) (domain.StateSnapshot, error) {
 	body, err := r.store.Read(stateKey(world))
 	if err != nil {
-		return domain.StateSnapshot{}, err
+		return domain.StateSnapshot{}, fmt.Errorf("world_state_load: Read failed: %w", err)
 	}
 
 	return parseStateYAML(string(body)), nil
@@ -95,7 +96,7 @@ func (r *WorldStateYaml) AppendEvent(world, event string) error {
 func (r *WorldStateYaml) EnsureExists(world string, day int, inFlight bool) error {
 	exists, err := r.store.Exists(stateKey(world))
 	if err != nil {
-		return err
+		return fmt.Errorf("ensure_exists: Exists failed: %w", err)
 	}
 	if exists {
 		return nil

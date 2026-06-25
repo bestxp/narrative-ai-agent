@@ -2,12 +2,14 @@ package files
 
 import (
 	"context"
+	"errors"
 	"fmt"
+
+	"github.com/rs/zerolog"
 
 	"github.com/bestxp/narrative-ai-agent/internal/domain"
 	"github.com/bestxp/narrative-ai-agent/internal/repository/api"
 	"github.com/bestxp/narrative-ai-agent/internal/staging"
-	"github.com/rs/zerolog"
 )
 
 // StageTool implements UpdateStage, AdvanceTimeline and
@@ -27,10 +29,10 @@ func newStage(log zerolog.Logger, repos *api.Repositories) *StageTool {
 // UpdateStage writes the pending stage transition.
 func (s *StageTool) UpdateStage(ctx context.Context, world, nextID string) (bool, error) {
 	if world == "" {
-		return false, fmt.Errorf("stage: world is empty")
+		return false, errors.New("stage: world is empty")
 	}
 	if nextID == "" {
-		return false, fmt.Errorf("stage: next_id is empty")
+		return false, errors.New("stage: next_id is empty")
 	}
 
 	rt, snap, err := s.loadRuntime(world)
@@ -62,7 +64,7 @@ func (s *StageTool) UpdateStage(ctx context.Context, world, nextID string) (bool
 // AdvanceTimeline moves the timeline cursor forward.
 func (s *StageTool) AdvanceTimeline(ctx context.Context, world string) (bool, error) {
 	if world == "" {
-		return false, fmt.Errorf("stage: world is empty")
+		return false, errors.New("stage: world is empty")
 	}
 
 	rt, snap, err := s.loadRuntime(world)
@@ -93,7 +95,7 @@ func (s *StageTool) AdvanceTimeline(ctx context.Context, world string) (bool, er
 // ApplyPendingStage activates a scheduled transition.
 func (s *StageTool) ApplyPendingStage(world string) error {
 	if world == "" {
-		return fmt.Errorf("stage: world is empty")
+		return errors.New("stage: world is empty")
 	}
 
 	rt, snap, err := s.loadRuntime(world)

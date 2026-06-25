@@ -3,6 +3,7 @@ package health
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
@@ -31,13 +32,14 @@ func (f *fakeReporter) set(reports []Report) {
 }
 
 func TestLiveAlwaysOK(t *testing.T) {
+	t.Parallel()
 	s := New(":0", nil)
 	if err := s.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	defer func() { _ = s.Shutdown(context.Background()) }()
 	url := "http://" + s.Addr() + "/healthz"
-	resp, err := http.Get(url)
+	resp, err := httpGetCtx(t.Context(), url)
 	if err != nil {
 		t.Fatalf("GET /healthz: %v", err)
 	}
@@ -48,6 +50,7 @@ func TestLiveAlwaysOK(t *testing.T) {
 }
 
 func TestReadyzRequiresConnected(t *testing.T) {
+	t.Parallel()
 	r := &fakeReporter{}
 	s := New(":0", r)
 	if err := s.Start(); err != nil {
@@ -60,7 +63,7 @@ func TestReadyzRequiresConnected(t *testing.T) {
 		{Name: "telegram", State: StatusReconnect},
 		{Name: "vk", State: StatusStopped},
 	})
-	resp, _ := http.Get("http://" + s.Addr() + "/readyz")
+	resp, _ := httpGetCtx(t.Context(), "http://"+s.Addr()+"/readyz")
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("expected 503, got %d", resp.StatusCode)
 	}
@@ -70,7 +73,7 @@ func TestReadyzRequiresConnected(t *testing.T) {
 		{Name: "telegram", State: StatusConnected},
 		{Name: "vk", State: StatusStopped},
 	})
-	resp, _ = http.Get("http://" + s.Addr() + "/readyz")
+	resp, _ = httpGetCtx(t.Context(), "http://"+s.Addr()+"/readyz")
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
@@ -83,6 +86,7 @@ func TestReadyzRequiresConnected(t *testing.T) {
 }
 
 func TestHealthEndpointAlwaysReturnsJSON(t *testing.T) {
+	t.Parallel()
 	r := &fakeReporter{}
 	s := New(":0", r)
 	if err := s.Start(); err != nil {
@@ -91,7 +95,7 @@ func TestHealthEndpointAlwaysReturnsJSON(t *testing.T) {
 	defer func() { _ = s.Shutdown(context.Background()) }()
 	s.MarkReady()
 	r.set([]Report{{Name: "telegram", State: StatusConnected}})
-	resp, err := http.Get("http://" + s.Addr() + "/health")
+	resp, err := httpGetCtx(t.Context(), "http://"+s.Addr()+"/health")
 	if err != nil {
 		t.Fatalf("GET /health: %v", err)
 	}
@@ -110,6 +114,7 @@ func TestHealthEndpointAlwaysReturnsJSON(t *testing.T) {
 }
 
 func TestShutdownDrains(t *testing.T) {
+	t.Parallel()
 	s := New(":0", &fakeReporter{})
 	if err := s.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -124,4 +129,12 @@ func TestShutdownDrains(t *testing.T) {
 		_ = resp.Body.Close()
 		t.Fatal("expected connection error after Shutdown, got success")
 	}
+}
+
+func httpGetCtx(ctx context.Context, url string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("http_get_ctx: NewRequestWithContext failed: %w", err)
+	}
+	return http.DefaultClient.Do(req)
 }

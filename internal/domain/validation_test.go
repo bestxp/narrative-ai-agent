@@ -8,6 +8,7 @@ import (
 )
 
 func TestTransliterate(t *testing.T) {
+	t.Parallel()
 	cases := map[string]string{
 		"маркус":  "markus",
 		"наруто":  "naruto",
@@ -20,29 +21,34 @@ func TestTransliterate(t *testing.T) {
 }
 
 func TestSanitizeName_RejectsEmpty(t *testing.T) {
+	t.Parallel()
 	_, err := SanitizeName("   ")
 	assert.Error(t, err)
 }
 
 func TestSanitizeName_TransliteratesCyrillic(t *testing.T) {
+	t.Parallel()
 	got, err := SanitizeName("Маркус")
 	require.NoError(t, err)
 	assert.Equal(t, "markus", got)
 }
 
 func TestSanitizeName_StripsForbidden(t *testing.T) {
+	t.Parallel()
 	got, err := SanitizeName("Foo/Bar Baz")
 	require.NoError(t, err)
 	assert.Equal(t, "foo_bar_baz", got)
 }
 
 func TestSanitizeName_PreservesLatin(t *testing.T) {
+	t.Parallel()
 	got, err := SanitizeName("Markus")
 	require.NoError(t, err)
 	assert.Equal(t, "markus", got)
 }
 
 func TestValidateWorldDir(t *testing.T) {
-	assert.NoError(t, ValidateWorldDir("naruto"))
+	t.Parallel()
+	require.NoError(t, ValidateWorldDir("naruto"))
 	assert.Error(t, ValidateWorldDir("наруто"))
 }

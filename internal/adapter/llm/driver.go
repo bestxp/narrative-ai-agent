@@ -82,9 +82,9 @@ type Driver interface {
 // If you need to change these, edit the driver, not the
 // config. There is no operator-facing knob for them anymore.
 type StructuredOutputConfig struct {
-	Mode         string
-	Schema       json.RawMessage
-	SchemaName   string
-	ToolChoice   string
-	StrictTools  bool
+	Mode        string
+	Schema      json.RawMessage
+	SchemaName  string
+	ToolChoice  string
+	StrictTools bool
 }

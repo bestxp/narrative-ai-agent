@@ -12,7 +12,7 @@ type fakeFS struct {
 func (f *fakeFS) ReadRaw(rel string) (string, error) {
 	v, ok := f.files[rel]
 	if !ok {
-		return "", &fsErr{rel: rel}
+		return "", &fsError{rel: rel}
 	}
 	return v, nil
 }
@@ -30,9 +30,9 @@ func (f *fakeFS) Exists(rel string) bool {
 	return ok
 }
 
-type fsErr struct{ rel string }
+type fsError struct{ rel string }
 
-func (e *fsErr) Error() string { return "fs: not found: " + e.rel }
+func (e *fsError) Error() string { return "fs: not found: " + e.rel }
 
 // TestLoadFromYAML covers the canonical case: a
 // world already has characters.yaml and the
@@ -40,6 +40,7 @@ func (e *fsErr) Error() string { return "fs: not found: " + e.rel }
 // fallback — the canonical roster is characters.yaml
 // and nothing else.
 func TestLoadFromYAML(t *testing.T) {
+	t.Parallel()
 	fs := &fakeFS{files: map[string]string{
 		"worlds/naruto/characters.yaml": `npcs:
   - slug: hinata
@@ -66,6 +67,7 @@ func TestLoadFromYAML(t *testing.T) {
 // registry without an error. The first create_npc
 // call will seed it.
 func TestLoadEmpty(t *testing.T) {
+	t.Parallel()
 	fs := &fakeFS{files: map[string]string{}}
 	r, err := Load(fs, "naruto")
 	if err != nil {
@@ -84,6 +86,7 @@ func TestLoadEmpty(t *testing.T) {
 // registry listed a character that the other did
 // not.
 func TestNoMarkdownFallback(t *testing.T) {
+	t.Parallel()
 	fs := &fakeFS{files: map[string]string{
 		"worlds/naruto/characters.md": `# NPC: naruto
 | Имя | Файл | Прозвища |
@@ -108,6 +111,7 @@ func TestNoMarkdownFallback(t *testing.T) {
 // ("naruto_uzumaki") instead of the display_name.
 // The registry must accept both.
 func TestLookupSlug(t *testing.T) {
+	t.Parallel()
 	r := &Registry{}
 	_ = r.Add(Entry{Slug: "naruto_uzumaki", DisplayName: "Наруто Узумаки"})
 	e, ok := r.Lookup("naruto_uzumaki")
@@ -125,6 +129,7 @@ func TestLookupSlug(t *testing.T) {
 // silent miss-and-create on a malformed
 // directive.
 func TestLookupEmpty(t *testing.T) {
+	t.Parallel()
 	r := &Registry{}
 	_ = r.Add(Entry{Slug: "hinata", DisplayName: "Хината"})
 	for _, q := range []string{"", "   ", "\t"} {
@@ -139,6 +144,7 @@ func TestLookupEmpty(t *testing.T) {
 // happens before the lowercase, so a stray
 // trailing newline from the model still resolves.
 func TestLookupTrimsWhitespace(t *testing.T) {
+	t.Parallel()
 	r := &Registry{}
 	_ = r.Add(Entry{Slug: "hinata", DisplayName: "Хината"})
 	if _, ok := r.Lookup("  Хината  "); !ok {
@@ -152,6 +158,7 @@ func TestLookupTrimsWhitespace(t *testing.T) {
 // refuses rather than silently overwriting — the
 // caller (Create) logs and continues.
 func TestAddDuplicateSlug(t *testing.T) {
+	t.Parallel()
 	r := &Registry{}
 	if err := r.Add(Entry{Slug: "hinata", DisplayName: "Хината"}); err != nil {
 		t.Fatal(err)
@@ -170,6 +177,7 @@ func TestAddDuplicateSlug(t *testing.T) {
 // characters.yaml is touched. We verify the sort
 // order explicitly.
 func TestSaveSortsBySlug(t *testing.T) {
+	t.Parallel()
 	r := &Registry{}
 	_ = r.Add(Entry{Slug: "zzz", DisplayName: "Z"})
 	_ = r.Add(Entry{Slug: "aaa", DisplayName: "A"})

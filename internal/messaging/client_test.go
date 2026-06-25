@@ -68,6 +68,7 @@ func (f *fakeClient) Health() HealthReport {
 }
 
 func TestMultiClient_StartsAll(t *testing.T) {
+	t.Parallel()
 	a := &fakeClient{name: "a"}
 	b := &fakeClient{name: "b"}
 	pool := NewMultiClient(a, b)
@@ -81,6 +82,7 @@ func TestMultiClient_StartsAll(t *testing.T) {
 }
 
 func TestMultiClient_AllReturnsClients(t *testing.T) {
+	t.Parallel()
 	a := &fakeClient{name: "a"}
 	b := &fakeClient{name: "b"}
 	pool := NewMultiClient(a, b)
@@ -91,6 +93,7 @@ func TestMultiClient_AllReturnsClients(t *testing.T) {
 }
 
 func TestMultiClient_EmptyPool(t *testing.T) {
+	t.Parallel()
 	pool := NewMultiClient()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

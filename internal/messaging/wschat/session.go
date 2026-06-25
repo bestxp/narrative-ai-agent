@@ -84,7 +84,7 @@ func (s *wsSession) run(ctx context.Context, srv *Server) {
 			s.log.Warn().Err(err).Msg("ws bad frame")
 			continue
 		}
-		srv.handleClientFrame(s, f)
+		srv.handleClientFrame(ctx, s, f)
 	}
 }
 
@@ -170,17 +170,6 @@ func (s *wsSession) currentID() string {
 	s.turnMtx.Lock()
 	defer s.turnMtx.Unlock()
 	return s.currentTurnID
-}
-
-// clearAssistant resets the assistant buffer so a resend starts
-// from a clean visible state. The client should replace the
-// assistant bubble with a fresh placeholder.
-func (s *wsSession) clearAssistant() {
-	s.bufMtx.Lock()
-	s.buf.Reset()
-	s.jsonMode = false
-	s.textSeen = false
-	s.bufMtx.Unlock()
 }
 
 // recordTokens stores the latest per-round usage the GM reported.

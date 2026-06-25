@@ -284,6 +284,7 @@ func loadBaseInto[T any](body string) (T, error) {
 	if err := yaml.Unmarshal([]byte(body), &zero); err != nil {
 		return zero, fmt.Errorf("charprofile: yaml.Unmarshal: %w", err)
 	}
+
 	return zero, nil
 }
 
@@ -296,6 +297,7 @@ func saveBase[T any](s T) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("charprofile: yaml.Marshal: %w", err)
 	}
+
 	return string(out), nil
 }
 
@@ -325,6 +327,7 @@ func appendIntoSections(data *[]Section, section, value string, strict bool) boo
 		}
 	}
 	*data = append(*data, Section{Name: section, Values: []string{value}})
+
 	return true
 }
 
