@@ -21,10 +21,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bestxp/narrative-ai-agent/internal/messaging"
 	tg "github.com/go-telegram-bot-api/telegram-bot-api"
 	"github.com/rs/zerolog"
-
-	"github.com/bestxp/narrative-ai-agent/internal/messaging"
 )
 
 // Config holds the per-transport settings. main.go is responsible
@@ -111,7 +110,7 @@ func (c *Client) IsAllowed(senderID string) bool {
 // /setMyCommands endpoint via MakeRequest. The wire format
 // is a flat array of {command, description} objects — the
 // same shape the BotFather UI uses.
-func (c *Client) SetCommands(ctx context.Context, cmds []messaging.BotCommand) error {
+func (c *Client) SetCommands(_ context.Context, cmds []messaging.BotCommand) error {
 	params := make(map[string]string)
 	params["commands"] = encodeCommandsJSON(cmds)
 	_, err := c.api.MakeRequest("setMyCommands", asURLValues(params))
@@ -247,13 +246,14 @@ func (c *Client) Run(ctx context.Context) error {
 					msg.Args = parts[1:]
 				}
 			}
+
 			c.recv <- msg
 		}
 	}
 }
 
 // Send implements messaging.Client.
-func (c *Client) Send(ctx context.Context, msg messaging.OutgoingMessage) error {
+func (c *Client) Send(_ context.Context, msg messaging.OutgoingMessage) error {
 	wire := c.formatText(msg.Text, msg.ParseMode)
 	// Telegram caps each message at 4096 characters. Long
 	// freeform replies (e.g. /me dump of a 7k-character
@@ -286,11 +286,13 @@ func (c *Client) Send(ctx context.Context, msg messaging.OutgoingMessage) error 
 }
 
 // StartStream implements messaging.Client.
+//
+//nolint:ireturn // interface return is intentional for streaming
 func (c *Client) StartStream(ctx context.Context, chatID string, replyToMessageID int) (messaging.StreamSession, error) {
 	return c.startStream(ctx, chatID, replyToMessageID)
 }
 
-func (c *Client) startStream(ctx context.Context, chatID string, replyToMessageID int) (messaging.StreamSession, error) {
+func (c *Client) startStream(_ context.Context, chatID string, replyToMessageID int) (messaging.StreamSession, error) {
 	chat := parseChatID(chatID)
 	if chat == 0 {
 		return nil, fmt.Errorf("telegram: invalid chat id %q", chatID)
@@ -373,6 +375,7 @@ func (c *Client) sendTyping(chatID string) {
 func (c *Client) typingLoop(ctx context.Context) {
 	ticker := time.NewTicker(4 * time.Second)
 	defer ticker.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():

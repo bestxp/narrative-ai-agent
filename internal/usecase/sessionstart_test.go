@@ -3,12 +3,11 @@ package usecase
 import (
 	"testing"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
 	"github.com/bestxp/narrative-ai-agent/internal/chronicle"
 	"github.com/bestxp/narrative-ai-agent/internal/domain"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestSessionStart_NoInfo(t *testing.T) {

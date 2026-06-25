@@ -3,14 +3,13 @@ package files
 import (
 	"testing"
 
-	"github.com/rs/zerolog"
-	"github.com/stretchr/testify/require"
-
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
 	"github.com/bestxp/narrative-ai-agent/internal/repository/api"
 	"github.com/bestxp/narrative-ai-agent/internal/slowlog"
 	yamlfs "github.com/bestxp/narrative-ai-agent/internal/storage/fs"
 	"github.com/bestxp/narrative-ai-agent/internal/worldregistry"
+	"github.com/rs/zerolog"
+	"github.com/stretchr/testify/require"
 )
 
 // makeNPC constructs an NPC backed by a fresh

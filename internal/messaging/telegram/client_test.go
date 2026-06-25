@@ -6,11 +6,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bestxp/narrative-ai-agent/internal/messaging"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/bestxp/narrative-ai-agent/internal/messaging"
 )
 
 // Compile-time check: telegram.Client satisfies messaging.Client.
@@ -55,6 +54,7 @@ func TestThrottledStream_FirstAppendGoesImmediately(t *testing.T) {
 	th := NewThrottledStream(inner)
 
 	start := time.Now()
+
 	require.NoError(t, th.Append(context.Background(), "hello"))
 	firstCallLatency := time.Since(start)
 	// First call should not be blocked by the throttle.
@@ -75,6 +75,7 @@ func TestThrottledStream_FinalIsIdempotent(t *testing.T) {
 	rec := &recordingStream{}
 	th := NewThrottledStream(rec)
 	start := time.Now()
+
 	require.NoError(t, th.Final(context.Background(), "x"))
 	require.NoError(t, th.Final(context.Background(), "y"))
 	elapsed := time.Since(start)
@@ -91,6 +92,7 @@ type recordingStream struct {
 func (r *recordingStream) Append(_ context.Context, text string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
 	r.appends++
 	r.events = append(r.events, "append:"+text)
 
@@ -100,6 +102,7 @@ func (r *recordingStream) Append(_ context.Context, text string) error {
 func (r *recordingStream) Final(_ context.Context, text string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
 	r.finals++
 	r.events = append(r.events, "final:"+text)
 

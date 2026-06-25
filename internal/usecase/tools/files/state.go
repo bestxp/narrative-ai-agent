@@ -8,14 +8,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rs/zerolog"
-	gyaml "gopkg.in/yaml.v3"
-
 	"github.com/bestxp/narrative-ai-agent/internal/domain"
 	"github.com/bestxp/narrative-ai-agent/internal/repository/api"
 	"github.com/bestxp/narrative-ai-agent/internal/repository/yaml"
 	"github.com/bestxp/narrative-ai-agent/internal/slowlog"
 	"github.com/bestxp/narrative-ai-agent/internal/usecase/tools"
+	"github.com/rs/zerolog"
+	gyaml "gopkg.in/yaml.v3"
 )
 
 // renderStateBody delegates to the yaml package's
@@ -133,6 +132,7 @@ func (s *State) UpdateState(snap tools.StateSnapshot) error {
 				continue
 			}
 			seen[key] = struct{}{}
+
 			existing.Events = append(existing.Events, e)
 		}
 	}
@@ -239,9 +239,9 @@ func ParseStateYAMLFull(body string) domain.StateSnapshot {
 		State struct {
 			World    string   `yaml:"world"`
 			Day      int      `yaml:"day"`
-			InFlight bool     `yaml:"in-flight"`
+			InFlight bool     `yaml:"in_flight"`
 			Daytime  string   `yaml:"daytime"`
-			NPCs     []string `yaml:"npcs"` //nolint:tagliatelle // npcs is an acronym; kebab split harms readability
+			NPCs     []string `yaml:"npcs"`
 			Current  string   `yaml:"current"`
 			Location string   `yaml:"location"`
 			Moment   string   `yaml:"moment"`
@@ -249,7 +249,7 @@ func ParseStateYAMLFull(body string) domain.StateSnapshot {
 		} `yaml:"state"`
 		Stage struct {
 			Current       string `yaml:"current"`
-			TimelineIndex int    `yaml:"timeline-index"`
+			TimelineIndex int    `yaml:"timeline_index"`
 			Next          string `yaml:"next"`
 		} `yaml:"stage"`
 	}

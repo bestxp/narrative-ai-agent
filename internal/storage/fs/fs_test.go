@@ -125,6 +125,7 @@ func TestListChildren(t *testing.T) {
 	if len(got) != len(want) {
 		t.Errorf("expected %d entries, got %d (%v)", len(want), len(got), got)
 	}
+
 	for _, name := range got {
 		isDir, ok := want[name]
 		if !ok {

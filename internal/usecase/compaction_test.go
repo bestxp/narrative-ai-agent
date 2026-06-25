@@ -4,11 +4,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/llm"
 	"github.com/bestxp/narrative-ai-agent/internal/domain"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestEstimateConversationTokens_Empty(t *testing.T) {
@@ -136,7 +135,7 @@ func TestCompactionFlow_GMReply(t *testing.T) {
 	// pipeline, confirm the kept slice is well under the cap.
 	window := 100
 	threshold := 0.5
-	var msgs []llm.Message
+	msgs := make([]llm.Message, 0, 60)
 	for i := range 30 {
 		msgs = append(msgs,
 			llm.Message{Role: "user", Content: "user message " + string(rune('a'+i%26)) + " with extra padding to make this longer"},

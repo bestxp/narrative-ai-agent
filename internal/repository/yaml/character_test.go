@@ -3,10 +3,9 @@ package yaml
 import (
 	"testing"
 
+	"github.com/bestxp/narrative-ai-agent/internal/charprofile"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/bestxp/narrative-ai-agent/internal/charprofile"
 )
 
 func (e *testEnv) newSoulRepo() *SoulYaml              { return NewSoulYaml(e.store) }

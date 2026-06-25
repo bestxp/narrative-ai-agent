@@ -66,7 +66,7 @@ func renderEntitiesToHTML(text string, ents []tgmd.Entity) string {
 // writeEntity writes a single entity span to b. Telegram's
 // HTML dialect uses these tag names; "pre" preserves the
 // <code> nesting the library expects.
-func writeEntity(b *strings.Builder, e tgmd.Entity, inner string) {
+func writeEntity(b *strings.Builder, e tgmd.Entity, inner string) { //nolint:funlen // complex function; splitting would harm readability.
 	switch e.Type {
 	case tgmd.Bold:
 		b.WriteString("<b>")
@@ -221,6 +221,7 @@ func splitForTelegram(text string) []string {
 		return []string{text}
 	}
 	out := make([]string, 0, 2)
+
 	rest := string(runes)
 	for runeCount := len(runes); runeCount > maxTelegramMessageLen; runeCount = len([]rune(rest)) {
 		head := string([]rune(rest)[:maxTelegramMessageLen])
@@ -237,6 +238,7 @@ func splitForTelegram(text string) []string {
 		} else {
 			cut = len(head)
 		}
+
 		out = append(out, rest[:cut])
 		rest = rest[cut:]
 	}

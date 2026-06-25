@@ -48,17 +48,20 @@ func TestFile_ConcurrentWrites(t *testing.T) {
 	dir := t.TempDir()
 	l, err := File(dir + "/slow.log")
 	require.NoError(t, err)
+
 	var wg sync.WaitGroup
 	for range 50 {
 		wg.Go(func() {
 			_ = l.WriteOK("concurrent", "")
 		})
 	}
+
 	wg.Wait()
 	data, err := os.ReadFile(dir + "/slow.log")
 	require.NoError(t, err)
 	lines := splitNonEmpty(data)
 	assert.Len(t, lines, 50)
+
 	for _, ln := range lines {
 		assert.True(t, json.Valid(ln), "line not valid JSON: %s", ln)
 	}
@@ -99,6 +102,7 @@ func parseLine(t *testing.T, line []byte) entry {
 
 func splitNonEmpty(b []byte) [][]byte {
 	parts := bytes.Split(b, []byte("\n"))
+
 	out := make([][]byte, 0, len(parts))
 	for _, p := range parts {
 		if len(p) > 0 {

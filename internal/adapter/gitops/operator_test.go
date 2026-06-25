@@ -18,13 +18,14 @@ func initRepo(t *testing.T) string {
 		t.Skip("git not installed")
 	}
 	dir := t.TempDir()
+
 	cmds := [][]string{
 		{"init", "--initial-branch=master"},
 		{"config", "user.name", "Test"},
 		{"config", "user.email", "test@test.local"},
 	}
 	for _, c := range cmds {
-		cmd := exec.Command("git", c...)
+		cmd := exec.CommandContext(t.Context(), "git", c...)
 		cmd.Dir = dir
 		out, err := cmd.CombinedOutput()
 		require.NoError(t, err, "%v: %s", c, out)
@@ -111,6 +112,7 @@ func TestRun_LogsFailure(t *testing.T) {
 	log, buf := newBufLogger()
 	op := NewWithLogger(dir, "origin", "master", "Bot", "bot@x", false, log)
 	_, _ = op.run("nonexistent-subcommand-xyz")
+
 	assert.Contains(t, buf.String(), "git cmd failed")
 }
 

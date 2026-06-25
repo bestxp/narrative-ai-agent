@@ -8,9 +8,8 @@ import (
 	"sync"
 	"time"
 
-	tg "github.com/go-telegram-bot-api/telegram-bot-api"
-
 	"github.com/bestxp/narrative-ai-agent/internal/messaging"
+	tg "github.com/go-telegram-bot-api/telegram-bot-api"
 )
 
 // stream is a streaming session: it edits a single Telegram message
@@ -25,7 +24,7 @@ type stream struct {
 	lastSent string
 }
 
-func (s *stream) Append(ctx context.Context, text string) error {
+func (s *stream) Append(_ context.Context, text string) error { //nolint:funlen // complex function; splitting would harm readability.
 	if s.closed {
 		return errors.New("stream closed")
 	}
@@ -138,6 +137,7 @@ func (s *stream) Append(ctx context.Context, text string) error {
 
 	return nil
 }
+
 func (s *stream) Final(ctx context.Context, text string) error {
 	if s.closed {
 		return nil
@@ -173,6 +173,7 @@ func (t *ThrottledStream) Append(ctx context.Context, text string) error {
 	if since := time.Since(t.last); since < t.minDelay {
 		wait := t.minDelay - since
 		t.mu.Unlock()
+
 		select {
 		case <-ctx.Done():
 			return ctx.Err()

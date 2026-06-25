@@ -8,13 +8,12 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/rs/zerolog"
-
 	"github.com/bestxp/narrative-ai-agent/internal/chronicle"
 	"github.com/bestxp/narrative-ai-agent/internal/domain"
 	"github.com/bestxp/narrative-ai-agent/internal/repository/api"
 	"github.com/bestxp/narrative-ai-agent/internal/repository/yaml"
 	"github.com/bestxp/narrative-ai-agent/internal/usecase/tools"
+	"github.com/rs/zerolog"
 )
 
 // World is the repository-backed implementation of

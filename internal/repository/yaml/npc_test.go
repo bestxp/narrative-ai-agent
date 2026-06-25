@@ -3,10 +3,9 @@ package yaml
 import (
 	"testing"
 
+	"github.com/bestxp/narrative-ai-agent/internal/npcprofile"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/bestxp/narrative-ai-agent/internal/npcprofile"
 )
 
 func (e *testEnv) newNPCProfileRepo() *NPCProfileYaml { return NewNPCProfileYaml(e.store) }

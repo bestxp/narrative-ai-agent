@@ -1,6 +1,7 @@
 package worldregistry
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -73,10 +74,10 @@ func TestLoadEmpty(t *testing.T) {
 	t.Parallel()
 	fs := &fakeFS{files: map[string]string{}}
 	r, err := Load(fs, "naruto")
-	if err != nil {
-		t.Fatal(err)
+	if !errors.Is(err, ErrEmpty) {
+		t.Fatalf("err = %v, want ErrEmpty", err)
 	}
-	if len(r.entries) != 0 {
+	if r == nil || len(r.entries) != 0 {
 		t.Fatalf("entries=%d, want 0", len(r.entries))
 	}
 }
@@ -98,10 +99,10 @@ func TestNoMarkdownFallback(t *testing.T) {
 `,
 	}}
 	r, err := Load(fs, "naruto")
-	if err != nil {
-		t.Fatal(err)
+	if !errors.Is(err, ErrEmpty) {
+		t.Fatalf("err = %v, want ErrEmpty", err)
 	}
-	if len(r.entries) != 0 {
+	if r == nil || len(r.entries) != 0 {
 		t.Fatalf("entries=%d, want 0 (markdown must be ignored)", len(r.entries))
 	}
 	if _, ok := fs.files["worlds/naruto/characters.yaml"]; ok {

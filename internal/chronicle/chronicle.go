@@ -57,9 +57,8 @@ import (
 	"sort"
 	"strings"
 
-	"gopkg.in/yaml.v3"
-
 	"github.com/bestxp/narrative-ai-agent/internal/limits"
+	"gopkg.in/yaml.v3"
 )
 
 // DefaultWindow is the default 30-day compression window.

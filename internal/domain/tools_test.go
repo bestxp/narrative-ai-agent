@@ -23,6 +23,7 @@ func TestTools_AllHaveNameAndSchema(t *testing.T) {
 	tools := Tools()
 	assert.NotEmpty(t, tools)
 	seen := map[string]bool{}
+
 	for _, tl := range tools {
 		assert.Equal(t, "function", tl.Type)
 		assert.NotEmpty(t, tl.Function.Name)
@@ -112,6 +113,7 @@ func TestUpdateSoulTool_SectionIsFreeString(t *testing.T) {
 	if !ok {
 		t.Fatalf("section property missing or wrong type: %T", props["section"])
 	}
+
 	assert.Equal(t, "string", section["type"])
 	_, hasEnum := section["enum"]
 	assert.False(t, hasEnum, "SOUL section must NOT be an enum")
@@ -179,6 +181,7 @@ func TestUpdateInventoryTool_TypeIsEnum(t *testing.T) {
 	if !ok {
 		t.Fatalf("enum missing or wrong type: %T", typ["enum"])
 	}
+
 	assert.ElementsMatch(t, []any{
 		"weapon", "armor", "accessory", "consumable",
 		"tool", "quest", "document", "material", "other",
@@ -245,6 +248,7 @@ func TestMarshalParameters_ErrorPropagates(t *testing.T) {
 
 func findTool(t *testing.T, name string) Tool {
 	t.Helper()
+
 	for _, tl := range Tools() {
 		if tl.Function.Name == name {
 			return tl

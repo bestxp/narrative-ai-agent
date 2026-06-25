@@ -4,12 +4,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
 	"github.com/bestxp/narrative-ai-agent/internal/domain"
 	"github.com/bestxp/narrative-ai-agent/internal/slowlog"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestSystemState_LoadMissingReturnsZero(t *testing.T) {

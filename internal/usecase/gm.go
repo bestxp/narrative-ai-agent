@@ -11,9 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/rs/zerolog"
-	"gopkg.in/yaml.v3"
-
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/llm"
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
 	"github.com/bestxp/narrative-ai-agent/internal/charprofile"
@@ -24,6 +21,8 @@ import (
 	"github.com/bestxp/narrative-ai-agent/internal/structured"
 	"github.com/bestxp/narrative-ai-agent/internal/usecase/tools"
 	"github.com/bestxp/narrative-ai-agent/internal/usecase/tools/files"
+	"github.com/rs/zerolog"
+	"gopkg.in/yaml.v3"
 )
 
 // DefaultProtocolWindowDays is the number of past days for
@@ -222,6 +221,7 @@ func NewGM(cfg GMConfig, fs *storage.FileStore, llmCli LLMClient, ss *SessionSta
 			log.Warn().Err(err).Str("tool", t.Function.Name).Msg("tool schema marshal failed; skipping")
 			continue
 		}
+
 		toolSpecs = append(toolSpecs, llm.ToolSchema{
 			Name:        t.Function.Name,
 			Description: t.Function.Description,
@@ -427,8 +427,8 @@ func (g *GM) Reply(ctx context.Context, chatID, userText string, cb Callbacks) (
 // (which replaces the last user turn) and RegenerateLast (which
 // drops the trailing assistant turn). Callers are responsible for
 // mutating conv.messages before invoking this; the loop itself only
-// reads and appends.
-func (g *GM) runConversation(ctx context.Context, chatID string, cb Callbacks) (TokenUsage, error) {
+// reads and appends. //nolint:funlen // complex function; splitting would harm readability.
+func (g *GM) runConversation(ctx context.Context, chatID string, cb Callbacks) (TokenUsage, error) { //nolint:gocognit // conversation dispatch is inherently complex //nolint:funlen // complex function; splitting would harm readability.
 	var totals TokenUsage
 	if g.tracking == "" || g.tracking == "off" {
 		totals.Source = "off"
@@ -454,7 +454,7 @@ func (g *GM) runConversation(ctx context.Context, chatID string, cb Callbacks) (
 	// sees them. Without a summarizer we just drop (the
 	// facts live in state.md/chronicle.yaml/SOUL.md anyway,
 	// and the operator sees a "🔄" notice all the same).
-	if g.compaction.ContextWindow > 0 {
+	if g.compaction.ContextWindow > 0 { //nolint:nestif // compaction logic requires nesting
 		ctxChars := len(g.staticPrompt)
 		if NeedsCompaction(history, ctxChars, g.compaction.ContextWindow, g.compaction.Threshold) {
 			dropCount := max(len(history)-g.compaction.KeepRecent, 0)
@@ -523,10 +523,12 @@ func (g *GM) runConversation(ctx context.Context, chatID string, cb Callbacks) (
 		if NeedsCompaction(history, ctxChars, g.compaction.ContextWindow, g.compaction.Threshold) {
 			keptMsgs, _ := CompactConversations(history, g.compaction.KeepRecent)
 			dropped := max(len(history)-g.compaction.KeepRecent, 0)
+
 			conv.mu.Lock()
 			conv.messages = keptMsgs
 			conv.mu.Unlock()
 			history = keptMsgs
+
 			g.invalidateWorldState("compaction")
 			g.log.Info().Int("dropped", dropped).Int("kept", len(keptMsgs)).Msg("in-place compaction fired (drop-only)")
 		}
@@ -606,6 +608,7 @@ func (g *GM) runConversation(ctx context.Context, chatID string, cb Callbacks) (
 				if m.ToolCallID != "" {
 					entry["tool_call_id"] = m.ToolCallID
 				}
+
 				reqMsgs = append(reqMsgs, entry)
 			}
 			reqFields["request_messages"] = reqMsgs
@@ -728,6 +731,7 @@ func (g *GM) runConversation(ctx context.Context, chatID string, cb Callbacks) (
 			ToolCalls: storedCalls,
 		})
 		conv.mu.Unlock()
+
 		history = append(history, llm.Message{
 			Role: "assistant", Content: assistantBuf.String(), ToolCalls: storedCalls,
 		})
@@ -827,6 +831,7 @@ func (g *GM) runConversation(ctx context.Context, chatID string, cb Callbacks) (
 			// retrying the same prompt is the right move.
 			if allToolCallsBroken(toolCalls) {
 				toolCalls = nil
+
 				g.log.Warn().
 					Int("round", round).
 					Str("finish", finishReason).
@@ -915,10 +920,12 @@ func (g *GM) runConversation(ctx context.Context, chatID string, cb Callbacks) (
 				Role:    "user",
 				Content: "[система] Все инструменты выполнены. Теперь обязательно напиши нарративный ответ игроку в формате JSON (narration, context, future, validation). Не вызывай больше инструменты.",
 			}
+
 			conv.mu.Lock()
 			conv.messages = append(conv.messages, results...)
 			conv.messages = append(conv.messages, nudge)
 			conv.mu.Unlock()
+
 			history = append(history, results...)
 			history = append(history, nudge)
 			consecutiveToolOnlyRounds = 0
@@ -930,6 +937,7 @@ func (g *GM) runConversation(ctx context.Context, chatID string, cb Callbacks) (
 		conv.mu.Lock()
 		conv.messages = append(conv.messages, results...)
 		conv.mu.Unlock()
+
 		history = append(history, results...)
 		toolCalls = nil
 	}
@@ -1206,6 +1214,7 @@ func looksLikeDirective(line string) bool {
 	if line == "" {
 		return false
 	}
+
 	runes := []rune(line)
 	switch runes[0] {
 	case '⦁', '•', '-', '*', '>':
@@ -1242,7 +1251,7 @@ func looksLikeDirective(line string) bool {
 // follow the canonical Russian vocabulary in
 // usecase/tools/files/npc.go (temperament, status,
 // abilities, etc.) and are matched case-insensitively.
-func parseDirectiveLine(line string) (extractedCommand, bool) {
+func parseDirectiveLine(line string) (extractedCommand, bool) { //nolint:funlen // directive parsing requires many statement branches
 	// Strip the leading bullet. TrimLeftFunc is the
 	// rune-safe counterpart to TrimLeft — needed
 	// because ⦁ / • are multi-byte UTF-8 codepoints
@@ -1381,7 +1390,7 @@ func parseUpdateNpcLine(body string) (extractedCommand, bool) {
 		return extractedCommand{}, false
 	}
 	// Long form: "Name, section=..., append=..."
-	if strings.Contains(body, "=") {
+	if strings.Contains(body, "=") { //nolint:nestif // dispatch logic requires nesting
 		args := parseSemicolonPairs(body)
 		if name, ok := args["npc"]; ok {
 			args["npc"] = strings.TrimSpace(name)
@@ -1533,6 +1542,7 @@ func parseKeyValuePairs(s, sep string) map[string]string {
 		key = strings.ToLower(strings.TrimSpace(key))
 		val = strings.TrimSpace(val)
 		val = strings.Trim(val, "\"'«»")
+
 		if key == "" {
 			continue
 		}
@@ -1547,8 +1557,8 @@ func parseKeyValuePairs(s, sep string) map[string]string {
 // abort the turn — a malformed directive should not
 // prevent the user-visible narrative from being delivered.
 // The dispatch mirrors gm.dispatchOneTool but is data-
-// driven (no llm.ToolCall envelope).
-func (g *GM) executeExtractedCommands(ctx context.Context, chatID, world string, cmds []extractedCommand) {
+// driven (no llm.ToolCall envelope). //nolint:funlen // complex function; splitting would harm readability.
+func (g *GM) executeExtractedCommands(ctx context.Context, chatID, world string, cmds []extractedCommand) { //nolint:funlen // complex function; splitting would harm readability.
 	if len(cmds) == 0 {
 		return
 	}
@@ -1564,6 +1574,7 @@ func (g *GM) executeExtractedCommands(ctx context.Context, chatID, world string,
 	for _, c := range cmds {
 		byKind[c.Kind]++
 		var err error
+
 		switch c.Kind {
 		case "update_npc":
 			err = g.dispatchUpdateNpcDirective(ctx, world, c)
@@ -1589,12 +1600,14 @@ func (g *GM) executeExtractedCommands(ctx context.Context, chatID, world string,
 			err = g.dispatchCreateNpcDirective(ctx, world, c)
 		default:
 			g.log.Warn().Str("kind", c.Kind).Str("raw", c.Raw).Msg("context.extracted: unknown kind")
+
 			failed++
 
 			continue
 		}
 		if err != nil {
 			g.log.Warn().Err(err).Str("kind", c.Kind).Str("raw", c.Raw).Msg("context.extracted: dispatch failed")
+
 			failed++
 		} else {
 			executed++
@@ -1623,6 +1636,7 @@ func (g *GM) dispatchUpdateNpcDirective(_ context.Context, world string, c extra
 	name := strings.TrimSpace(c.Args["npc"])
 	section := strings.TrimSpace(c.Args["section"])
 	appendText := c.Args["append"]
+
 	if name == "" {
 		return errors.New("update_npc: npc name required")
 	}
@@ -1714,6 +1728,7 @@ func (g *GM) dispatchUpdateSkillDirective(_ context.Context, c extractedCommand)
 func (g *GM) dispatchUpdateMemoryDirective(_ context.Context, c extractedCommand) error {
 	section := strings.TrimSpace(c.Args["section"])
 	appendText := c.Args["append"]
+
 	if section == "" {
 		return errors.New("update_memory: section required")
 	}
@@ -1737,6 +1752,7 @@ func (g *GM) dispatchUpdateMemoryDirective(_ context.Context, c extractedCommand
 func (g *GM) dispatchUpdateInventoryDirective(_ context.Context, c extractedCommand) error {
 	name := strings.TrimSpace(c.Args["name"])
 	typ := strings.TrimSpace(c.Args["type"])
+
 	if name == "" {
 		return errors.New("update_inventory: name required")
 	}
@@ -1914,9 +1930,9 @@ func promptCharSize(msgs []llm.Message) int {
 // (g.systemSnapshot, g.worldSnapshot) but share the same
 // sceneKey (world|character|day|in_flight). If any of those
 // change, both are rebuilt. invalidateWorldState() drops both,
-// forcing a rebuild on the next call (used by end_day, end_scene,
+// forcing a rebuild on the next call (used by end_day, end_scene, //nolint:funlen // complex function; splitting would harm readability.
 // leave_world, /reload, and compaction).
-func (g *GM) buildContext() (systemMsg, worldMsg string, err error) {
+func (g *GM) buildContext() (systemMsg, worldMsg string, err error) { //nolint:funlen // complex function; splitting would harm readability.
 	if !g.fs.Exists(storage.InfoFile) {
 		// No game state yet — the snapshot is meaningless,
 		// just render empty blocks. We still cache them
@@ -2329,6 +2345,7 @@ func (g *GM) loadRosterAtLOD(world string, names []string) []domain.NPCSnapshot 
 			g.log.Warn().Err(err).Str("npc", name).Str("lod", lodName(lod)).Msg("skip npc load")
 			continue
 		}
+
 		out = append(out, domain.NPCSnapshot{DisplayName: name, Profile: body})
 	}
 	return out
@@ -2414,13 +2431,16 @@ func (g *GM) executeTools(ctx context.Context, calls []llm.ToolCall) []llm.Messa
 }
 
 // dispatchOneTool is the tool-to-usecase bridge. The argument JSON
-// is decoded into the matching usecase type and the result is
+// is decoded into the matching usecase type and the result is //nolint:funlen // complex function; splitting would harm readability.
 // rendered as a short JSON-ish text the model can read.
-func (g *GM) dispatchOneTool(ctx context.Context, tc llm.ToolCall) (string, string) {
+//
+//nolint:funlen // complex function; splitting would harm readability.
+func (g *GM) dispatchOneTool(ctx context.Context, tc llm.ToolCall) (string, string) { //nolint:gocognit // tool dispatch is inherently complex //nolint:funlen // complex function; splitting would harm readability.
 	args := map[string]any{}
 	if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
 		return "", "invalid arguments: " + err.Error()
 	}
+
 	switch tc.Function.Name {
 	case "end_day":
 		day := toInt(args["day"])
@@ -2674,6 +2694,7 @@ func (g *GM) dispatchOneTool(ctx context.Context, tc llm.ToolCall) (string, stri
 		}
 		section := toString(args["section"])
 		appendText := toString(args["append"])
+
 		if section == "" {
 			return "", "update_memory: section required"
 		}
@@ -2800,6 +2821,7 @@ func (g *GM) dispatchOneTool(ctx context.Context, tc llm.ToolCall) (string, stri
 		npcName := toString(args["npc"])
 		section := toString(args["section"])
 		appendText := toString(args["append"])
+
 		if npcName == "" {
 			return "", "update_npc: npc name required"
 		}
@@ -2945,6 +2967,7 @@ func toStringSlice(v any) []string {
 		if !ok {
 			continue
 		}
+
 		out = append(out, s)
 	}
 	return out

@@ -275,6 +275,7 @@ func BuildWorldStateMessage(world WorldContext, char CharacterContext) (string, 
 	}
 	if world.NPCs != nil {
 		displayNames := make([]string, len(world.NPCs))
+
 		profiles := make([]string, len(world.NPCs))
 		for i, n := range world.NPCs {
 			displayNames[i] = n.DisplayName
@@ -338,6 +339,7 @@ func convertChronicle(in *Chronicle) *prompts.ChronicleData {
 			Memory: p.Memory,
 		}
 	}
+
 	for i, d := range in.Days {
 		out.Days[i] = prompts.ChronicleDayData{
 			Number: d.Number,

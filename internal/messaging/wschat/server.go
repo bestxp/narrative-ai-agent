@@ -8,13 +8,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gorilla/websocket"
-	"github.com/rs/zerolog"
-
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/llm"
 	"github.com/bestxp/narrative-ai-agent/internal/dispatcher"
 	"github.com/bestxp/narrative-ai-agent/internal/messaging"
 	"github.com/bestxp/narrative-ai-agent/internal/usecase"
+	"github.com/gorilla/websocket"
+	"github.com/rs/zerolog"
 )
 
 // Server is the HTTP+WebSocket server that backs the wschat
@@ -97,6 +96,7 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 
 	listenErr := make(chan error, 1)
+
 	go func() {
 		s.log.Info().Str("addr", s.addr).Msg("wschat server listening")
 		err := s.httpSrv.ListenAndServe()
@@ -104,6 +104,7 @@ func (s *Server) Run(ctx context.Context) error {
 			listenErr <- err
 			return
 		}
+
 		listenErr <- nil
 	}()
 
@@ -168,6 +169,7 @@ func (s *Server) handleCommandsAPI(w http.ResponseWriter, r *http.Request) {
 	s.sessionMtx.Lock()
 	cmds := s.commands
 	s.sessionMtx.Unlock()
+
 	out := CommandListPayload{Commands: make([]CommandDesc, 0, len(cmds))}
 	for _, c := range cmds {
 		out.Commands = append(out.Commands, CommandDesc{Command: c.Command, Description: c.Description})
@@ -306,9 +308,9 @@ func (s *Server) handleClientFrame(ctx context.Context, sess *wsSession, f Frame
 			s.sendError(f.ID, "bad_payload", err.Error())
 			return
 		}
-		s.handleEditLast(sess, f.ID, p.NewText)
+		s.handleEditLast(ctx, sess, f.ID, p.NewText)
 	case FrameResendLast:
-		s.handleResendLast(sess, f.ID)
+		s.handleResendLast(ctx, sess, f.ID)
 	case FrameCommandListRequest:
 		s.sessionMtx.Lock()
 		cmds := s.commands
@@ -400,7 +402,7 @@ func (s *Server) handleSend(ctx context.Context, sess *wsSession, id string, p S
 // and the final assistant message, so the client can group the
 // regenerated reply under the edited user bubble without
 // producing a duplicate.
-func (s *Server) handleEditLast(sess *wsSession, id, newText string) {
+func (s *Server) handleEditLast(ctx context.Context, sess *wsSession, id, newText string) {
 	if !sess.startTurn(id) {
 		s.sendError(id, "busy", "another turn is in progress")
 		return
@@ -415,7 +417,7 @@ func (s *Server) handleEditLast(sess *wsSession, id, newText string) {
 	s.sendAck(id)
 
 	cb := s.callbacks(sess)
-	if err := s.disp.EditLast(context.Background(), s.chatID, newText, cb); err != nil {
+	if err := s.disp.EditLast(ctx, s.chatID, newText, cb); err != nil {
 		if errors.Is(err, usecase.ErrNoLastUserTurn) {
 			s.sendError(id, "no_last_user", err.Error())
 
@@ -436,7 +438,7 @@ func (s *Server) handleEditLast(sess *wsSession, id, newText string) {
 // bubble so the streaming placeholder lands in the right slot.
 // The resend's id is the turn id used for the streaming assistant
 // and the final assistant message.
-func (s *Server) handleResendLast(sess *wsSession, id string) {
+func (s *Server) handleResendLast(ctx context.Context, sess *wsSession, id string) {
 	if !sess.startTurn(id) {
 		s.sendError(id, "busy", "another turn is in progress")
 		return
@@ -445,7 +447,7 @@ func (s *Server) handleResendLast(sess *wsSession, id string) {
 
 	s.sendAck(id)
 	cb := s.callbacks(sess)
-	if err := s.disp.ResendLast(context.Background(), s.chatID, cb); err != nil {
+	if err := s.disp.ResendLast(ctx, s.chatID, cb); err != nil {
 		if errors.Is(err, usecase.ErrNoLastUserTurn) {
 			s.sendError(id, "no_last_user", err.Error())
 

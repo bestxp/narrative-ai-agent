@@ -59,18 +59,23 @@ func (f *FileStore) WorldDir(name string) string { return filepath.Join(f.root, 
 func (f *FileStore) WorldState(name string) string {
 	return f.WorldDir(name) + string(filepath.Separator) + "state.md"
 }
+
 func (f *FileStore) WorldPlan(name string) string {
 	return f.WorldDir(name) + string(filepath.Separator) + "plan.md"
 }
+
 func (f *FileStore) WorldChronicle(name string) string {
 	return f.WorldDir(name) + string(filepath.Separator) + "chronicle.yaml"
 }
+
 func (f *FileStore) WorldLore(name string) string {
 	return f.WorldDir(name) + string(filepath.Separator) + "lore.md"
 }
+
 func (f *FileStore) WorldCanon(name string) string {
 	return f.WorldDir(name) + string(filepath.Separator) + "canon.md"
 }
+
 func (f *FileStore) WorldNPCsDir(name string) string {
 	return f.WorldDir(name) + string(filepath.Separator) + "characters"
 }
@@ -86,12 +91,15 @@ func (f *FileStore) WorldNPCsDir(name string) string {
 func (f *FileStore) CharacterSOUL(name string) string {
 	return f.CharacterDir(name) + string(filepath.Separator) + "SOUL.yaml"
 }
+
 func (f *FileStore) CharacterSKILL(name string) string {
 	return f.CharacterDir(name) + string(filepath.Separator) + "skill.yaml"
 }
+
 func (f *FileStore) CharacterMemory(name string) string {
 	return f.CharacterDir(name) + string(filepath.Separator) + "memory.yaml"
 }
+
 func (f *FileStore) CharacterInventory(name string) string {
 	return f.CharacterDir(name) + string(filepath.Separator) + "inventory.yaml"
 }
@@ -105,6 +113,7 @@ func (f *FileStore) Exists(rel string) bool {
 // ReadRaw returns the raw bytes of rel path. Empty string if missing.
 func (f *FileStore) ReadRaw(rel string) (string, error) {
 	p := filepath.Join(f.root, rel)
+
 	b, err := os.ReadFile(p)
 	if errors.Is(err, os.ErrNotExist) {
 		return "", nil
@@ -125,7 +134,9 @@ func (f *FileStore) WriteRaw(rel, content string) error {
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		return fmt.Errorf("write_raw: %w", err)
 	}
+
 	f.log.Debug().Str("path", rel).Int("bytes", len(clean)).Msg("write_raw")
+
 	if err := os.WriteFile(p, []byte(clean), 0o600); err != nil {
 		return fmt.Errorf("write_raw: os.WriteFile failed: %w", err)
 	}
@@ -140,11 +151,14 @@ func (f *FileStore) WriteRawAtomic(rel, content string) error {
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		return fmt.Errorf("write_raw_atomic: %w", err)
 	}
+
 	tmp := p + ".tmp"
 	if err := os.WriteFile(tmp, []byte(clean), 0o600); err != nil {
 		return fmt.Errorf("write_raw_atomic: %w", err)
 	}
+
 	f.log.Debug().Str("path", rel).Int("bytes", len(clean)).Msg("write_atomic")
+
 	if err := os.Rename(tmp, p); err != nil {
 		return fmt.Errorf("write_atomic: rename failed: %w", err)
 	}
@@ -165,6 +179,7 @@ func (f *FileStore) Patch(rel, oldStr, newStr string) error {
 	if err != nil {
 		return err
 	}
+
 	count := strings.Count(current, oldStr)
 	switch {
 	case count == 0:
@@ -185,6 +200,7 @@ func (f *FileStore) AppendIfMissing(rel, line string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+
 	if strings.Contains(current, line) {
 		return false, nil
 	}
@@ -212,6 +228,7 @@ func (f *FileStore) CountLines(rel string) int {
 // ListChildren returns file/folder names (not full paths) directly under rel.
 func (f *FileStore) ListChildren(rel string) ([]string, error) {
 	p := filepath.Join(f.root, rel)
+
 	entries, err := os.ReadDir(p)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
@@ -219,6 +236,7 @@ func (f *FileStore) ListChildren(rel string) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list_children: ReadDir failed: %w", err)
 	}
+
 	out := make([]string, 0, len(entries))
 	for _, e := range entries {
 		out = append(out, e.Name())
@@ -246,6 +264,7 @@ func stripIndexPollution(s string) string {
 	var buf bytes.Buffer
 	scanner := bufio.NewScanner(strings.NewReader(s))
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+
 	for scanner.Scan() {
 		line := scanner.Text()
 		buf.WriteString(indexLineRe.ReplaceAllString(line, ""))

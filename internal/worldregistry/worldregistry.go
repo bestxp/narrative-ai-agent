@@ -46,6 +46,12 @@ import (
 // might just not have been introduced yet.
 var ErrNotFound = errors.New("worldregistry: npc not in registry")
 
+// ErrEmpty is returned by LoadFromYAML when the world's
+// characters.yaml is missing or empty. An empty Registry is
+// still returned so callers can treat "world with no NPCs yet"
+// as a valid state without special-casing the error path.
+var ErrEmpty = errors.New("worldregistry: characters.yaml missing or empty")
+
 // Registry is the in-memory mirror of
 // worlds/<w>/characters.yaml.
 type Registry struct {
@@ -101,10 +107,10 @@ func Load(fs interface {
 	rel := "worlds/" + world + "/characters.yaml"
 	body, err := fs.ReadRaw(rel)
 	if err != nil {
-		return &Registry{}, nil
+		return &Registry{}, ErrEmpty
 	}
 	if strings.TrimSpace(body) == "" {
-		return &Registry{}, nil
+		return &Registry{}, ErrEmpty
 	}
 	var f registryFile
 	if uerr := yaml.Unmarshal([]byte(body), &f); uerr != nil {
@@ -178,6 +184,7 @@ func (r *Registry) Lookup(name string) (Entry, bool) {
 	// "Хината Хьюга" → "Хината" direction.
 	var hit Entry
 	ambiguous := false
+
 	for _, e := range r.entries {
 		if matchAnyField(e, want) {
 			if hit.Slug == "" {

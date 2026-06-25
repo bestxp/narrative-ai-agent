@@ -98,6 +98,7 @@ func mergeUnique(extras []string, primary string) []string {
 		if len(extras) == 0 {
 			return nil
 		}
+
 		out := make([]string, 0, len(extras))
 		for _, e := range extras {
 			if e == "" {
@@ -113,6 +114,7 @@ func mergeUnique(extras []string, primary string) []string {
 	}
 	seen := map[string]bool{primary: true}
 	out := []string{primary}
+
 	for _, e := range extras {
 		if e == "" || seen[e] {
 			continue

@@ -268,6 +268,7 @@ func TestSortedDays(t *testing.T) {
 	}}
 	out := c.SortedDays()
 	want := []int{1, 2, 3}
+
 	if len(out) != 3 {
 		t.Fatalf("expected 3 entries, got %d", len(out))
 	}

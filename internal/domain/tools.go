@@ -50,12 +50,12 @@ type Schema struct {
 	// implicit `{}` lacks the explicit lock-down).
 	Properties           map[string]Schema `json:"properties"`
 	Required             []string          `json:"required,omitempty"`
-	AdditionalProperties *bool             `json:"additionalProperties,omitempty"`
+	AdditionalProperties *bool             `json:"additionalProperties,omitempty"` //nolint:tagliatelle // JSON Schema standard field names
 	Description          string            `json:"description,omitempty"`
 	Enum                 []any             `json:"enum,omitempty"`
 	Items                *Schema           `json:"items,omitempty"`
-	MinItems             *int              `json:"minItems,omitempty"`
-	MaxItems             *int              `json:"maxItems,omitempty"`
+	MinItems             *int              `json:"minItems,omitempty"` //nolint:tagliatelle // JSON Schema standard field names
+	MaxItems             *int              `json:"maxItems,omitempty"` //nolint:tagliatelle // JSON Schema standard field names
 }
 
 // Object starts a new object schema. Pass props as a list of

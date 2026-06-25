@@ -454,6 +454,7 @@ func ConvertNPCSnapshots(displayName, profile []string) []NPCSnapshotData {
 	if n != len(profile) {
 		return nil
 	}
+
 	out := make([]NPCSnapshotData, n)
 	for i := range displayName {
 		out[i] = NPCSnapshotData{DisplayName: displayName[i], Profile: profile[i]}

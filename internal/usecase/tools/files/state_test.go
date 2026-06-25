@@ -2,14 +2,11 @@ package files
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
 	"testing"
-
-	"github.com/rs/zerolog"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
 	"github.com/bestxp/narrative-ai-agent/internal/repository/api"
@@ -17,6 +14,9 @@ import (
 	"github.com/bestxp/narrative-ai-agent/internal/slowlog"
 	yamlfs "github.com/bestxp/narrative-ai-agent/internal/storage/fs"
 	"github.com/bestxp/narrative-ai-agent/internal/usecase/tools"
+	"github.com/rs/zerolog"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // readFile is a tiny shim around os.ReadFile kept here so
@@ -301,6 +301,7 @@ func toStrSlice(t *testing.T, v any) []string {
 	if v == nil {
 		return []string{}
 	}
+
 	switch xs := v.(type) {
 	case []string:
 		return xs
@@ -317,6 +318,11 @@ func toStrSlice(t *testing.T, v any) []string {
 	}
 }
 
+// errNoActiveWorld is the sentinel returned by renderStateBodyForTest
+// when no active world has been seeded yet. Callers detect it via
+// errors.Is to differentiate "nothing to render" from real load errors.
+var errNoActiveWorld = errors.New("renderStateBodyForTest: no active world")
+
 // renderStateBodyForTest renders the active world's
 // state.md via the repository layer (Load + render).
 // Used by tests that need byte-level assertions on the
@@ -325,10 +331,10 @@ func renderStateBodyForTest(t *testing.T, ts *Toolset) (string, error) {
 	t.Helper()
 	info, err := ts.repos.Info.Load()
 	if err != nil {
-		return "", nil
+		return "", errNoActiveWorld
 	}
 	if info.ActiveWorld == "" {
-		return "", nil
+		return "", errNoActiveWorld
 	}
 	snap, err := ts.repos.WorldState.Load(info.ActiveWorld)
 	if err != nil {

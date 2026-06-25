@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/rs/zerolog"
-
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
 	"github.com/bestxp/narrative-ai-agent/internal/domain"
 	"github.com/bestxp/narrative-ai-agent/internal/npcprofile"
@@ -14,6 +12,7 @@ import (
 	"github.com/bestxp/narrative-ai-agent/internal/slowlog"
 	"github.com/bestxp/narrative-ai-agent/internal/usecase/tools"
 	"github.com/bestxp/narrative-ai-agent/internal/worldregistry"
+	"github.com/rs/zerolog"
 )
 
 // NPC is the repository-backed implementation of
@@ -122,7 +121,7 @@ func (n *NPC) saveRegistry(world string, r *worldregistry.Registry) {
 // characters directory via repos.NPCProfile and adds
 // the entry to the YAML registry (characters.yaml).
 // Returns ErrNPCExists if the slug is already taken.
-func (n *NPC) Create(world string, p tools.NPCProfile) error {
+func (n *NPC) Create(world string, p tools.NPCProfile) error { //nolint:funlen // complex function; splitting would harm readability.
 	slug := sanitizeName(p.DisplayName)
 	if slug == "" {
 		return errors.New("npc create: empty display name")
@@ -247,6 +246,7 @@ func (n *NPC) LoadLOD(world, npc string, lod tools.NPCLOD) (string, error) {
 		}
 		return "", err
 	}
+
 	switch lod {
 	case tools.LODFull:
 		body, err := profile.BuildMarkdown()

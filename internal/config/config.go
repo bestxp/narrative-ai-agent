@@ -114,6 +114,7 @@ func (w WSChatConfig) IsAllowed(token string) bool {
 	if token == "" {
 		return false
 	}
+
 	if w.DevToken != "" && token == w.DevToken {
 		return true
 	}
@@ -500,10 +501,13 @@ func Load(path string) (*Config, error) {
 // Validate fills defaults and rejects obviously broken setups. The
 // order of checks is meaningful: messages mentioning the offending
 // section come first so the operator can fix config.yaml quickly.
-func (c *Config) Validate() error {
+//
+//nolint:gocognit // complex validation logic
+func (c *Config) Validate() error { //nolint:funlen // complex function; splitting would harm readability.
 	// At least one transport must be configured.
 	tgOK := c.Messaging.Telegram.IsConfigured()
 	vkOK := c.Messaging.VK.IsConfigured()
+
 	wsOK := c.Messaging.WSChat.IsConfigured()
 	if !tgOK && !vkOK && !wsOK {
 		return errors.New("at least one messaging transport must be configured (telegram, vk or wschat)")
@@ -535,6 +539,7 @@ func (c *Config) Validate() error {
 	if c.Paths.DataRoot == "" {
 		c.Paths.DataRoot = "game-data"
 	}
+
 	if c.Paths.GitWorkdir == "" {
 		c.Paths.GitWorkdir = "."
 	}
@@ -550,12 +555,14 @@ func (c *Config) Validate() error {
 	if c.LLM.TokenTracking == "" {
 		c.LLM.TokenTracking = TokenTrackingOff
 	}
+
 	switch c.LLM.TokenTracking {
 	case TokenTrackingOff, TokenTrackingEstimate, TokenTrackingUsage:
 		// ok
 	default:
 		return fmt.Errorf("llm.token_tracking must be one of off|estimate|usage, got %q", c.LLM.TokenTracking)
 	}
+
 	if c.Git.Remote == "" {
 		c.Git.Remote = "origin"
 	}
@@ -574,6 +581,7 @@ func (c *Config) Validate() error {
 	if c.LLM.Driver == "" {
 		c.LLM.Driver = "openai"
 	}
+
 	switch c.LLM.Driver {
 	case "openai", "anthropic":
 		// ok
@@ -645,6 +653,7 @@ func (c *Config) resolveRelativePaths(base string) {
 	if !filepath.IsAbs(c.Paths.GitWorkdir) {
 		c.Paths.GitWorkdir = filepath.Join(base, c.Paths.GitWorkdir)
 	}
+
 	for name, role := range c.LLM.Roles {
 		if role.SystemPromptPath != "" && !filepath.IsAbs(role.SystemPromptPath) {
 			role.SystemPromptPath = filepath.Join(base, role.SystemPromptPath)

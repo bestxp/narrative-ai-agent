@@ -324,6 +324,7 @@ func appendIntoSections(data *[]Section, section, value string, strict bool) boo
 		// unknown-section attempts upstream.
 		return false
 	}
+
 	for i := range *data {
 		if (*data)[i].Name == section {
 			if containsString((*data)[i].Values, value) {
@@ -344,6 +345,7 @@ func appendIntoSections(data *[]Section, section, value string, strict bool) boo
 func replaceSectionInto(data *[]Section, section, value string, strict ...bool) bool {
 	section = strings.TrimSpace(section)
 	value = strings.TrimSpace(value)
+
 	if section == "" {
 		return false
 	}
@@ -353,6 +355,7 @@ func replaceSectionInto(data *[]Section, section, value string, strict ...bool) 
 			return false
 		}
 	}
+
 	for i := range *data {
 		if (*data)[i].Name == section {
 			if len((*data)[i].Values) == 1 && (*data)[i].Values[0] == value {

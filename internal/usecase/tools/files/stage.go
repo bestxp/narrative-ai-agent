@@ -5,11 +5,10 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/rs/zerolog"
-
 	"github.com/bestxp/narrative-ai-agent/internal/domain"
 	"github.com/bestxp/narrative-ai-agent/internal/repository/api"
 	"github.com/bestxp/narrative-ai-agent/internal/staging"
+	"github.com/rs/zerolog"
 )
 
 // StageTool implements UpdateStage, AdvanceTimeline and
@@ -27,7 +26,7 @@ func newStage(log zerolog.Logger, repos *api.Repositories) *StageTool {
 }
 
 // UpdateStage writes the pending stage transition.
-func (s *StageTool) UpdateStage(ctx context.Context, world, nextID string) (bool, error) {
+func (s *StageTool) UpdateStage(_ context.Context, world, nextID string) (bool, error) {
 	if world == "" {
 		return false, errors.New("stage: world is empty")
 	}
@@ -62,7 +61,7 @@ func (s *StageTool) UpdateStage(ctx context.Context, world, nextID string) (bool
 }
 
 // AdvanceTimeline moves the timeline cursor forward.
-func (s *StageTool) AdvanceTimeline(ctx context.Context, world string) (bool, error) {
+func (s *StageTool) AdvanceTimeline(_ context.Context, world string) (bool, error) {
 	if world == "" {
 		return false, errors.New("stage: world is empty")
 	}

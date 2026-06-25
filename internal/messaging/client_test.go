@@ -35,9 +35,11 @@ func (f *fakeClient) Run(ctx context.Context) error {
 
 	return nil
 }
+
 func (f *fakeClient) Send(_ context.Context, _ OutgoingMessage) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+
 	f.sendCount++
 
 	return nil
@@ -58,10 +60,12 @@ func (f *fakeClient) SetCommands(_ context.Context, cmds []BotCommand) error {
 func (f *fakeClient) Health() HealthReport {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+
 	state := StateUnknown
 	if f.started && !f.stopped {
 		state = StateConnected
 	}
+
 	if f.started && f.stopped {
 		state = StateStopped
 	}

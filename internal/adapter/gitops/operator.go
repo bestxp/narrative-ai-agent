@@ -2,6 +2,7 @@ package gitops
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os/exec"
@@ -47,12 +48,13 @@ func (o *Operator) RemoteDisabled() bool {
 }
 
 func (o *Operator) run(args ...string) (string, error) {
-	cmd := exec.Command("git", args...)
+	cmd := exec.CommandContext(context.Background(), "git", args...)
 	cmd.Dir = o.workdir
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	err := cmd.Run()
+
 	combined := strings.TrimSpace(stdout.String() + "\n" + stderr.String())
 	if err != nil {
 		o.log.Debug().Strs("args", args).Str("output", combined).Err(err).Msg("git cmd failed")
@@ -87,9 +89,11 @@ func (o *Operator) CommitAll(message string) (CommitResult, error) {
 	if _, err := o.run("config", "user.email", o.email); err != nil {
 		return CommitResult{}, err
 	}
+
 	if _, err := o.run("add", "-A"); err != nil {
 		return CommitResult{}, err
 	}
+
 	if _, err := o.run("commit", "-m", message); err != nil {
 		// "nothing to commit" should not be fatal
 		if strings.Contains(err.Error(), "nothing to commit") || strings.Contains(err.Error(), "no changes added") {
@@ -100,6 +104,7 @@ func (o *Operator) CommitAll(message string) (CommitResult, error) {
 
 		return CommitResult{}, err
 	}
+
 	hash, herr := o.run("rev-parse", "--short", "HEAD")
 	if herr != nil {
 		// Commit happened, hash retrieval didn't — fall back to
@@ -108,6 +113,7 @@ func (o *Operator) CommitAll(message string) (CommitResult, error) {
 		o.log.Warn().Err(herr).Msg("commit ok but hash retrieval failed")
 	}
 	files, _ := o.run("show", "--name-only", "--pretty=format:")
+
 	res := CommitResult{Hash: strings.TrimSpace(hash)}
 	for ln := range strings.SplitSeq(files, "\n") {
 		ln = strings.TrimSpace(ln)
@@ -115,6 +121,7 @@ func (o *Operator) CommitAll(message string) (CommitResult, error) {
 			res.FilesChanged = append(res.FilesChanged, ln)
 		}
 	}
+
 	o.log.Info().Str("message", message).Str("hash", res.Hash).Int("files", len(res.FilesChanged)).Msg("git commit")
 
 	return res, nil
@@ -136,10 +143,12 @@ func (o *Operator) SyncRebase() error {
 		o.log.Info().Msg("git push skipped — remote disabled")
 		return ErrRemoteDisabled
 	}
+
 	if _, err := o.run("pull", "--rebase", o.remote, o.branch); err != nil {
 		o.log.Error().Err(err).Msg("git pull --rebase failed")
 		return fmt.Errorf("pull: %w", err)
 	}
+
 	out, err := o.run("push", o.remote, o.branch)
 	if err == nil {
 		o.log.Info().Msg("git push ok")
@@ -162,6 +171,7 @@ func (o *Operator) SyncRebase() error {
 		o.log.Error().Err(perr).Msg("git push after rebase failed")
 		return fmt.Errorf("push after rebase: %w", perr)
 	}
+
 	o.log.Info().Msg("git push ok after rebase")
 
 	return nil
@@ -174,7 +184,7 @@ func (o *Operator) Status() (string, error) {
 
 // IsRepo returns true if workdir is inside a git repository.
 func IsRepo(workdir string) bool {
-	cmd := exec.Command("git", "rev-parse", "--git-dir")
+	cmd := exec.CommandContext(context.Background(), "git", "rev-parse", "--git-dir")
 	cmd.Dir = workdir
 
 	return cmd.Run() == nil

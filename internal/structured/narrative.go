@@ -17,7 +17,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"strings"
 
 	"github.com/kaptinlin/jsonrepair"
@@ -66,8 +65,9 @@ func Parse(text string) (*Narrative, error) {
 	// RouterAPI/Anthropic thinking leak: strip XML-like tags
 	// that appear after the JSON object.
 	body = stripThinkingTags(body)
-	if looksLikeJSON(body) {
+	if looksLikeJSON(body) { //nolint:nestif // intentional JSON detection nesting
 		var n Narrative
+
 		cleaned := sanitizeJSONQuotes(body)
 		if err := json.Unmarshal(cleaned, &n); err == nil {
 			return &n, nil
@@ -88,7 +88,7 @@ func Parse(text string) (*Narrative, error) {
 			}
 		}
 
-		return nil, fmt.Errorf("structured: json.Unmarshal: input is not a valid Narrative object")
+		return nil, errors.New("structured: json.Unmarshal: input is not a valid Narrative object")
 	}
 	// The text does not start with '{', but may contain a
 	// JSON object after some prefix text (model hallucination:
@@ -104,6 +104,7 @@ func Parse(text string) (*Narrative, error) {
 	if err := json.Unmarshal(cleaned, &n); err == nil {
 		return &n, nil
 	}
+
 	first := extractFirstJSONObject(cleaned)
 	if first != nil {
 		var n2 Narrative
@@ -125,7 +126,7 @@ func Parse(text string) (*Narrative, error) {
 
 // StripThinkingTags removes RouterAPI/Anthropic thinking leak
 // artifacts: XML-like tags that appear after the JSON payload.
-// Examples: <arg_key>...</arg_key>, </arg_value>.</tool_call>
+// Examples: <arg_key>...</arg_key>, </arg_value>.</tool_call>.
 func StripThinkingTags(data string) string {
 	b := []byte(data)
 	// Find the first occurrence of </arg_value> or <arg_key>
@@ -134,6 +135,7 @@ func StripThinkingTags(data string) string {
 	if idx >= 0 {
 		return strings.TrimSpace(string(b[:idx]))
 	}
+
 	idx = bytes.Index(b, []byte("<arg_key>"))
 	if idx >= 0 {
 		return strings.TrimSpace(string(b[:idx]))
@@ -149,8 +151,10 @@ func stripThinkingTags(data []byte) []byte {
 func findOpeningBrace(data []byte) int {
 	inStr := false
 	escape := false
+
 	for i := range data {
 		c := data[i]
+
 		if escape {
 			escape = false
 			continue
@@ -176,12 +180,15 @@ func extractFirstJSONObject(data []byte) []byte {
 	depth := 0
 	inStr := false
 	escape := false
+
 	for i := range data {
 		c := data[i]
+
 		if escape {
 			escape = false
 			continue
 		}
+
 		if c == '\\' && inStr {
 			escape = true
 			continue
@@ -190,14 +197,17 @@ func extractFirstJSONObject(data []byte) []byte {
 			inStr = !inStr
 			continue
 		}
+
 		if inStr {
 			continue
 		}
+
 		switch c {
 		case '{':
 			if start < 0 {
 				start = i
 			}
+
 			depth++
 		case '}':
 			depth--
@@ -225,6 +235,7 @@ func extractFirstJSONObject(data []byte) []byte {
 func sanitizeJSONQuotes(data []byte) []byte {
 	var out bytes.Buffer
 	inStr := false
+
 	escape := false
 	for i, c := range data {
 		if escape {
@@ -248,11 +259,13 @@ func sanitizeJSONQuotes(data []byte) []byte {
 
 				continue
 			}
+
 			out.WriteByte(c)
 			inStr = !inStr
 
 			continue
 		}
+
 		out.WriteByte(c)
 	}
 
@@ -263,6 +276,7 @@ func isJSONStructural(data []byte, idx int) bool {
 	if idx < 0 || idx >= len(data) {
 		return true // boundary counts as structural
 	}
+
 	switch data[idx] {
 	case '{', '}', '[', ']', ':', ',', '\n', '\r', '\t', ' ':
 		return true
@@ -329,6 +343,7 @@ func (n *Narrative) MissingFields() []string {
 	if strings.TrimSpace(n.Context) == "" {
 		missing = append(missing, "context")
 	}
+
 	if strings.TrimSpace(n.Future) == "" {
 		missing = append(missing, "future")
 	}

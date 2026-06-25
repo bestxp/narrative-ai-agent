@@ -7,10 +7,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/rs/zerolog"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
 	"github.com/bestxp/narrative-ai-agent/internal/config"
 	"github.com/bestxp/narrative-ai-agent/internal/messaging"
@@ -18,6 +14,9 @@ import (
 	"github.com/bestxp/narrative-ai-agent/internal/slowlog"
 	yamlfs "github.com/bestxp/narrative-ai-agent/internal/storage/fs"
 	"github.com/bestxp/narrative-ai-agent/internal/usecase"
+	"github.com/rs/zerolog"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func initRepo(t *testing.T) string {

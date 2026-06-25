@@ -17,9 +17,8 @@ import (
 	"strconv"
 	"strings"
 
-	"gopkg.in/yaml.v3"
-
 	"github.com/bestxp/narrative-ai-agent/internal/limits"
+	"gopkg.in/yaml.v3"
 )
 
 // MaxStageRenderBytes is the hard cap on the rendered size of the
@@ -214,6 +213,7 @@ func (s *Staging) UpdateStage(_ FileStore, _, nextID string) error {
 		return errors.New("staging: next_id is empty")
 	}
 	found := false
+
 	for _, t := range s.Current.Next {
 		if t.ID == nextID {
 			found = true
@@ -291,11 +291,13 @@ func (s *Staging) Render(characterName string) string {
 	if characterName != "" {
 		desc = strings.ReplaceAll(desc, "$(name)", characterName)
 	}
+
 	b.WriteString(strings.TrimSpace(desc))
 	b.WriteString("\n\n")
 
 	if len(s.Current.Timeline) > 0 {
 		b.WriteString("**Таймлайн:**\n")
+
 		for i, p := range s.Current.Timeline {
 			prefix := "[ ]"
 			if i < s.TimelineIndex {
@@ -387,7 +389,8 @@ func buildStageMap(raw *stagingFile) map[string]Stage {
 	return out
 }
 
-func validateStagingFile(raw *stagingFile) error {
+//nolint:gocognit // complex validation logic
+func validateStagingFile(raw *stagingFile) error { //nolint:funlen // complex function; splitting would harm readability.
 	if !raw.Enabled {
 		return nil
 	}
@@ -396,6 +399,7 @@ func validateStagingFile(raw *stagingFile) error {
 	}
 
 	ids := make(map[string]struct{})
+
 	for _, st := range raw.Stages {
 		id := strings.TrimSpace(st.ID)
 		if id == "" {
@@ -409,10 +413,12 @@ func validateStagingFile(raw *stagingFile) error {
 
 	hasDays := false
 	noDays := false
+
 	for _, st := range raw.Stages {
 		if strings.TrimSpace(st.Name) == "" {
 			return fmt.Errorf("stage %q: empty name", st.ID)
 		}
+
 		for _, p := range st.Timeline {
 			if strings.TrimSpace(p.Info) == "" {
 				return fmt.Errorf("stage %q: timeline point with empty info", st.ID)
@@ -422,6 +428,7 @@ func validateStagingFile(raw *stagingFile) error {
 			}
 			if p.Days != "" {
 				hasDays = true
+
 				if _, _, err := parseDaysRange(p.Days); err != nil {
 					return fmt.Errorf("stage %q: timeline point %q: invalid days %q: %w", st.ID, p.Info, p.Days, err)
 				}
@@ -432,6 +439,7 @@ func validateStagingFile(raw *stagingFile) error {
 		if len(st.Next) == 0 {
 			return fmt.Errorf("stage %q: no transitions", st.ID)
 		}
+
 		for _, n := range st.Next {
 			if strings.TrimSpace(n.ID) == "" {
 				return fmt.Errorf("stage %q: transition with empty id", st.ID)

@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/rs/zerolog"
-
 	"github.com/bestxp/narrative-ai-agent/internal/charprofile"
 	"github.com/bestxp/narrative-ai-agent/internal/chronicle"
 	"github.com/bestxp/narrative-ai-agent/internal/domain"
@@ -14,6 +12,7 @@ import (
 	"github.com/bestxp/narrative-ai-agent/internal/npcprofile"
 	"github.com/bestxp/narrative-ai-agent/internal/repository/api"
 	"github.com/bestxp/narrative-ai-agent/internal/usecase/tools"
+	"github.com/rs/zerolog"
 )
 
 // Memory is the repository-backed implementation of
@@ -174,6 +173,7 @@ func (m *Memory) chronicleCompressAfterArchive(ctx context.Context, world string
 	if endAt < startFrom {
 		return nil
 	}
+
 	window := chronicle.WindowSize
 	for wEnd := startFrom + window - 1; wEnd <= endAt; wEnd += window {
 		wStart := max(wEnd-window+1, startFrom)
@@ -198,7 +198,7 @@ func (m *Memory) chronicleCompressAfterArchive(ctx context.Context, world string
 // context so it can dedupe arcs that span the window
 // boundary. See research_repository_pattern.md for the
 // compression-rule rationale.
-func (m *Memory) ChronicleCompressWindow(ctx context.Context, world string, startDay, endDay int) (bool, error) {
+func (m *Memory) ChronicleCompressWindow(ctx context.Context, world string, startDay, endDay int) (bool, error) { //nolint:funlen // complex function; splitting would harm readability.
 	if startDay > endDay {
 		return false, nil
 	}
@@ -484,5 +484,7 @@ func yamlMarshalChronicle(c chronicle.Chronicle) (string, error) {
 
 // Reference imports that are part of the public
 // interface but used only in edge-case paths above.
-var _ = domain.StateSnapshot{}
-var _ = limits.MemoriseWindowDays
+var (
+	_ = domain.StateSnapshot{}
+	_ = limits.MemoriseWindowDays
+)

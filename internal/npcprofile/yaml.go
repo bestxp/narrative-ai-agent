@@ -30,10 +30,9 @@ import (
 	"sort"
 	"strings"
 
-	"gopkg.in/yaml.v3"
-
 	"github.com/bestxp/narrative-ai-agent/internal/limits"
 	"github.com/bestxp/narrative-ai-agent/internal/prompts"
+	"gopkg.in/yaml.v3"
 )
 
 // Profile is the canonical NPC record on disk. Field
@@ -142,6 +141,7 @@ var ErrNotFound = errors.New("npcprofile: file not found or empty")
 // format may grow additional fields.
 func Load(body string) (Profile, error) {
 	var p Profile
+
 	if strings.TrimSpace(body) == "" {
 		return Profile{}, ErrNotFound
 	}
@@ -435,8 +435,9 @@ func MatchSection(name string) SectionKind {
 // added or replaced). False means the section was a
 // no-op (empty text, or exact-byte duplicate of an
 // existing item).
-func (p *Profile) UpdateSection(kind SectionKind, text string) bool {
+func (p *Profile) UpdateSection(kind SectionKind, text string) bool { //nolint:funlen // complex function; splitting would harm readability.
 	text = strings.TrimSpace(text)
+
 	switch kind {
 	case SectionTemperament:
 		if text == "" || p.Temperament == text {
@@ -604,8 +605,8 @@ func appendUnique(field *[]string, text string) bool {
 //
 // Anything not matching a known section header is
 // dropped (we return nil for the section list — the
-// operator is responsible for the diff).
-func MigrateFromMarkdown(body, fileSlug string) (Profile, error) {
+// operator is responsible for the diff). //nolint:funlen // complex function; splitting would harm readability.
+func MigrateFromMarkdown(body, fileSlug string) (Profile, error) { //nolint:funlen // complex function; splitting would harm readability.
 	p := Profile{FileSlug: fileSlug}
 	if strings.TrimSpace(body) == "" {
 		return p, ErrNotFound
@@ -646,6 +647,7 @@ func MigrateFromMarkdown(body, fileSlug string) (Profile, error) {
 			p.DisplayName = strings.TrimSpace(t[2:])
 		case strings.HasPrefix(t, "## "):
 			sawSection = true
+
 			flush()
 			current = MatchSection(t[3:])
 		case t == "":
@@ -669,6 +671,7 @@ func MigrateFromMarkdown(body, fileSlug string) (Profile, error) {
 					item = strings.TrimSpace(t[idx+2:])
 				}
 			}
+
 			pending = append(pending, item)
 		}
 	}

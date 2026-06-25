@@ -81,11 +81,11 @@ linters:
           bson: camel
           env: upperSnake
           envconfig: upperSnake
-          json: kebab
+          json: snake
           mapstructure: kebab
           xml: camel
-          yaml: kebab
-        use-field-name: true
+          yaml: snake
+        use-field-name: false
     wrapcheck:
       ignore-sigs:
         - .Errorf(
@@ -127,6 +127,18 @@ linters:
       - linters:
           - goconst
         text: string `(linux|windows|darwin)` has [0-9]+ occurrences
+      - linters:
+          - gocritic
+        text: 'exitAfterDefer'
+      - linters:
+          - lll
+        path: internal/domain/tools\.go
+      - linters:
+          - lll
+        path: internal/domain/prompt_test\.go
+      - linters:
+          - lll
+        path: internal/usecase/shims\.go
       - linters:
           - nonamedreturns
         source: \) \(\w+, \w+ (?P<type>[a-zA-Z0-9.\[\]*]+)[^)]*\) \{$

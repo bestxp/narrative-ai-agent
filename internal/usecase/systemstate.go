@@ -4,11 +4,10 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/rs/zerolog"
-
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
 	"github.com/bestxp/narrative-ai-agent/internal/domain"
 	"github.com/bestxp/narrative-ai-agent/internal/slowlog"
+	"github.com/rs/zerolog"
 )
 
 // SystemState is the persistence layer for domain.SystemState.

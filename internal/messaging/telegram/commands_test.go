@@ -6,10 +6,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/bestxp/narrative-ai-agent/internal/messaging"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/bestxp/narrative-ai-agent/internal/messaging"
 )
 
 func TestEncodeCommandsJSON_Empty(t *testing.T) {
@@ -90,7 +89,7 @@ func TestSetCommands_BuildsCorrectPayload(t *testing.T) {
 		{Command: "save", Description: "git commit + push"},
 	}
 	payload := encodeCommandsJSON(cmds)
-	assert.Equal(t, `[{"command":"start","description":"Загрузить info.yaml и state.md"},{"command":"me","description":"Содержимое SOUL/SKILL/memory/state"},{"command":"save","description":"git commit + push"}]`, payload)
+	assert.JSONEq(t, `[{"command":"start","description":"Загрузить info.yaml и state.md"},{"command":"me","description":"Содержимое SOUL/SKILL/memory/state"},{"command":"save","description":"git commit + push"}]`, payload)
 	// Encoded payload must be valid url.Values when wrapped.
 	v := url.Values{}
 	v.Set("commands", payload)

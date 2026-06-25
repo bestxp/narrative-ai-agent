@@ -205,6 +205,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	}
 	reports := s.reporter.Reports()
 	connected := 0
+
 	for _, r := range reports {
 		if r.State == StatusConnected {
 			connected++
@@ -216,6 +217,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	}
 	if connected == 0 {
 		body["status"] = "degraded"
+
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusServiceUnavailable)
 		_ = json.NewEncoder(w).Encode(body) //nolint:errchkjson // HTTP response stream is already started; encode errors are unobservable to the client
@@ -223,6 +225,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	body["status"] = "ready"
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(body) //nolint:errchkjson // HTTP response stream is already started; encode errors are unobservable to the client

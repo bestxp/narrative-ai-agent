@@ -18,13 +18,12 @@ import (
 	"errors"
 	"time"
 
-	"github.com/rs/zerolog"
-
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
 	"github.com/bestxp/narrative-ai-agent/internal/charprofile"
 	"github.com/bestxp/narrative-ai-agent/internal/repository/api"
 	"github.com/bestxp/narrative-ai-agent/internal/slowlog"
 	"github.com/bestxp/narrative-ai-agent/internal/usecase/tools"
+	"github.com/rs/zerolog"
 )
 
 // Toolset is the repository-backed implementation of

@@ -44,11 +44,10 @@ import (
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
-	"github.com/rs/zerolog"
-
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/llm"
 	"github.com/bestxp/narrative-ai-agent/internal/domain"
 	"github.com/bestxp/narrative-ai-agent/internal/slowlog"
+	"github.com/rs/zerolog"
 )
 
 var _ llm.Driver = (*Driver)(nil)
@@ -135,10 +134,12 @@ func newWithSlowlog(role llm.RoleConfig, log zerolog.Logger, slow *slowlog.Logge
 		if err := json.Unmarshal(paramsBytes, &schema); err != nil {
 			panic(fmt.Sprintf("anthropic: reparse tool %q: %v", t.Function.Name, err))
 		}
+
 		inputSchema := anthropic.ToolInputSchemaParam{}
 		if props, ok := schema["properties"].(map[string]any); ok {
 			inputSchema.Properties = props
 		}
+
 		if req, ok := schema["required"].([]any); ok {
 			required := make([]string, 0, len(req))
 			for _, r := range req {
@@ -160,6 +161,7 @@ func newWithSlowlog(role llm.RoleConfig, log zerolog.Logger, slow *slowlog.Logge
 		if len(extra) > 0 {
 			inputSchema.ExtraFields = extra
 		}
+
 		d.prodTools = append(d.prodTools, anthropic.ToolUnionParam{
 			OfTool: &anthropic.ToolParam{
 				Name:        t.Function.Name,
@@ -200,6 +202,7 @@ func (d *Driver) Stream(ctx context.Context, req llm.ChatRequest, onChunk func(l
 	}
 	if timeout > 0 {
 		var cancel context.CancelFunc
+
 		ctx, cancel = context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
 		defer cancel()
 	}
@@ -229,6 +232,7 @@ func (d *Driver) Stream(ctx context.Context, req llm.ChatRequest, onChunk func(l
 	if raw, err := json.Marshal(resp); err == nil {
 		rawTrace = []string{string(raw)}
 	}
+
 	return d.emitBlocks(ctx, resp, rawTrace, onChunk)
 }
 
@@ -246,6 +250,7 @@ func (d *Driver) emitBlocks(_ context.Context, resp *anthropic.Message, rawTrace
 	// model emitted them; we forward all of them in one
 	// chunk so the GM's tool-dispatch loop can batch.)
 	var tools []llm.ToolCall
+
 	for _, b := range resp.Content {
 		tu := b.AsToolUse()
 		if tu.Type == "" {
@@ -266,6 +271,7 @@ func (d *Driver) emitBlocks(_ context.Context, resp *anthropic.Message, rawTrace
 			},
 		})
 	}
+
 	if len(tools) > 0 {
 		if err := onChunk(llm.Chunk{ToolCalls: tools, Finish: finish, RawTrace: rawTrace}); err != nil {
 			return err
@@ -274,11 +280,13 @@ func (d *Driver) emitBlocks(_ context.Context, resp *anthropic.Message, rawTrace
 
 	// Then emit text blocks as one chunk (concatenated).
 	var text strings.Builder
+
 	for _, b := range resp.Content {
 		tb := b.AsText()
 		if tb.Type == "" {
 			continue
 		}
+
 		text.WriteString(tb.Text)
 	}
 	if text.Len() > 0 {
@@ -299,6 +307,7 @@ func (d *Driver) emitBlocks(_ context.Context, resp *anthropic.Message, rawTrace
 			},
 		})
 	}
+
 	if err := onChunk(llm.Chunk{Done: true, RawTrace: rawTrace}); err != nil {
 		return fmt.Errorf("anthropic: done callback: %w", err)
 	}
@@ -308,9 +317,10 @@ func (d *Driver) emitBlocks(_ context.Context, resp *anthropic.Message, rawTrace
 
 // buildRequest translates ChatRequest into anthropic.MessageNewParams.
 // Wire surface: 8 prod tools, tool_choice=auto, strict=true.
-func (d *Driver) buildRequest(req llm.ChatRequest) (anthropic.MessageNewParams, error) {
+func (d *Driver) buildRequest(req llm.ChatRequest) (anthropic.MessageNewParams, error) { //nolint:funlen // complex function; splitting would harm readability.
 	messages := make([]anthropic.MessageParam, 0, len(req.Messages))
 	var systemBlocks []anthropic.TextBlockParam
+
 	for _, m := range req.Messages {
 		switch m.Role {
 		case "system":
@@ -327,6 +337,7 @@ func (d *Driver) buildRequest(req llm.ChatRequest) (anthropic.MessageNewParams, 
 					OfText: &anthropic.TextBlockParam{Text: m.Content},
 				})
 			}
+
 			for _, tc := range m.ToolCalls {
 				blocks = append(blocks, anthropic.ContentBlockParamUnion{
 					OfToolUse: &anthropic.ToolUseBlockParam{

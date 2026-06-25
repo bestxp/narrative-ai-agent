@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/SevereCloud/vksdk/v3/api"
-
 	"github.com/bestxp/narrative-ai-agent/internal/messaging"
 )
 
@@ -23,7 +22,7 @@ type stream struct {
 	lastSent string
 }
 
-func (s *stream) Append(ctx context.Context, text string) error {
+func (s *stream) Append(_ context.Context, text string) error {
 	if s.closed {
 		return errors.New("vk: stream closed")
 	}
@@ -36,6 +35,7 @@ func (s *stream) Append(ctx context.Context, text string) error {
 	}
 	if len(wire) > maxVKMessageLen {
 		chunks := splitForVK(wire)
+
 		wire = chunks[0]
 		for _, tail := range chunks[1:] {
 			_, _ = s.client.vk.MessagesSend(api.Params{
@@ -59,6 +59,7 @@ func (s *stream) Append(ctx context.Context, text string) error {
 
 			return nil
 		}
+
 		s.client.log.Error().Err(err).Str("chat", s.chatID).Int("msg_id", s.msgID).Msg("vk: stream edit failed")
 
 		return fmt.Errorf("vk: stream edit: %w", err)
@@ -105,6 +106,7 @@ func NewThrottledStream(inner messaging.StreamSession) *ThrottledStream {
 		stop:     make(chan struct{}),
 	}
 	t.ticker = time.NewTicker(t.minDelay)
+
 	t.wg.Add(1)
 	go t.loop()
 
@@ -113,6 +115,7 @@ func NewThrottledStream(inner messaging.StreamSession) *ThrottledStream {
 
 func (t *ThrottledStream) loop() {
 	defer t.wg.Done()
+
 	for {
 		select {
 		case <-t.ticker.C:
@@ -135,13 +138,16 @@ func (t *ThrottledStream) flush() {
 		return
 	}
 	// Best-effort flush; errors are logged by the inner stream.
-	_ = t.inner.Append(context.Background(), text) //nolint:contextcheck // background loop has no per-turn ctx; errors are logged by the inner stream
+	//
+	//nolint:contextcheck // background loop has no per-turn ctx
+	_ = t.inner.Append(context.Background(), text)
 }
 
-func (t *ThrottledStream) Append(ctx context.Context, text string) error {
+func (t *ThrottledStream) Append(_ context.Context, text string) error {
 	if text == "" {
 		return nil
 	}
+
 	t.mu.Lock()
 	t.buffer = text
 	t.mu.Unlock()

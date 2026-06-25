@@ -7,15 +7,14 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/llm"
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
 	"github.com/bestxp/narrative-ai-agent/internal/domain"
 	"github.com/bestxp/narrative-ai-agent/internal/repository/api"
 	"github.com/bestxp/narrative-ai-agent/internal/slowlog"
 	yamlfs "github.com/bestxp/narrative-ai-agent/internal/storage/fs"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // fakeLLM replays a deterministic sequence of chunks. The test
@@ -152,9 +151,11 @@ func TestGM_ToolRound_UpdateState(t *testing.T) {
 	fake.rounds = [][]fakeChunk{
 		{
 			{content: "обновляю"},
-			{toolID: "call_1", toolName: "update_state",
+			{
+				toolID: "call_1", toolName: "update_state",
 				toolArgs: `{"moment":"Маркус входит в деревню.","npcs":["Какаши"],"in_flight":true}`,
-				finish:   "tool_calls"},
+				finish:   "tool_calls",
+			},
 		},
 		{{content: " ок.\n\n**диалоги и действия**\nобновляю ок.\n\n**КОНТЕКСТ И ИЗМЕНЕНИЯ**\nstate.md обновлён\n\n**БУДУЩЕЕ**\n- продолжение\n\n**ВАЛИДАЦИЯ ПРАВИЛ**\n- ok", finish: "stop"}},
 	}
@@ -172,8 +173,10 @@ func TestGM_ToolRound_RotatePlan_RejectsBadRange(t *testing.T) {
 	g, _, fake := newGMTestEnv(t)
 	fake.rounds = [][]fakeChunk{
 		{
-			{toolID: "call_1", toolName: "rotate_plan",
-				toolArgs: `{"events":["a","b"]}`, finish: "tool_calls"},
+			{
+				toolID: "call_1", toolName: "rotate_plan",
+				toolArgs: `{"events":["a","b"]}`, finish: "tool_calls",
+			},
 		},
 		{{content: "не вышло\n\n**диалоги и действия**\nне вышло\n\n**КОНТЕКСТ И ИЗМЕНЕНИЯ**\nбез изменений\n\n**БУДУЩЕЕ**\n- продолжение\n\n**ВАЛИДАЦИЯ ПРАВИЛ**\n- ok", finish: "stop"}},
 	}
@@ -283,8 +286,8 @@ func TestGM_TokenUsage_Estimate(t *testing.T) {
 	var lastTok llm.Usage
 	_, err := g.Reply(context.Background(), chatID, "ping", Callbacks{OnTokens: func(u llm.Usage) { lastTok = u }})
 	require.NoError(t, err)
-	assert.Greater(t, lastTok.PromptTokens, 0)
-	assert.Greater(t, lastTok.CompletionTokens, 0)
+	assert.Positive(t, lastTok.PromptTokens)
+	assert.Positive(t, lastTok.CompletionTokens)
 }
 
 func TestGM_TokenUsage_Usage(t *testing.T) {
@@ -363,7 +366,7 @@ func TestGM_CompactionFiresOnLongHistory(t *testing.T) {
 	require.NoError(t, err)
 	compactedMu.Lock()
 	defer compactedMu.Unlock()
-	assert.Greater(t, compacted.DroppedTurns, 0, "compaction should have fired on long history (got %d dropped, before=%d after=%d)", compacted.DroppedTurns, compacted.BeforeTokens, compacted.AfterTokens)
+	assert.Positive(t, compacted.DroppedTurns, "compaction should have fired on long history (got %d dropped, before=%d after=%d)", compacted.DroppedTurns, compacted.BeforeTokens, compacted.AfterTokens)
 	assert.LessOrEqual(t, len(g.getConversation(chatID).messages), 2*g.compaction.KeepRecent+2, "conv holds kept + (1 user, 1 assistant from final round)")
 }
 
@@ -918,10 +921,17 @@ func TestLoadActiveNPCs_LODTiers(t *testing.T) {
 		display, slug string
 	}
 	roster := []n{
-		{"Какаши", "kakashi"}, {"Хината", "hinata"}, {"Ирука", "iruka"},
-		{"Наруто", "naruto"}, {"Саске", "sasuke"}, {"Сакура", "sakura"},
-		{"Шикамару", "shikamaru"}, {"Ино", "ino"}, {"Чоуджи", "chouji"},
-		{"Шино", "shino"}, {"Хиаши", "hiashi"},
+		{"Какаши", "kakashi"},
+		{"Хината", "hinata"},
+		{"Ирука", "iruka"},
+		{"Наруто", "naruto"},
+		{"Саске", "sasuke"},
+		{"Сакура", "sakura"},
+		{"Шикамару", "shikamaru"},
+		{"Ино", "ino"},
+		{"Чоуджи", "chouji"},
+		{"Шино", "shino"},
+		{"Хиаши", "hiashi"},
 	}
 	var sb strings.Builder
 	sb.WriteString("День 1 (в процессе).\nNPC: ")

@@ -58,6 +58,7 @@ func MigrateFromMarkdown(kind string, body, fileSlug string) (any, error) {
 	if body == "" {
 		return nil, ErrNotFound
 	}
+
 	switch kind {
 	case "SOUL":
 		var s Soul
@@ -107,6 +108,7 @@ func MigrateFromMarkdown(kind string, body, fileSlug string) (any, error) {
 func parseMarkdownSections(body string, data *[]Section, strict bool) {
 	lines := strings.Split(body, "\n")
 	var current *Section
+
 	for _, raw := range lines {
 		t := strings.TrimSpace(raw)
 		switch {

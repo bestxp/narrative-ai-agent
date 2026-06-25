@@ -21,6 +21,7 @@ func List() []string {
 	if err != nil {
 		return nil
 	}
+
 	out := make([]string, 0, len(entries))
 	for _, e := range entries {
 		if !e.IsDir() && strings.HasSuffix(e.Name(), ".md.tmpl") {
@@ -53,6 +54,7 @@ func Render(name string, data PromptData) (string, error) {
 	if !strings.HasSuffix(name, ".md.tmpl") {
 		return "", fmt.Errorf("prompts: Render only accepts .md.tmpl files, got %q", name)
 	}
+
 	src, err := bundledFS.ReadFile(name)
 	if err != nil {
 		return "", fmt.Errorf("prompts: template not found: %q", name)
@@ -80,6 +82,7 @@ func getOrParse(name, src string) (*template.Template, error) {
 
 		return tpl, nil
 	}
+
 	tpl, err := template.New(name).
 		Option("missingkey=error").
 		Funcs(template.FuncMap{
@@ -95,6 +98,7 @@ func getOrParse(name, src string) (*template.Template, error) {
 	if err != nil {
 		return nil, fmt.Errorf("prompts: parse %q: %w", name, err)
 	}
+
 	templateCache.Store(name, tpl)
 
 	return tpl, nil

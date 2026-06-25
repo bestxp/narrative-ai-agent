@@ -5,8 +5,6 @@ import (
 	"path/filepath"
 	"sync/atomic"
 
-	"github.com/rs/zerolog"
-
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/gitops"
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/llm"
 	llmanthropic "github.com/bestxp/narrative-ai-agent/internal/adapter/llm/anthropic"
@@ -25,6 +23,7 @@ import (
 	"github.com/bestxp/narrative-ai-agent/internal/usecase"
 	"github.com/bestxp/narrative-ai-agent/internal/usecase/tools"
 	files "github.com/bestxp/narrative-ai-agent/internal/usecase/tools/files"
+	"github.com/rs/zerolog"
 )
 
 // buildStorage opens the FileStore at the configured
@@ -39,6 +38,7 @@ func buildStorage(cfg *config.Config, log zerolog.Logger) (*storage.FileStore, s
 	if err != nil {
 		log.Fatal().Err(err).Msg("storage init")
 	}
+
 	return fs, absData
 }
 
@@ -50,6 +50,7 @@ func buildGit(cfg *config.Config, log zerolog.Logger) *gitops.Operator {
 		log.Info().Msg("git disabled (config: git.disabled=true)")
 		return nil
 	}
+
 	return gitops.NewWithLogger(
 		cfg.Paths.GitWorkdir, cfg.Git.Remote, cfg.Git.Branch,
 		cfg.Git.CommitAuthor, cfg.Git.CommitEmail,
@@ -60,6 +61,8 @@ func buildGit(cfg *config.Config, log zerolog.Logger) *gitops.Operator {
 // buildLLMDriver selects the primary LLM driver (openai
 // or anthropic) per cfg.LLM.Driver and wires the
 // narrative role's config.
+//
+//nolint:ireturn // driver interface is the intended return type
 func buildLLMDriver(cfg *config.Config, role config.LLMRoleConfig, slow *slowlog.Logger, log zerolog.Logger) (llm.Driver, driverClient) {
 	rc := llm.RoleConfig{
 		APIURL:                   role.APIURL,
@@ -75,6 +78,7 @@ func buildLLMDriver(cfg *config.Config, role config.LLMRoleConfig, slow *slowlog
 		EmptyRetryTimeoutSeconds: role.EmptyRetryTimeoutSeconds,
 	}
 	var driver llm.Driver
+
 	switch cfg.LLM.Driver {
 	case "", "openai":
 		driver = llmopenai.New(rc, log)
@@ -85,6 +89,7 @@ func buildLLMDriver(cfg *config.Config, role config.LLMRoleConfig, slow *slowlog
 	default:
 		log.Fatal().Str("driver", cfg.LLM.Driver).Msg("unknown llm.driver; expected openai|anthropic")
 	}
+
 	return driver, driverClient{driver: driver}
 }
 
@@ -98,10 +103,14 @@ func buildLLMDriver(cfg *config.Config, role config.LLMRoleConfig, slow *slowlog
 // compaction knobs are wired through SetCompactionConfig
 // so the user-message templates can reference
 // {{ .Compaction.* }} instead of hard-coded numbers.
-func buildSummarizer(cfg *config.Config, role config.LLMRoleConfig, snap promptpkg.NarrativeConfigSnapshot, slow *slowlog.Logger, log zerolog.Logger) *usecase.Summarizer {
+func buildSummarizer( //nolint:funlen // complex function; splitting would harm readability.
+	cfg *config.Config, role config.LLMRoleConfig,
+	snap promptpkg.NarrativeConfigSnapshot, slow *slowlog.Logger, log zerolog.Logger,
+) *usecase.Summarizer {
 	var sumRole llm.RoleConfig
 	var sumPrompt string
 	var ok bool
+
 	if sumRoleCfg, hasSummary := cfg.Role("summary"); hasSummary {
 		sumRole = llm.RoleConfig{
 			APIURL:                   sumRoleCfg.APIURL,
@@ -146,6 +155,7 @@ func buildSummarizer(cfg *config.Config, role config.LLMRoleConfig, snap promptp
 		return nil
 	}
 	var sumLLM llm.Driver
+
 	switch cfg.LLM.Driver {
 	case "anthropic":
 		sumLLM = llmanthropic.New(sumRole, log)
@@ -159,11 +169,23 @@ func buildSummarizer(cfg *config.Config, role config.LLMRoleConfig, snap promptp
 		summarizer = usecase.NewFallbackSummarizer(sumLLM, sumRole, sumPrompt, slow, log)
 	}
 	wireSummarizerPrompt("compaction_in_place.md.tmpl", snap, summarizer.SetCompactionInPlacePrompt, "in-place compaction will no-op", log)
+
 	wireSummarizerPrompt("end_of_day.md.tmpl", snap, summarizer.SetEndOfDayPrompt, "end-of-day protocol will no-op", log)
-	wireSummarizerPrompt("character_memory_maintain.md.tmpl", snap, summarizer.SetCharacterMemoryPrompt, "end-of-day memory defrag will no-op", log)
-	wireSummarizerPrompt("chronicle_summary.md.tmpl", snap, summarizer.SetChronicleSummaryPrompt, "chronicle window compression falls back to base summary prompt", log)
+
+	wireSummarizerPrompt(
+		"character_memory_maintain.md.tmpl", snap,
+		summarizer.SetCharacterMemoryPrompt,
+		"end-of-day memory defrag will no-op", log,
+	)
+
+	wireSummarizerPrompt(
+		"chronicle_summary.md.tmpl", snap,
+		summarizer.SetChronicleSummaryPrompt,
+		"chronicle window compression falls back to base summary prompt", log,
+	)
 	summarizerData := promptpkg.NewPromptData(snap, promptpkg.CharacterData{}, promptpkg.WorldData{})
 	summarizer.SetCompactionConfig(summarizerData.Compaction)
+
 	return summarizer
 }
 
@@ -181,6 +203,7 @@ func wireSummarizerPrompt(
 	p, err := renderSummarizerPrompt(name, snap)
 	if err != nil || p == "" {
 		log.Warn().Err(err).Str("template", name).Msg(warnReason)
+
 		return
 	}
 	setter(p)
@@ -207,6 +230,7 @@ func buildSummarizerSlots(s *usecase.Summarizer) summarizerAdapterSlots {
 	slots.lore = adapter
 	slots.chronicle = adapter
 	slots.charMem = adapter
+
 	return slots
 }
 
@@ -261,19 +285,27 @@ func buildGM(
 		},
 	}, fs, llmCli, ss, fl, fileTools, summarizer, sysSt, slow, cfg.LLM.TokenTracking, cfg.LLM.IncludeInReply, log)
 	fileTools.SetWorldStateInvalidate(gm.InvalidateWorldState)
+
 	return gm
 }
 
 // buildDispatcher wires the operator command dispatcher
 // on top of the file toolset.
-func buildDispatcher(cfg *config.Config, fs *storage.FileStore, gitOp *gitops.Operator, fileTools *files.Toolset, slow *slowlog.Logger, log zerolog.Logger) *dispatcher.Dispatcher {
+func buildDispatcher(
+	cfg *config.Config, fs *storage.FileStore,
+	gitOp *gitops.Operator, fileTools *files.Toolset,
+	slow *slowlog.Logger, log zerolog.Logger,
+) *dispatcher.Dispatcher {
 	return dispatcher.New(cfg, fs, gitOp, fileTools, slow, log)
 }
 
 // buildMessagingPool constructs the per-transport clients
 // (Telegram, VK) and wraps them in a MultiClient.
-func buildMessagingPool(cfg *config.Config, disp *dispatcher.Dispatcher, log zerolog.Logger) (*messaging.MultiClient, []messaging.Client) {
+func buildMessagingPool(
+	cfg *config.Config, disp *dispatcher.Dispatcher, log zerolog.Logger,
+) (*messaging.MultiClient, []messaging.Client) {
 	var clients []messaging.Client
+
 	if cfg.Messaging.Telegram.IsConfigured() {
 		tgClient, err := telegram.New(telegram.Config{
 			Token:          cfg.Messaging.Telegram.Token,
@@ -284,6 +316,7 @@ func buildMessagingPool(cfg *config.Config, disp *dispatcher.Dispatcher, log zer
 		if err != nil {
 			log.Fatal().Err(err).Msg("telegram init")
 		}
+
 		clients = append(clients, tgClient)
 		commands := disp.Commands()
 		if err := tgClient.SetCommands(context.Background(), commands); err != nil {
@@ -301,6 +334,7 @@ func buildMessagingPool(cfg *config.Config, disp *dispatcher.Dispatcher, log zer
 		if err != nil {
 			log.Fatal().Err(err).Msg("vk init")
 		}
+
 		clients = append(clients, vkClient)
 	}
 	if cfg.Messaging.WSChat.IsConfigured() {
@@ -308,7 +342,9 @@ func buildMessagingPool(cfg *config.Config, disp *dispatcher.Dispatcher, log zer
 		if err != nil {
 			log.Fatal().Err(err).Msg("wschat init")
 		}
+
 		clients = append(clients, wsClient)
+
 		log.Info().Str("addr", cfg.Messaging.WSChat.ListenAddr).Msg("wschat transport enabled")
 	}
 	if len(clients) == 0 {
@@ -339,5 +375,6 @@ func (a *autoSaveState) maybeAutoSave(ctx context.Context, log zerolog.Logger, c
 	if n := a.count.Add(1); int(n)%a.threshold != 0 {
 		return ""
 	}
+
 	return runAutoSave(ctx, log, c, gitOp, chatID, verbose)
 }

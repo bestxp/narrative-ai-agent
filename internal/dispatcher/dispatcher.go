@@ -11,8 +11,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/rs/zerolog"
-
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/gitops"
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
 	"github.com/bestxp/narrative-ai-agent/internal/config"
@@ -20,6 +18,7 @@ import (
 	"github.com/bestxp/narrative-ai-agent/internal/messaging"
 	"github.com/bestxp/narrative-ai-agent/internal/slowlog"
 	"github.com/bestxp/narrative-ai-agent/internal/usecase"
+	"github.com/rs/zerolog"
 )
 
 // Dispatcher turns an IncomingMessage into a reply string. It is the
@@ -79,6 +78,7 @@ func (d *Dispatcher) Handle(ctx context.Context, msg messaging.IncomingMessage) 
 
 		return buf.String(), nil
 	}
+
 	switch msg.Command {
 	case "start":
 		return d.cmdStart()
@@ -348,6 +348,7 @@ func itoa(n int) string {
 		return "0"
 	}
 	var buf [20]byte
+
 	i := len(buf)
 	for n > 0 {
 		i--
@@ -370,7 +371,7 @@ func (d *Dispatcher) cmdPush() (string, error) {
 	return "git push выполнен.", nil
 }
 
-func (d *Dispatcher) cmdMaintenance(_ context.Context) (string, error) {
+func (d *Dispatcher) cmdMaintenance(ctx context.Context) (string, error) {
 	if !d.fs.Exists(storage.InfoFile) {
 		return "Нет активного мира.", nil
 	}
@@ -393,7 +394,7 @@ func (d *Dispatcher) cmdMaintenance(_ context.Context) (string, error) {
 	// because /maintenance is operator-triggered and
 	// may legitimately take a minute or two for a
 	// large lore.md.
-	_, loreErr := d.tools.MaintainLore(context.Background(), sc.World)
+	_, loreErr := d.tools.MaintainLore(ctx, sc.World)
 	if loreErr != nil {
 		d.log.Warn().Err(loreErr).Msg("lore maintenance failed")
 	}
@@ -403,7 +404,7 @@ func (d *Dispatcher) cmdMaintenance(_ context.Context) (string, error) {
 	return "Обслуживание выполнено. Выжимка NPC: не требуется.", nil
 }
 
-func (d *Dispatcher) cmdEndDay(_ context.Context, msg messaging.IncomingMessage) (string, error) {
+func (d *Dispatcher) cmdEndDay(ctx context.Context, msg messaging.IncomingMessage) (string, error) {
 	if len(msg.Args) < 2 {
 		return "Использование: /endday <номер_дня> <краткая_выжимка...>", nil
 	}
@@ -416,7 +417,7 @@ func (d *Dispatcher) cmdEndDay(_ context.Context, msg messaging.IncomingMessage)
 	if err != nil {
 		return "", fmt.Errorf("cmd_archive: Start failed: %w", err)
 	}
-	if err := d.tools.ArchiveChronicleDay(context.Background(), sc.World, day, summary); err != nil {
+	if err := d.tools.ArchiveChronicleDay(ctx, sc.World, day, summary); err != nil {
 		return "", fmt.Errorf("wrap: %w", err)
 	}
 	d.commit(fmt.Sprintf("День %d", day))

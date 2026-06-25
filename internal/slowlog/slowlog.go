@@ -43,9 +43,11 @@ func File(path string) (*Logger, error) {
 	if path == "" {
 		return Discard(), nil
 	}
+
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, fmt.Errorf("slowlog: mkdir: %w", err)
 	}
+
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
 		return nil, fmt.Errorf("slowlog: open %s: %w", path, err)
@@ -87,12 +89,15 @@ func (l *Logger) Write(kind, chat string, fields map[string]any) error {
 		Chat:   chat,
 		Fields: fields,
 	}
+
 	buf, err := json.Marshal(entry)
 	if err != nil {
 		return fmt.Errorf("slowlog: marshal: %w", err)
 	}
+
 	l.mu.Lock()
 	defer l.mu.Unlock()
+
 	if _, err := l.w.Write(append(buf, '\n')); err != nil {
 		return fmt.Errorf("slowlog: write: %w", err)
 	}

@@ -114,6 +114,7 @@ func (inv *Inventory) AppendItem(item Item) bool {
 	if name == "" {
 		return false
 	}
+
 	item.Name = name
 	for i := range inv.Items {
 		if inv.Items[i].Name == name {
@@ -141,6 +142,7 @@ func (inv *Inventory) RemoveItem(name string) error {
 	if name == "" {
 		return ErrItemNotFound
 	}
+
 	for i := range inv.Items {
 		if inv.Items[i].Name == name {
 			inv.Items = append(inv.Items[:i], inv.Items[i+1:]...)
@@ -175,6 +177,7 @@ func (inv *Inventory) SetCurrency(name string, count int) bool {
 	if count > 999_999_999 {
 		count = 999_999_999
 	}
+
 	for i := range inv.Currency {
 		if inv.Currency[i].Name == name {
 			if inv.Currency[i].Count == count {
@@ -198,6 +201,7 @@ func (inv *Inventory) RemoveCurrency(name string) error {
 	if name == "" {
 		return ErrItemNotFound
 	}
+
 	for i := range inv.Currency {
 		if inv.Currency[i].Name == name {
 			inv.Currency = append(inv.Currency[:i], inv.Currency[i+1:]...)

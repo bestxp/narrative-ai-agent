@@ -26,6 +26,7 @@ var translitMap = map[string]string{
 
 func Transliterate(s string) string {
 	var b strings.Builder
+
 	for _, r := range strings.ToLower(s) {
 		switch {
 		case r == ' ' || r == '\t':

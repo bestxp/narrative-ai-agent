@@ -74,6 +74,7 @@ func TestParse_InvalidJSON(t *testing.T) {
 
 func TestLooksLikeJSON(t *testing.T) {
 	t.Parallel()
+
 	cases := []struct {
 		in   string
 		want bool
@@ -95,6 +96,7 @@ func TestLooksLikeJSON(t *testing.T) {
 
 func TestMissingFields(t *testing.T) {
 	t.Parallel()
+
 	tests := []struct {
 		name    string
 		body    string

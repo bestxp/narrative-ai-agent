@@ -27,6 +27,7 @@ func EstimateMessages(msgs []Message) int {
 		if m.Name != "" {
 			total += EstimateTokens(m.Name)
 		}
+
 		for _, tc := range m.ToolCalls {
 			total += EstimateTokens(tc.Function.Name) + EstimateTokens(tc.Function.Arguments)
 		}

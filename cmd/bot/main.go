@@ -14,8 +14,6 @@ import (
 	"text/template"
 	"time"
 
-	"github.com/rs/zerolog"
-
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/gitops"
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/llm"
 	"github.com/bestxp/narrative-ai-agent/internal/config"
@@ -28,13 +26,17 @@ import (
 	"github.com/bestxp/narrative-ai-agent/internal/slowlog"
 	"github.com/bestxp/narrative-ai-agent/internal/structured"
 	"github.com/bestxp/narrative-ai-agent/internal/usecase"
+	"github.com/rs/zerolog"
 )
 
-func main() {
+//nolint:gocognit // intentional complexity; main wiring function
+func main() { //nolint:funlen // complex function; splitting would harm readability.
 	cfgPath := flag.String("config", "config.yaml", "path to config.yaml")
 	logLevel := flag.String("log-level", "", "override log level (trace/debug/info/warn/error)")
+
 	prettyLog := flag.Bool("log-pretty", false, "human-friendly console writer")
 	disableLLM := flag.Bool("no-llm", false, "run without LLM (echo + validation only)")
+
 	flag.Parse()
 
 	cfg, err := config.Load(*cfgPath)
@@ -63,6 +65,7 @@ func main() {
 	if err != nil {
 		log.Fatal().Err(err).Msg("slowlog init")
 	}
+
 	if cfg.Slowlog.Enabled {
 		log.Info().Str("path", cfg.Slowlog.File).Msg("slowlog enabled")
 		log = logging.NewWithSlowlog(logging.Config{Level: level, Pretty: *prettyLog}, slowWriter)
@@ -92,6 +95,7 @@ func main() {
 
 	summarizer := buildSummarizer(cfg, role, compactionSnap, slow, log)
 	slots := buildSummarizerSlots(summarizer)
+
 	fileTools, repos := buildFileToolset(fs, absData, slots, slow, log)
 	gm := buildGM(cfg, role, systemPrompt, fs, llmCli, fileTools, repos, summarizer, slow, log)
 	disp := buildDispatcher(cfg, fs, gitOp, fileTools, slow, log)
@@ -109,11 +113,15 @@ func main() {
 	hs := &healthServer{clients: clients}
 	if cfg.Health.ListenAddr != "" {
 		srv := health.New(cfg.Health.ListenAddr, hs)
+
 		if err := srv.Start(); err != nil {
-			// Defer on line 91 closes the LLM driver; os.Exit is
-			// intentional here — there is nothing to clean up yet
-			// and we want to fail fast before opening more sockets.
+			// os.Exit will skip the deferred driver.Close() above,
+			// but the health server failed to bind — there is nothing
+			// to clean up yet and we want to fail fast.
 			log.Error().Err(err).Str("addr", cfg.Health.ListenAddr).Msg("health server bind failed")
+
+			_ = driver.Close()
+
 			os.Exit(1)
 		}
 		hs.srv = srv
@@ -125,6 +133,7 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+
 	go func() {
 		sig := <-sigCh
 		log.Info().Str("signal", sig.String()).Msg("shutdown")
@@ -132,19 +141,18 @@ func main() {
 	}()
 
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		if err := pool.Run(ctx); err != nil {
 			log.Error().Err(err).Msg("messaging pool exited")
 		}
-	}()
+	})
 
 	if hs.srv != nil {
 		hs.srv.MarkReady()
 	}
 
 	autoSave := newAutoSaveState(cfg)
+
 	for _, c := range pool.All() {
 		wg.Go(func() {
 			for {
@@ -157,6 +165,7 @@ func main() {
 					}
 					pm := cfg.Messaging.Telegram.ParseMode
 					rt := cfg.Messaging.Telegram.ReplyToUser
+
 					if c.Name() == "vk" || c.Name() == "wschat" {
 						pm = ""
 						rt = true
@@ -169,6 +178,8 @@ func main() {
 						cfg.Narrative.CompactionNotify,
 						cfg.Narrative.CompactionNotifyVerbose,
 						msg)
+
+					//nolint:nestif // intentional nesting for command vs freeform dispatch
 					if msg.Command == "" {
 						if notify := autoSave.maybeAutoSave(ctx, log, c, gitOp, msg.ChatID, cfg.Git.VerboseSave); notify != "" {
 							notifyPM := cfg.Messaging.Telegram.ParseMode
@@ -190,6 +201,7 @@ func main() {
 	if hs.srv != nil {
 		shutCtx, shutCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		_ = hs.srv.Shutdown(shutCtx)
+
 		shutCancel()
 	}
 }
@@ -208,7 +220,13 @@ var chatMu sync.Map // map[chatID]*sync.Mutex
 
 func chatLock(chatID string) *sync.Mutex {
 	v, _ := chatMu.LoadOrStore(chatID, &sync.Mutex{})
-	return v.(*sync.Mutex)
+
+	mu, ok := v.(*sync.Mutex)
+	if !ok {
+		panic(fmt.Sprintf("chatMu: expected *sync.Mutex, got %T", v))
+	}
+
+	return mu
 }
 
 // handleIncoming is the per-message dispatch loop. It uses streaming
@@ -240,8 +258,10 @@ func chatLock(chatID string) *sync.Mutex {
 // message from the same player (or a parallel Discord client
 // pointing at the same chat) waits for the first to finish
 // Final. This keeps the conversation thread clean and the
-// reply_to threading correct.
-func handleIncoming(ctx context.Context, log zerolog.Logger, c messaging.Client, disp *dispatcher.Dispatcher, parseMode string, includeTokens, rulesCheckBlock, replyTo, compactionNotify, compactionNotifyVerbose bool, msg messaging.IncomingMessage) {
+// reply_to threading correct. //nolint:funlen // complex function; splitting would harm readability.
+//
+//nolint:gocognit // intentional complexity; per-message dispatch loop //nolint:funlen // complex function; splitting would harm readability.
+func handleIncoming(ctx context.Context, log zerolog.Logger, c messaging.Client, disp *dispatcher.Dispatcher, parseMode string, includeTokens, rulesCheckBlock, replyTo, compactionNotify, compactionNotifyVerbose bool, msg messaging.IncomingMessage) { //nolint:funlen // complex function; splitting would harm readability.
 	mu := chatLock(msg.ChatID)
 	mu.Lock()
 	defer mu.Unlock()
@@ -260,13 +280,16 @@ func handleIncoming(ctx context.Context, log zerolog.Logger, c messaging.Client,
 		StartStream(ctx context.Context, chatID string, replyToMessageID int) (messaging.StreamSession, error)
 	})
 	var session messaging.StreamSession
+
 	if ok {
 		s, err := c.StartStream(ctx, msg.ChatID, replyToID)
-		if errors.Is(err, messaging.ErrStreamingDisabled) {
+
+		switch {
+		case errors.Is(err, messaging.ErrStreamingDisabled):
 			log.Debug().Str("chat", msg.ChatID).Msg("stream disabled, using Send")
-		} else if err != nil {
+		case err != nil:
 			log.Warn().Err(err).Str("chat", msg.ChatID).Msg("stream start failed, falling back to Send")
-		} else {
+		default:
 			session = s
 		}
 	}
@@ -284,6 +307,7 @@ func handleIncoming(ctx context.Context, log zerolog.Logger, c messaging.Client,
 		if rulesCheckBlock || text == "" {
 			return text
 		}
+
 		return domain.StripRulesBlock(text)
 	}
 
@@ -321,16 +345,20 @@ func handleIncoming(ctx context.Context, log zerolog.Logger, c messaging.Client,
 				// The slowlog already records the parse
 				// failure for the operator.
 				log.Warn().Err(err).Int("chars", len(raw)).Msg("json parse failed; sending raw")
+
 				return raw
 			}
+
 			return n.Render()
 		}
+
 		return raw
 	}
 
 	cb := usecase.Callbacks{
 		OnDelta: func(s string) error {
 			textSeen = true
+
 			replyBuf.WriteString(s)
 			if !jsonMode && structured.LooksLikeJSON(replyBuf.String()) {
 				// First time we see a JSON-looking
@@ -351,6 +379,7 @@ func handleIncoming(ctx context.Context, log zerolog.Logger, c messaging.Client,
 			if session != nil {
 				return session.Append(ctx, stripRules(replyBuf.String()))
 			}
+
 			return nil
 		},
 		OnStatus: func(phase string, details map[string]any) {
@@ -408,10 +437,12 @@ func handleIncoming(ctx context.Context, log zerolog.Logger, c messaging.Client,
 		} else {
 			_ = session.Final(ctx, "⚠️ "+err.Error())
 		}
+
 		return
 	}
 
 	final := stripRules(postStreamRender())
+
 	tokMu.Lock()
 	tok := lastTok
 	tokMu.Unlock()
@@ -422,6 +453,7 @@ func handleIncoming(ctx context.Context, log zerolog.Logger, c messaging.Client,
 		if session != nil {
 			_ = session.Final(ctx, "…")
 		}
+
 		return
 	}
 	if session != nil {
@@ -429,9 +461,13 @@ func handleIncoming(ctx context.Context, log zerolog.Logger, c messaging.Client,
 			log.Error().Err(err).Str("chat", msg.ChatID).Msg("stream final failed, retrying via Send")
 			_ = c.Send(ctx, messaging.OutgoingMessage{ChatID: msg.ChatID, Text: final, ParseMode: parseMode, ReplyToMessageID: replyToID})
 		}
+
 		return
 	}
-	if err := c.Send(ctx, messaging.OutgoingMessage{ChatID: msg.ChatID, Text: final, ParseMode: parseMode, ReplyToMessageID: replyToID}); err != nil {
+
+	if err := c.Send(ctx, messaging.OutgoingMessage{
+		ChatID: msg.ChatID, Text: final, ParseMode: parseMode, ReplyToMessageID: replyToID,
+	}); err != nil {
 		log.Error().Err(err).Msg("send error")
 	}
 }
@@ -449,16 +485,19 @@ func formatStatus(phase string, details map[string]any) string {
 		if world, _ := details["world"].(string); world != "" {
 			return "…собираю контекст (" + world + ")"
 		}
+
 		return "…собираю контекст"
 	case "llm_request":
 		if model, _ := details["model"].(string); model != "" {
 			return "…спрашиваю " + model
 		}
+
 		return "…спрашиваю LLM"
 	case "tool_dispatch":
 		if tools, ok := details["tools"].([]string); ok && len(tools) > 0 {
 			return "…применяю " + strings.Join(tools, ",")
 		}
+
 		return "…применяю инструменты"
 	default:
 		return "…думаю"
@@ -477,6 +516,7 @@ func itoa(n int) string {
 		n = -n
 	}
 	var buf [20]byte
+
 	i := len(buf)
 	for n > 0 {
 		i--
@@ -487,6 +527,7 @@ func itoa(n int) string {
 		i--
 		buf[i] = '-'
 	}
+
 	return string(buf[i:])
 }
 
@@ -511,6 +552,7 @@ func runAutoSave(ctx context.Context, log zerolog.Logger, c messaging.Client, op
 	if verbose {
 		b.WriteString("\n  файлов: ")
 		b.WriteString(itoa(len(res.FilesChanged)))
+
 		for _, f := range res.FilesChanged {
 			b.WriteString("\n  - ")
 			b.WriteString(f)
@@ -526,6 +568,7 @@ func runAutoSave(ctx context.Context, log zerolog.Logger, c messaging.Client, op
 		body += "\ngit push ok."
 	}
 	log.Info().Str("chat", chatID).Str("hash", res.Hash).Int("files", len(res.FilesChanged)).Msg("auto-save")
+
 	return body
 }
 
@@ -543,7 +586,7 @@ func buildSlowlog(cfg *config.Config, log zerolog.Logger) (*slowlog.Logger, *log
 	}
 	sl, err := slowlog.File(cfg.Slowlog.File)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("slowlog file open: %w", err)
 	}
 	// The SlowlogWriter wraps the same *os.File so that
 	// zerolog's MultiWriter and slowlog.Logger.Write()
@@ -566,6 +609,7 @@ func recv(c messaging.Client) <-chan messaging.IncomingMessage {
 	}
 	ch := make(chan messaging.IncomingMessage)
 	close(ch)
+
 	return ch
 }
 
@@ -585,7 +629,7 @@ type driverClient struct {
 }
 
 func (d driverClient) Stream(ctx context.Context, req llm.ChatRequest, onChunk func(llm.Chunk) error) error {
-	return d.driver.Stream(ctx, req, onChunk)
+	return fmt.Errorf("driver stream: %w", d.driver.Stream(ctx, req, onChunk))
 }
 
 // summarizerAdapter wraps a *usecase.Summarizer (which
@@ -606,8 +650,9 @@ func (a summarizerAdapter) SummarizeNPC(
 ) ([]byte, error) {
 	res, err := a.s.SummarizeNPC(ctx, displayName, world, yamlBody, chronicleContext)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("summarize npc: %w", err)
 	}
+
 	return res.Body, nil
 }
 
@@ -618,24 +663,33 @@ func (a summarizerAdapter) SummarizeLore(
 ) ([]byte, error) {
 	res, err := a.s.SummarizeLore(ctx, world, loreBody, chronicleContext, stateMD)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("summarize lore: %w", err)
 	}
+
 	return res.Body, nil
 }
 
-func (a summarizerAdapter) SummarizeChronicle(ctx context.Context, world string, startDay, endDay int, fullChronicle string) ([]byte, error) {
+func (a summarizerAdapter) SummarizeChronicle(
+	ctx context.Context, world string, startDay, endDay int,
+	fullChronicle string,
+) ([]byte, error) {
 	res, err := a.s.SummarizeChronicle(ctx, world, startDay, endDay, fullChronicle)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("summarize chronicle: %w", err)
 	}
+
 	return res.Body, nil
 }
 
-func (a summarizerAdapter) SummarizeCharacterMemory(ctx context.Context, world, character string, memoryBody, chronicleTail []byte) ([]byte, error) {
+func (a summarizerAdapter) SummarizeCharacterMemory(
+	ctx context.Context, world, character string,
+	memoryBody, chronicleTail []byte,
+) ([]byte, error) {
 	res, err := a.s.SummarizeCharacterMemory(ctx, world, character, memoryBody, chronicleTail)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("summarize character memory: %w", err)
 	}
+
 	return res.Body, nil
 }
 
@@ -650,6 +704,7 @@ func (a summarizerAdapter) SummarizeCharacterMemory(ctx context.Context, world, 
 // summarizer's setters and re-used on every call.
 func renderSummarizerPrompt(name string, snap promptpkg.NarrativeConfigSnapshot) (string, error) {
 	data := promptpkg.NewPromptData(snap, promptpkg.CharacterData{}, promptpkg.WorldData{})
+
 	return promptpkg.Render(name, data)
 }
 
@@ -677,6 +732,7 @@ func renderNarrativePrompt(overridePath string, snap promptpkg.NarrativeConfigSn
 			// created the file yet.
 			return promptpkg.Render("narrative.md.tmpl", data)
 		}
+
 		return "", fmt.Errorf("read override %q: %w", overridePath, err)
 	}
 	text := strings.TrimSpace(string(body))
@@ -714,6 +770,7 @@ func renderFromBody(name, body string, data promptpkg.PromptData) (string, error
 	if err := tpl.Execute(&b, data); err != nil {
 		return "", fmt.Errorf("execute override %q: %w", name, err)
 	}
+
 	return b.String(), nil
 }
 
@@ -744,5 +801,6 @@ func (h *healthServer) Reports() []health.Report {
 			Message:   r.Message,
 		})
 	}
+
 	return out
 }

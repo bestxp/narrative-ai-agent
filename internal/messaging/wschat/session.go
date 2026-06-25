@@ -7,10 +7,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bestxp/narrative-ai-agent/internal/structured"
 	"github.com/gorilla/websocket"
 	"github.com/rs/zerolog"
-
-	"github.com/bestxp/narrative-ai-agent/internal/structured"
 )
 
 // wsSession is one active WebSocket connection. It owns the
@@ -71,6 +70,7 @@ func (s *wsSession) run(ctx context.Context, srv *Server) {
 
 	// Read pump.
 	defer s.close()
+
 	for {
 		_, raw, err := s.conn.ReadMessage()
 		if err != nil {
@@ -114,6 +114,7 @@ func (s *wsSession) close() {
 func (s *wsSession) writePump(ctx context.Context) {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():

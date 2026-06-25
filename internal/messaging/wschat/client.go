@@ -4,11 +4,10 @@ import (
 	"context"
 	"strings"
 
-	"github.com/rs/zerolog"
-
 	"github.com/bestxp/narrative-ai-agent/internal/config"
 	"github.com/bestxp/narrative-ai-agent/internal/dispatcher"
 	"github.com/bestxp/narrative-ai-agent/internal/messaging"
+	"github.com/rs/zerolog"
 )
 
 // Client is the messaging.Client implementation for the browser
@@ -60,7 +59,7 @@ func (c *Client) Health() messaging.HealthReport {
 // Send posts a new message to the active WebSocket session. Used by
 // the auto-save notify path in main.go. When no session is attached
 // the message is dropped silently (dev: the tab is closed).
-func (c *Client) Send(ctx context.Context, msg messaging.OutgoingMessage) error {
+func (c *Client) Send(_ context.Context, msg messaging.OutgoingMessage) error {
 	c.srv.sendMessage("assistant", msg.Text, "")
 	return nil
 }
@@ -78,7 +77,7 @@ func (c *Client) StartStream(ctx context.Context, chatID string, replyToMessageI
 // transport authorises on the WebSocket upgrade, not per-message,
 // so this always returns true — once a session is attached the
 // operator is trusted.
-func (c *Client) IsAllowed(senderID string) bool { return true }
+func (c *Client) IsAllowed(_ string) bool { return true }
 
 // SetCommands replaces the command hint list served by
 // /api/commands and pushed to the active session on demand.

@@ -6,11 +6,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rs/zerolog"
-	"github.com/stretchr/testify/require"
-
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
 	"github.com/bestxp/narrative-ai-agent/internal/domain"
+	"github.com/rs/zerolog"
+	"github.com/stretchr/testify/require"
 )
 
 // newBufLogger returns a JSON zerolog logger that writes to a

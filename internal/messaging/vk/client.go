@@ -13,9 +13,8 @@ import (
 	"github.com/SevereCloud/vksdk/v3/api"
 	"github.com/SevereCloud/vksdk/v3/events"
 	"github.com/SevereCloud/vksdk/v3/longpoll-bot"
-	"github.com/rs/zerolog"
-
 	"github.com/bestxp/narrative-ai-agent/internal/messaging"
+	"github.com/rs/zerolog"
 )
 
 type Config struct {
@@ -94,7 +93,7 @@ func (c *Client) SetCommands(_ context.Context, _ []messaging.BotCommand) error 
 	return nil
 }
 
-func (c *Client) onMessageNew(ctx context.Context, obj events.MessageNewObject) {
+func (c *Client) onMessageNew(_ context.Context, obj events.MessageNewObject) {
 	msg := obj.Message
 
 	if msg.Out || msg.FromID <= 0 {
@@ -142,10 +141,12 @@ func (c *Client) Run(ctx context.Context) error {
 	for {
 		c.setHealth(messaging.StateConnected, "", "")
 		errCh := make(chan error, 1)
+
 		go func() {
 			if err := c.lp.Run(); err != nil {
 				errCh <- err
 			}
+
 			close(errCh)
 		}()
 
@@ -162,6 +163,7 @@ func (c *Client) Run(ctx context.Context) error {
 				Err(err).
 				Dur("backoff", backoff).
 				Msg("vk: longpoll error, reconnecting")
+
 			select {
 			case <-ctx.Done():
 				c.setHealth(messaging.StateStopped, "", "ctx cancelled")
@@ -178,13 +180,14 @@ func (c *Client) Run(ctx context.Context) error {
 	}
 }
 
-func (c *Client) Send(ctx context.Context, msg messaging.OutgoingMessage) error {
+func (c *Client) Send(_ context.Context, msg messaging.OutgoingMessage) error {
 	peerID, err := strconv.Atoi(msg.ChatID)
 	if err != nil {
 		return fmt.Errorf("vk: invalid peer_id %q: %w", msg.ChatID, err)
 	}
 
 	text := msg.Text
+
 	chunks := splitForVK(text)
 	for i, chunk := range chunks {
 		params := api.Params{
@@ -196,6 +199,7 @@ func (c *Client) Send(ctx context.Context, msg messaging.OutgoingMessage) error 
 		if i == 0 && msg.ReplyToMessageID > 0 {
 			params["reply_to"] = msg.ReplyToMessageID
 		}
+
 		if _, sendErr := c.vk.MessagesSend(params); sendErr != nil {
 			c.log.Error().Err(sendErr).Str("peer", msg.ChatID).Int("chunk", i).Msg("vk: send failed")
 			return fmt.Errorf("send_chunks: MessagesSend failed: %w", sendErr)
@@ -205,7 +209,7 @@ func (c *Client) Send(ctx context.Context, msg messaging.OutgoingMessage) error 
 	return nil
 }
 
-func (c *Client) StartStream(ctx context.Context, chatID string, replyToMessageID int) (messaging.StreamSession, error) {
+func (c *Client) StartStream(_ context.Context, chatID string, _ int) (messaging.StreamSession, error) {
 	if c.cfg.DisableStreaming {
 		return nil, messaging.ErrStreamingDisabled
 	}
@@ -232,7 +236,7 @@ func (c *Client) StartStream(ctx context.Context, chatID string, replyToMessageI
 
 	c.log.Debug().Str("chat", chatID).Int("msg_id", msgID).Msg("vk: stream started")
 
-	return NewThrottledStream(&stream{
+	return NewThrottledStream(&stream{ //nolint:contextcheck // stream lifecycle doesn't carry context
 		client:   c,
 		chatID:   chatID,
 		peerID:   peerID,
@@ -257,6 +261,7 @@ func (c *Client) sendTyping(chatID string) {
 func (c *Client) typingLoop(ctx context.Context) {
 	ticker := time.NewTicker(4 * time.Second)
 	defer ticker.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -279,6 +284,7 @@ func splitForVK(text string) []string {
 		return []string{text}
 	}
 	out := make([]string, 0, 2)
+
 	rest := string(runes)
 	for runeCount := len(runes); runeCount > maxVKMessageLen; runeCount = len([]rune(rest)) {
 		head := string([]rune(rest)[:maxVKMessageLen])
@@ -290,6 +296,7 @@ func splitForVK(text string) []string {
 		} else {
 			cut = len(head)
 		}
+
 		out = append(out, rest[:cut])
 		rest = rest[cut:]
 	}

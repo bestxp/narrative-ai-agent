@@ -6,12 +6,11 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/rs/zerolog"
-
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
 	"github.com/bestxp/narrative-ai-agent/internal/charprofile"
 	"github.com/bestxp/narrative-ai-agent/internal/domain"
 	"github.com/bestxp/narrative-ai-agent/internal/repository/api"
+	"github.com/rs/zerolog"
 )
 
 // FirstLaunch creates the entire on-disk skeleton for a new player +

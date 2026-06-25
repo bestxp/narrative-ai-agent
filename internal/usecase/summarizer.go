@@ -7,14 +7,13 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/rs/zerolog"
-
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/llm"
 	"github.com/bestxp/narrative-ai-agent/internal/chronicle"
 	"github.com/bestxp/narrative-ai-agent/internal/npcprofile"
 	"github.com/bestxp/narrative-ai-agent/internal/prompts"
 	"github.com/bestxp/narrative-ai-agent/internal/slowlog"
 	"github.com/bestxp/narrative-ai-agent/internal/usecase/tools/files"
+	"github.com/rs/zerolog"
 )
 
 // Summarizer compresses old conversation turns into a short

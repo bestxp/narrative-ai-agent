@@ -5,16 +5,15 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/rs/zerolog"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
 	"github.com/bestxp/narrative-ai-agent/internal/chronicle"
 	"github.com/bestxp/narrative-ai-agent/internal/npcprofile"
 	"github.com/bestxp/narrative-ai-agent/internal/repository/api"
 	yamlfs "github.com/bestxp/narrative-ai-agent/internal/storage/fs"
 	"github.com/bestxp/narrative-ai-agent/internal/usecase/tools"
+	"github.com/rs/zerolog"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // newMemoryTestEnv builds a fresh Memory + FileStore on
@@ -48,6 +47,7 @@ func itoa(n int) string {
 	if n == 0 {
 		return "0"
 	}
+
 	var b []byte
 	for n > 0 {
 		b = append([]byte{byte('0' + n%10)}, b...)
@@ -101,6 +101,7 @@ func TestMaintainLore_UnderThresholdSkips(t *testing.T) {
 
 func TestChronicleCompressWindow_Basic30Days(t *testing.T) {
 	t.Parallel()
+
 	m, _ := newMemoryTestEnv(t)
 	for i := 1; i <= 30; i++ {
 		require.NoError(t, appendDay(t, m, i, "день "+itoa(i)))
@@ -122,6 +123,7 @@ func TestChronicleCompressWindow_Basic30Days(t *testing.T) {
 
 func TestChronicleCompressWindow_NoSummarizerSkips(t *testing.T) {
 	t.Parallel()
+
 	m, _ := newMemoryTestEnv(t)
 	for i := 1; i <= 30; i++ {
 		require.NoError(t, appendDay(t, m, i, "день "+itoa(i)))
@@ -133,6 +135,7 @@ func TestChronicleCompressWindow_NoSummarizerSkips(t *testing.T) {
 
 func TestChronicleCompressWindow_BadOutputSkips(t *testing.T) {
 	t.Parallel()
+
 	m, _ := newMemoryTestEnv(t)
 	for i := 1; i <= 30; i++ {
 		require.NoError(t, appendDay(t, m, i, "день "+itoa(i)))
@@ -165,6 +168,7 @@ func TestChronicleCompressWindow_TooThinSkips(t *testing.T) {
 func TestChronicleCompressWindow_KeepsEarlierSummaries(t *testing.T) {
 	t.Parallel()
 	m, _ := newMemoryTestEnv(t)
+
 	c := chronicle.Chronicle{
 		Periods: []chronicle.Period{
 			{From: 1, To: 30, Memory: "старая"},

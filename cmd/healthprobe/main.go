@@ -4,6 +4,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"os"
@@ -16,6 +17,7 @@ func main() {
 		os.Exit(2)
 	}
 	timeoutSec := 3
+
 	if len(os.Args) >= 3 {
 		var t int
 		_, _ = fmt.Sscanf(os.Args[2], "%d", &t)
@@ -24,11 +26,21 @@ func main() {
 		}
 	}
 	c := &http.Client{Timeout: time.Duration(timeoutSec) * time.Second}
-	r, err := c.Get(os.Args[1]) //nolint:gosec // URL comes from k8s HEALTHCHECK argument, intentionally user-supplied
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutSec)*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, os.Args[1], nil)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "healthprobe: request:", err)
+		os.Exit(1)
+	}
+	r, err := c.Do(req) //nolint:gosec // URL comes from k8s HEALTHCHECK argument, intentionally user-supplied
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "healthprobe: get:", err)
 		os.Exit(1)
 	}
+
 	func() {
 		defer func() { _ = r.Body.Close() }()
 		if r.StatusCode < 200 || r.StatusCode >= 400 {

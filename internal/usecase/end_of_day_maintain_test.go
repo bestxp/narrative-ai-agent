@@ -6,9 +6,6 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/llm"
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
 	"github.com/bestxp/narrative-ai-agent/internal/domain"
@@ -16,6 +13,8 @@ import (
 	"github.com/bestxp/narrative-ai-agent/internal/repository/api"
 	"github.com/bestxp/narrative-ai-agent/internal/slowlog"
 	yamlfs "github.com/bestxp/narrative-ai-agent/internal/storage/fs"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // scriptingLLM replays a queue of pre-configured
@@ -47,6 +46,7 @@ func (s *scriptingLLM) Stream(_ context.Context, _ llm.ChatRequest, onChunk func
 	if s.idx < len(s.calls) {
 		c = s.calls[s.idx]
 	}
+
 	s.idx++
 	s.mu.Unlock()
 
@@ -100,6 +100,7 @@ file_slug: "kakashi"
 temperament: "спокойный"
 `)
 	require.NoError(t, err)
+
 	for i := 1; i <= 50; i++ {
 		longProfile.PersonalMemory = append(longProfile.PersonalMemory,
 			"Факт номер "+itoaE2E(i))
@@ -215,6 +216,7 @@ func itoaE2E(n int) string {
 	if n == 0 {
 		return "0"
 	}
+
 	var b []byte
 	for n > 0 {
 		b = append([]byte{byte('0' + n%10)}, b...)
@@ -321,6 +323,7 @@ func TestEndOfDay_MaintainFailureKeepsOriginal(t *testing.T) {
 	scripting.push("", errE2ETest)
 
 	before, _ := fs.ReadRaw("worlds/naruto/characters/kakashi.yaml")
+
 	require.NoError(t, g.EndOfDay(context.Background(), "naruto", 1))
 	after, _ := fs.ReadRaw("worlds/naruto/characters/kakashi.yaml")
 

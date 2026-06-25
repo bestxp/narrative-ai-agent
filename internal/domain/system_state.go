@@ -169,6 +169,7 @@ func (c *CompactionLog) AppendCompactionEvent(ev CompactionEvent, maxEntries int
 	if maxEntries < 1 {
 		maxEntries = 1
 	}
+
 	c.History = append(c.History, ev)
 	c.TotalCompactions++
 	c.LastCompactionAt = ev.At

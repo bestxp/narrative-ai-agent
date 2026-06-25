@@ -5,10 +5,9 @@ import (
 	"fmt"
 	"strings"
 
-	gyaml "gopkg.in/yaml.v3"
-
 	"github.com/bestxp/narrative-ai-agent/internal/domain"
 	"github.com/bestxp/narrative-ai-agent/internal/storage"
+	gyaml "gopkg.in/yaml.v3"
 )
 
 // stateKey returns the canonical storage key for a
@@ -126,18 +125,18 @@ type stateYAML struct {
 type stateYAMLState struct {
 	World    string   `yaml:"world"`
 	Day      int      `yaml:"day"`
-	InFlight bool     `yaml:"in-flight"`
+	InFlight bool     `yaml:"in_flight"`
 	Daytime  string   `yaml:"daytime,omitempty"`
 	Location string   `yaml:"location,omitempty"`
 	Moment   string   `yaml:"moment,omitempty"`
-	NPCs     []string `yaml:"npcs,omitempty"` //nolint:tagliatelle // npcs is an acronym
+	NPCs     []string `yaml:"npcs,omitempty"`
 	Current  string   `yaml:"current,omitempty"`
 	Events   []string `yaml:"events"`
 }
 
 type stateYAMLStage struct {
 	Current       string `yaml:"current"`
-	TimelineIndex int    `yaml:"timeline-index"`
+	TimelineIndex int    `yaml:"timeline_index"`
 	Next          string `yaml:"next"`
 }
 

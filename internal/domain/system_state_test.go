@@ -70,6 +70,7 @@ func TestCompactionLog_AppendEvictsOldest(t *testing.T) {
 	for i := range 5 {
 		c.AppendCompactionEvent(CompactionEvent{At: time.Unix(int64(i), 0), KeptRecent: i}, 3)
 	}
+
 	assert.Len(t, c.History, 3, "history should be capped at 3")
 	assert.Equal(t, 5, c.TotalCompactions, "total counts all appends")
 	assert.Equal(t, 2, c.History[0].KeptRecent, "oldest two should be evicted")

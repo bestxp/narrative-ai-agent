@@ -29,13 +29,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bestxp/narrative-ai-agent/internal/adapter/llm"
+	"github.com/bestxp/narrative-ai-agent/internal/domain"
 	openaisdk "github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
 	"github.com/openai/openai-go/v3/shared"
 	"github.com/rs/zerolog"
-
-	"github.com/bestxp/narrative-ai-agent/internal/adapter/llm"
-	"github.com/bestxp/narrative-ai-agent/internal/domain"
 )
 
 var _ llm.Driver = (*Driver)(nil)
@@ -66,11 +65,13 @@ func New(role llm.RoleConfig, log zerolog.Logger) *Driver {
 		role: role,
 		log:  log,
 	}
+
 	for _, t := range domain.ProdTools() {
 		paramsBytes, err := t.MarshalParameters()
 		if err != nil {
 			panic(fmt.Sprintf("openai: marshal tool %q: %v", t.Function.Name, err))
 		}
+
 		var fp shared.FunctionParameters
 		if err := json.Unmarshal(paramsBytes, &fp); err != nil {
 			panic(fmt.Sprintf("openai: reparse tool %q: %v", t.Function.Name, err))
@@ -94,8 +95,8 @@ func (d *Driver) Close() error { return nil }
 
 // Stream sends a chat request to the configured provider and
 // invokes onChunk for every parsed delta. h4 wire surface
-// (json_object + tools + auto + strict) is built in buildParams.
-func (d *Driver) Stream(ctx context.Context, req llm.ChatRequest, onChunk func(llm.Chunk) error) error {
+// (json_object + tools + auto + strict) is built in buildParams. //nolint:funlen // complex function; splitting would harm readability.
+func (d *Driver) Stream(ctx context.Context, req llm.ChatRequest, onChunk func(llm.Chunk) error) error { //nolint:funlen // complex function; splitting would harm readability.
 	params, err := d.buildParams(req)
 	if err != nil {
 		return fmt.Errorf("openai: build params: %w", err)
@@ -107,6 +108,7 @@ func (d *Driver) Stream(ctx context.Context, req llm.ChatRequest, onChunk func(l
 	}
 	if timeout > 0 {
 		var cancel context.CancelFunc
+
 		ctx, cancel = context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
 		defer cancel()
 	}
@@ -116,6 +118,7 @@ func (d *Driver) Stream(ctx context.Context, req llm.ChatRequest, onChunk func(l
 
 	acc := newToolAccumulator(d.log)
 	var rawTrace []string
+
 	for stream.Next() {
 		chunk := stream.Current()
 		// Capture raw SSE payload for diagnostics on broken
@@ -128,6 +131,7 @@ func (d *Driver) Stream(ctx context.Context, req llm.ChatRequest, onChunk func(l
 				rawTrace = rawTrace[len(rawTrace)-5:]
 			}
 		}
+
 		for _, choice := range chunk.Choices {
 			out := llm.Chunk{Finish: choice.FinishReason}
 			if choice.Delta.Content != "" {
@@ -173,7 +177,7 @@ func (d *Driver) Stream(ctx context.Context, req llm.ChatRequest, onChunk func(l
 
 // buildParams translates ChatRequest into openai-go params.
 // Wire surface is h4-hardcoded:
-//
+// //nolint:funlen // complex function; splitting would harm readability.
 //   - response_format: {"type":"json_object"}
 //   - tools: 8 prod tools from domain.ProdTools()
 //   - tool_choice: "auto"
@@ -283,6 +287,7 @@ func newToolAccumulator(log zerolog.Logger) *toolAccumulator {
 
 func (a *toolAccumulator) merge(deltas []openaisdk.ChatCompletionChunkChoiceDeltaToolCall) []llm.ToolCall {
 	var changed bool
+
 	for _, d := range deltas {
 		if d.Function.Name == "" && d.Function.Arguments == "" {
 			continue
@@ -311,13 +316,16 @@ func (a *toolAccumulator) merge(deltas []openaisdk.ChatCompletionChunkChoiceDelt
 		return nil
 	}
 	dropped := 0
+
 	for idx, e := range a.buf {
 		if e.Function.Arguments == "" {
 			continue
 		}
+
 		var probe map[string]any
 		if err := json.Unmarshal([]byte(e.Function.Arguments), &probe); err != nil {
 			delete(a.buf, idx)
+
 			dropped++
 		}
 	}
@@ -331,6 +339,7 @@ func (a *toolAccumulator) merge(deltas []openaisdk.ChatCompletionChunkChoiceDelt
 	if len(a.buf) == 0 {
 		return nil
 	}
+
 	out := make([]llm.ToolCall, 0, len(a.buf))
 	for _, e := range a.buf {
 		out = append(out, *e)
@@ -348,6 +357,7 @@ func unquoteJSONString(raw string) string {
 	}
 	inner := raw[1 : len(raw)-1]
 	var out strings.Builder
+
 	for i := 0; i < len(inner); i++ {
 		if inner[i] == '\\' && i+1 < len(inner) {
 			switch inner[i+1] {
@@ -364,10 +374,12 @@ func unquoteJSONString(raw string) string {
 			default:
 				out.WriteByte(inner[i+1])
 			}
+
 			i++
 
 			continue
 		}
+
 		out.WriteByte(inner[i])
 	}
 

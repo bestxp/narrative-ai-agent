@@ -86,6 +86,7 @@ func (s *YamlStorage) Read(key string) ([]byte, error) {
 // contain (defensive: editor / viewer side-effects).
 func (s *YamlStorage) Write(key string, data []byte) error {
 	clean := stripIndexPollutionBytes(data)
+
 	if err := os.MkdirAll(s.dirOf(key), 0o755); err != nil {
 		return fmt.Errorf("write: MkdirAll failed: %w", err)
 	}
@@ -126,6 +127,7 @@ func (s *YamlStorage) ListChildren(dir string) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list_children: ReadDir failed: %w", err)
 	}
+
 	out := make([]string, 0, len(entries))
 	for _, e := range entries {
 		out = append(out, e.Name())
@@ -166,6 +168,7 @@ func stripIndexPollutionBytes(s []byte) []byte {
 	var buf bytes.Buffer
 	scanner := bufio.NewScanner(bytes.NewReader(s))
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		buf.Write(indexLineRe.ReplaceAll(line, nil))

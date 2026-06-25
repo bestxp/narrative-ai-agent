@@ -3,13 +3,12 @@ package usecase
 import (
 	"testing"
 
-	"github.com/rs/zerolog"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
 	"github.com/bestxp/narrative-ai-agent/internal/repository/api"
 	yamlfs "github.com/bestxp/narrative-ai-agent/internal/storage/fs"
+	"github.com/rs/zerolog"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestFirstLaunch_CreatesSkeleton(t *testing.T) {
@@ -45,7 +44,7 @@ func TestFirstLaunch_CreatesSkeleton(t *testing.T) {
 	body, _ := fs.ReadRaw("worlds/naruto/state.yaml")
 	assert.Contains(t, body, "stage:")
 	assert.Contains(t, body, "current: \"\"")
-	assert.Contains(t, body, "timeline-index: 0")
+	assert.Contains(t, body, "timeline_index: 0")
 	assert.Contains(t, body, `next: ""`)
 }
 

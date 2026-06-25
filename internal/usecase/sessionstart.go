@@ -5,11 +5,10 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/rs/zerolog"
-
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
 	"github.com/bestxp/narrative-ai-agent/internal/chronicle"
 	"github.com/bestxp/narrative-ai-agent/internal/domain"
+	"github.com/rs/zerolog"
 )
 
 // SessionStart implements the "SESSION START PROTOCOL" from the skill.
@@ -114,6 +113,7 @@ func (s *SessionStart) checkSync(world, state string) (stateAhead, chronicleAhea
 			s.log.Warn().Err(err).Str("world", world).Msg("session_start: chronicle parse failed; treating as empty")
 		}
 	}
+
 	switch {
 	case !stateOK && !memOK:
 		return false, false
@@ -140,6 +140,7 @@ func extractDayHeaderRegex() func(string) (int, bool) {
 			return 0, false
 		}
 		rest, _ := strings.CutPrefix(s[idx:], "День ")
+
 		end := 0
 		for end < len(rest) && rest[end] >= '0' && rest[end] <= '9' {
 			end++
