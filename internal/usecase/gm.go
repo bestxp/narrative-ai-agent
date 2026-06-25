@@ -10,9 +10,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/rs/zerolog"
-	"gopkg.in/yaml.v3"
-
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/llm"
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
 	"github.com/bestxp/narrative-ai-agent/internal/charprofile"
@@ -23,6 +20,8 @@ import (
 	"github.com/bestxp/narrative-ai-agent/internal/structured"
 	"github.com/bestxp/narrative-ai-agent/internal/usecase/tools"
 	"github.com/bestxp/narrative-ai-agent/internal/usecase/tools/files"
+	"github.com/rs/zerolog"
+	"gopkg.in/yaml.v3"
 )
 
 // DefaultProtocolWindowDays is the number of past days for
@@ -2131,7 +2130,9 @@ func (g *GM) EndOfDay(ctx context.Context, world string, day int) error {
 			}
 		}
 	}
+
 	g.log.Info().Str("world", world).Int("day", day).Msg("end-of-day: hooks completed")
+
 	return nil
 }
 
@@ -2195,6 +2196,36 @@ func (g *GM) loadChronicle(world string) ([]domain.ChroniclePeriod, []domain.Chr
 	return periods, days
 }
 
+// stageRuntime reads the runtime slice of the stage
+// graph from state.yaml (planning/0001: stage.md was
+// merged into state.yaml). Cheap — falls back to the
+// in-memory snapshot if buildContext has loaded one
+// this Reply, otherwise reads state.yaml directly.
+// staging.Load uses this to seed the in-memory graph
+// from the same source of truth that the on-disk
+// snapshot shows.
+func (g *GM) stageRuntime(world string) staging.StageRuntime {
+	if g.stateSnapshot != nil && g.stateSnapshot.World == world {
+		return staging.StageRuntime{
+			Current:       g.stateSnapshot.Stage.Current,
+			TimelineIndex: g.stateSnapshot.Stage.TimelineIndex,
+			Next:          g.stateSnapshot.Stage.Next,
+		}
+	}
+
+	if body, _ := g.fs.ReadRaw(stateFilePath(world)); body != "" {
+		snap := files.ParseStateYAMLFull(body)
+
+		return staging.StageRuntime{
+			Current:       snap.Stage.Current,
+			TimelineIndex: snap.Stage.TimelineIndex,
+			Next:          snap.Stage.Next,
+		}
+	}
+
+	return staging.StageRuntime{}
+}
+
 // loadWorldStage loads the active stage for the world and renders it
 // into the WorldState user message. Returns an empty string when
 // staging is disabled (sandbox) or no staging.yaml is configured.
@@ -2203,7 +2234,9 @@ func (g *GM) loadChronicle(world string) ([]domain.ChroniclePeriod, []domain.Chr
 // so the `$(name)` placeholder in stage descriptions expands to the
 // human name rather than the directory slug. Fallback to the slug.
 func (g *GM) loadWorldStage(world, characterSlug string) string {
-	s, err := staging.Load(g.fs, world)
+	runtime := g.stageRuntime(world)
+
+	s, err := staging.Load(g.fs, world, runtime)
 	if err != nil {
 		g.log.Warn().Err(err).Str("world", world).Msg("load_world_stage failed; rendering without stage")
 		return ""
@@ -2484,7 +2517,9 @@ func (g *GM) dispatchOneTool(ctx context.Context, tc llm.ToolCall) (string, stri
 		if moment == "" {
 			return "", "update_state requires moment"
 		}
+
 		day := g.snapshotDay(currentWorldName(g.fs))
+
 		if err := g.tools.UpdateState(StateSnapshot{
 			Day: day, InFlight: inFlight, Moment: moment, NPCs: npcs,
 			AppendEvents: events,

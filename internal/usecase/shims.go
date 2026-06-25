@@ -78,12 +78,6 @@ func FormatCharacterSnapshot(s *CharacterSnapshot, maxPerSection int) string {
 	return files.FormatSnapshot(s, maxPerSection)
 }
 
-// StateHeader returns the canonical "День N (в процессе|завершён)"
-// line.
-func StateHeader(day int, inFlight bool) string {
-	return files.StateHeader(day, inFlight)
-}
-
 // NPCCompactLineThreshold is the line count at which
 // /maintenance triggers a per-NPC compact.
 const NPCCompactLineThreshold = files.NPCCompactLineThreshold

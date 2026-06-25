@@ -212,17 +212,23 @@ func buildSummarizerSlots(s *usecase.Summarizer) summarizerAdapterSlots {
 
 // buildFileToolset constructs the repository-backed
 // toolset that implements tools.Tool: state, memory,
-// npc, world, stage, character.
+// npc, world, stage, character. The repos handle is
+// returned alongside the toolset so buildGM can wire
+// it into FirstLaunch (planning/0001: state.yaml is
+// the single runtime snapshot file; world seed must
+// run through WorldStateRepository.EnsureExists so the
+// `stage:` block is present from the first turn).
 func buildFileToolset(
 	fs *storage.FileStore, absData string,
 	slots summarizerAdapterSlots,
 	slow *slowlog.Logger, log zerolog.Logger,
-) *files.Toolset {
+) (*files.Toolset, *api.Repositories) {
 	yamlStore, _ := yamlfs.New(absData)
 	repos := api.NewYamlRepositories(yamlStore)
 	ft := usecase.NewFileToolset(fs, repos, log, slow, slots.npc, slots.lore, slots.chronicle, slots.charMem)
 	log.Info().Str("source", ft.Source()).Msg("file-backed toolset ready")
-	return ft
+
+	return ft, repos
 }
 
 // buildGM constructs the Game Master with its compaction
@@ -231,11 +237,12 @@ func buildGM(
 	cfg *config.Config, role config.LLMRoleConfig,
 	systemPrompt string,
 	fs *storage.FileStore, llmCli driverClient,
-	fileTools *files.Toolset, summarizer *usecase.Summarizer,
+	fileTools *files.Toolset, repos *api.Repositories,
+	summarizer *usecase.Summarizer,
 	slow *slowlog.Logger, log zerolog.Logger,
 ) *usecase.GM {
 	ss := usecase.NewSessionStartWithLogger(fs, log)
-	fl := usecase.NewFirstLaunchWithLogger(fs, log)
+	fl := usecase.NewFirstLaunchWithLogger(fs, repos.WorldState, log)
 	sysSt := usecase.NewSystemState(fs, log, slow)
 	gm := usecase.NewGM(usecase.GMConfig{
 		Role: llm.RoleConfig{

@@ -161,7 +161,11 @@ temperament: "спокойный"
 // adapter into the test binary).
 type summarizerAdapterForTest struct{ s *Summarizer }
 
-func (a summarizerAdapterForTest) SummarizeNPC(ctx context.Context, displayName, world string, yamlBody, chronicleContext []byte) ([]byte, error) {
+func (a summarizerAdapterForTest) SummarizeNPC(
+	ctx context.Context,
+	displayName, world string,
+	yamlBody, chronicleContext []byte,
+) ([]byte, error) {
 	res, err := a.s.SummarizeNPC(ctx, displayName, world, yamlBody, chronicleContext)
 	if err != nil {
 		return nil, err
@@ -169,7 +173,11 @@ func (a summarizerAdapterForTest) SummarizeNPC(ctx context.Context, displayName,
 	return res.Body, nil
 }
 
-func (a summarizerAdapterForTest) SummarizeLore(ctx context.Context, world string, loreBody, chronicleContext, stateMD []byte) ([]byte, error) {
+func (a summarizerAdapterForTest) SummarizeLore(
+	ctx context.Context,
+	world string,
+	loreBody, chronicleContext, stateMD []byte,
+) ([]byte, error) {
 	res, err := a.s.SummarizeLore(ctx, world, loreBody, chronicleContext, stateMD)
 	if err != nil {
 		return nil, err
@@ -177,7 +185,12 @@ func (a summarizerAdapterForTest) SummarizeLore(ctx context.Context, world strin
 	return res.Body, nil
 }
 
-func (a summarizerAdapterForTest) SummarizeChronicle(ctx context.Context, world string, startDay, endDay int, fullChronicle string) ([]byte, error) {
+func (a summarizerAdapterForTest) SummarizeChronicle(
+	ctx context.Context,
+	world string,
+	startDay, endDay int,
+	fullChronicle string,
+) ([]byte, error) {
 	res, err := a.s.SummarizeChronicle(ctx, world, startDay, endDay, fullChronicle)
 	if err != nil {
 		return nil, err
@@ -185,7 +198,11 @@ func (a summarizerAdapterForTest) SummarizeChronicle(ctx context.Context, world 
 	return res.Body, nil
 }
 
-func (a summarizerAdapterForTest) SummarizeCharacterMemory(ctx context.Context, world, character string, memoryBody, chronicleContext []byte) ([]byte, error) {
+func (a summarizerAdapterForTest) SummarizeCharacterMemory(
+	ctx context.Context,
+	world, character string,
+	memoryBody, chronicleContext []byte,
+) ([]byte, error) {
 	res, err := a.s.SummarizeCharacterMemory(ctx, world, character, memoryBody, chronicleContext)
 	if err != nil {
 		return nil, err
@@ -432,8 +449,14 @@ stages:
         requirements:
           - откат
 `))
-	// Schedule a pending transition.
-	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/stage.md", `staging:
+	// Schedule a pending transition. planning/0001:
+	// the runtime slice lives in state.yaml, not
+	// stage.md.
+	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/state.yaml", `state:
+  world: naruto
+  day: 1
+  in-flight: true
+stage:
   current: beginning
   timeline_index: 0
   next: accepted
@@ -453,7 +476,8 @@ temperament: "спокойный"
 	require.NoError(t, g.EndOfDay(context.Background(), "naruto", 1))
 
 	// After EndOfDay: current=accepted, next="" (pending applied).
-	stateBody, err := fs.ReadRaw("worlds/naruto/stage.md")
+	// planning/0001: state.yaml is the single writer.
+	stateBody, err := fs.ReadRaw("worlds/naruto/state.yaml")
 	require.NoError(t, err)
 	assert.True(t, strings.Contains(stateBody, "current: accepted"),
 		"expected current=accepted after end_day; got: %s", stateBody)

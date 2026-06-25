@@ -1,6 +1,7 @@
 package yaml
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/bestxp/narrative-ai-agent/internal/staging"
@@ -67,16 +68,31 @@ func NewStagingYaml(store storage.Storage) *StagingYaml {
 	return &StagingYaml{adapter: &stagingAdapter{store: store}}
 }
 
-// Load delegates to staging.Load.
-func (r *StagingYaml) Load(world string) (*staging.Staging, error) {
-	return staging.Load(r.adapter, world)
+// Load delegates to staging.Load. planning/0001:
+// stage.md no longer exists — the runtime slice of
+// the graph (current / timeline_index / next) lives
+// in state.yaml. Callers must pass the parsed
+// runtime state (typically loaded from WorldState
+// by the caller) so the in-memory staging graph
+// starts from the same place the on-disk snapshot
+// shows.
+func (r *StagingYaml) Load(world string, runtime staging.StageRuntime) (*staging.Staging, error) {
+	s, err := staging.Load(r.adapter, world, runtime)
+	if err != nil {
+		return nil, fmt.Errorf("staging: load: %w", err)
+	}
+
+	return s, nil
 }
 
 // UpdateStage sets the pending next stage. Returns
 // true when the file changed (false if nextID is
 // already the current pending value or unknown).
-func (r *StagingYaml) UpdateStage(world, nextID string) (bool, error) {
-	s, err := r.Load(world)
+// In-memory mutation only — caller is responsible
+// for persisting via WorldState.Save (planning/0001:
+// no more stage.md writes).
+func (r *StagingYaml) UpdateStage(world, nextID string, runtime staging.StageRuntime) (bool, error) {
+	s, err := r.Load(world, runtime)
 	if err != nil {
 		return false, err
 	}
@@ -88,9 +104,9 @@ func (r *StagingYaml) UpdateStage(world, nextID string) (bool, error) {
 }
 
 // AdvanceTimeline moves the cursor within the active
-// stage's timeline.
-func (r *StagingYaml) AdvanceTimeline(world string) (bool, error) {
-	s, err := r.Load(world)
+// stage's timeline. In-memory mutation only.
+func (r *StagingYaml) AdvanceTimeline(world string, runtime staging.StageRuntime) (bool, error) {
+	s, err := r.Load(world, runtime)
 	if err != nil {
 		return false, err
 	}
@@ -102,10 +118,14 @@ func (r *StagingYaml) AdvanceTimeline(world string) (bool, error) {
 }
 
 // ApplyPendingStage moves Next into Current.
-func (r *StagingYaml) ApplyPendingStage(world string) error {
-	s, err := r.Load(world)
+// In-memory mutation only — caller persists via
+// WorldState.Save. Returns the post-apply runtime
+// slice so the caller doesn't need to re-load the
+// graph just to capture the new Current.
+func (r *StagingYaml) ApplyPendingStage(world string, runtime staging.StageRuntime) (staging.StageRuntime, error) {
+	s, err := r.Load(world, runtime)
 	if err != nil {
-		return err
+		return staging.StageRuntime{}, err
 	}
 	return s.ApplyPending(r.adapter, world)
 }

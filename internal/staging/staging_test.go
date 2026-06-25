@@ -63,7 +63,7 @@ stages:
 func TestLoad_Sandbox(t *testing.T) {
 	fs := newMemFS()
 	// No staging.yaml at all.
-	s, err := Load(fs, "naruto")
+	s, err := Load(fs, "naruto", StageRuntime{})
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -75,7 +75,8 @@ func TestLoad_Sandbox(t *testing.T) {
 func TestLoad_DisabledExplicit(t *testing.T) {
 	fs := newMemFS()
 	fs.files["worlds/naruto/staging.yaml"] = "enabled: false\ninit: []\nstages: []\n"
-	s, err := Load(fs, "naruto")
+
+	s, err := Load(fs, "naruto", StageRuntime{})
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -87,7 +88,7 @@ func TestLoad_DisabledExplicit(t *testing.T) {
 func TestLoad_BrokenYAML(t *testing.T) {
 	fs := newMemFS()
 	fs.files["worlds/naruto/staging.yaml"] = "enabled: true\nstages: : :\n"
-	if _, err := Load(fs, "naruto"); err == nil {
+	if _, err := Load(fs, "naruto", StageRuntime{}); err == nil {
 		t.Fatalf("expected parse error")
 	}
 }
@@ -95,7 +96,8 @@ func TestLoad_BrokenYAML(t *testing.T) {
 func TestLoad_EnabledInitialisesFromInit(t *testing.T) {
 	fs := newMemFS()
 	fs.files["worlds/naruto/staging.yaml"] = validYAML
-	s, err := Load(fs, "naruto")
+
+	s, err := Load(fs, "naruto", StageRuntime{})
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -116,8 +118,10 @@ func TestLoad_EnabledInitialisesFromInit(t *testing.T) {
 func TestLoad_ReusesStageState(t *testing.T) {
 	fs := newMemFS()
 	fs.files["worlds/naruto/staging.yaml"] = validYAML
-	fs.files["worlds/naruto/stage.md"] = "staging:\n  current: accepted\n  timeline_index: 0\n  next: \"\"\n"
-	s, err := Load(fs, "naruto")
+
+	// planning/0001: stage.md no longer exists; the
+	// runtime slice is passed in by the caller.
+	s, err := Load(fs, "naruto", StageRuntime{Current: "accepted"})
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -129,8 +133,8 @@ func TestLoad_ReusesStageState(t *testing.T) {
 func TestLoad_RepairsUnknownNext(t *testing.T) {
 	fs := newMemFS()
 	fs.files["worlds/naruto/staging.yaml"] = validYAML
-	fs.files["worlds/naruto/stage.md"] = "staging:\n  current: beginning\n  timeline_index: 0\n  next: ghost\n"
-	s, err := Load(fs, "naruto")
+
+	s, err := Load(fs, "naruto", StageRuntime{Current: "beginning", Next: "ghost"})
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -142,8 +146,8 @@ func TestLoad_RepairsUnknownNext(t *testing.T) {
 func TestLoad_RepairsTimelineIndex(t *testing.T) {
 	fs := newMemFS()
 	fs.files["worlds/naruto/staging.yaml"] = validYAML
-	fs.files["worlds/naruto/stage.md"] = "staging:\n  current: beginning\n  timeline_index: 99\n  next: \"\"\n"
-	s, err := Load(fs, "naruto")
+
+	s, err := Load(fs, "naruto", StageRuntime{Current: "beginning", TimelineIndex: 99})
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -155,7 +159,8 @@ func TestLoad_RepairsTimelineIndex(t *testing.T) {
 func TestUpdateStage_Valid(t *testing.T) {
 	fs := newMemFS()
 	fs.files["worlds/naruto/staging.yaml"] = validYAML
-	s, err := Load(fs, "naruto")
+
+	s, err := Load(fs, "naruto", StageRuntime{})
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -165,20 +170,20 @@ func TestUpdateStage_Valid(t *testing.T) {
 	if s.Next != "accepted" {
 		t.Fatalf("expected next=accepted, got %q", s.Next)
 	}
-	// Reload to confirm persistence.
-	s2, err := Load(fs, "naruto")
-	if err != nil {
-		t.Fatalf("reload: %v", err)
-	}
-	if s2.Next != "accepted" {
-		t.Fatalf("expected persisted next=accepted, got %q", s2.Next)
+	// planning/0001: staging.UpdateStage is in-memory
+	// only. Persistence goes through
+	// WorldState.Save(world, snap{Stage: Runtime()}).
+	// Here we just assert the in-memory mutation.
+	if s.Runtime().Next != "accepted" {
+		t.Fatalf("expected Runtime().Next=accepted, got %q", s.Runtime().Next)
 	}
 }
 
 func TestUpdateStage_InvalidTransition(t *testing.T) {
 	fs := newMemFS()
 	fs.files["worlds/naruto/staging.yaml"] = validYAML
-	s, err := Load(fs, "naruto")
+
+	s, err := Load(fs, "naruto", StageRuntime{})
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -190,7 +195,8 @@ func TestUpdateStage_InvalidTransition(t *testing.T) {
 func TestUpdateStage_Idempotent(t *testing.T) {
 	fs := newMemFS()
 	fs.files["worlds/naruto/staging.yaml"] = validYAML
-	s, err := Load(fs, "naruto")
+
+	s, err := Load(fs, "naruto", StageRuntime{})
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -209,7 +215,8 @@ func TestUpdateStage_Idempotent(t *testing.T) {
 func TestAdvanceTimeline(t *testing.T) {
 	fs := newMemFS()
 	fs.files["worlds/naruto/staging.yaml"] = validYAML
-	s, err := Load(fs, "naruto")
+
+	s, err := Load(fs, "naruto", StageRuntime{})
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -229,14 +236,16 @@ func TestAdvanceTimeline(t *testing.T) {
 func TestApplyPending(t *testing.T) {
 	fs := newMemFS()
 	fs.files["worlds/naruto/staging.yaml"] = validYAML
-	s, err := Load(fs, "naruto")
+
+	s, err := Load(fs, "naruto", StageRuntime{})
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
 	if err := s.UpdateStage(fs, "naruto", "accepted"); err != nil {
 		t.Fatalf("UpdateStage: %v", err)
 	}
-	if err := s.ApplyPending(fs, "naruto"); err != nil {
+
+	if _, err := s.ApplyPending(fs, "naruto"); err != nil {
 		t.Fatalf("ApplyPending: %v", err)
 	}
 	if s.Current.ID != "accepted" {
@@ -253,11 +262,13 @@ func TestApplyPending(t *testing.T) {
 func TestApplyPending_NoopIfEmpty(t *testing.T) {
 	fs := newMemFS()
 	fs.files["worlds/naruto/staging.yaml"] = validYAML
-	s, err := Load(fs, "naruto")
+
+	s, err := Load(fs, "naruto", StageRuntime{})
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if err := s.ApplyPending(fs, "naruto"); err != nil {
+
+	if _, err := s.ApplyPending(fs, "naruto"); err != nil {
 		t.Fatalf("ApplyPending: %v", err)
 	}
 	if s.Current.ID != "beginning" {
@@ -268,8 +279,8 @@ func TestApplyPending_NoopIfEmpty(t *testing.T) {
 func TestRender_Basic(t *testing.T) {
 	fs := newMemFS()
 	fs.files["worlds/naruto/staging.yaml"] = validYAML
-	fs.files["worlds/naruto/stage.md"] = "staging:\n  current: beginning\n  timeline_index: 1\n  next: \"\"\n"
-	s, err := Load(fs, "naruto")
+
+	s, err := Load(fs, "naruto", StageRuntime{Current: "beginning", TimelineIndex: 1})
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -293,7 +304,8 @@ func TestRender_Basic(t *testing.T) {
 
 func TestRender_SandboxEmpty(t *testing.T) {
 	fs := newMemFS()
-	s, _ := Load(fs, "naruto")
+
+	s, _ := Load(fs, "naruto", StageRuntime{})
 	if s.Render("Маркус") != "" {
 		t.Fatalf("sandbox render should be empty")
 	}
@@ -302,7 +314,8 @@ func TestRender_SandboxEmpty(t *testing.T) {
 func TestRender_PendingShown(t *testing.T) {
 	fs := newMemFS()
 	fs.files["worlds/naruto/staging.yaml"] = validYAML
-	s, _ := Load(fs, "naruto")
+
+	s, _ := Load(fs, "naruto", StageRuntime{})
 	_ = s.UpdateStage(fs, "naruto", "accepted")
 	out := s.Render("")
 	if !strings.Contains(out, "(завершается) → accepted") {
@@ -331,7 +344,7 @@ stages:
 `
 	fs := newMemFS()
 	fs.files["worlds/naruto/staging.yaml"] = bad
-	if _, err := Load(fs, "naruto"); err == nil {
+	if _, err := Load(fs, "naruto", StageRuntime{}); err == nil {
 		t.Fatalf("expected duplicate-id validation error")
 	}
 }
@@ -355,7 +368,7 @@ stages:
 `
 	fs := newMemFS()
 	fs.files["worlds/naruto/staging.yaml"] = bad
-	if _, err := Load(fs, "naruto"); err == nil {
+	if _, err := Load(fs, "naruto", StageRuntime{}); err == nil {
 		t.Fatalf("expected mixed-days validation error")
 	}
 }
@@ -374,7 +387,7 @@ stages:
 `
 	fs := newMemFS()
 	fs.files["worlds/naruto/staging.yaml"] = bad
-	if _, err := Load(fs, "naruto"); err == nil {
+	if _, err := Load(fs, "naruto", StageRuntime{}); err == nil {
 		t.Fatalf("expected unknown-transition validation error")
 	}
 }

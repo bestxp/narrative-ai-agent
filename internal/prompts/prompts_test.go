@@ -93,9 +93,13 @@ func TestNewPromptData_DefaultsFilled(t *testing.T) {
 	assert.Equal(t, 250, d.Narrative.WordLimit)
 }
 
-// TestNewStateData: the data-bag shape for state.tmpl.
+// TestNewStateData: the data-bag shape for state.yaml.
+// The state file is YAML, not a template — the data-bag
+// here is just a typed projection used by tests that
+// round-trip StateSnapshot values.
 func TestNewStateData(t *testing.T) {
 	d := NewStateData("naruto", 5, true, "день", "Коноха", "Аньбу толкает", "",
+		StageStateData{Current: "wave_mission", TimelineIndex: 1},
 		[]string{"anbu_dog", "anbu_cat"},
 		[]string{"Ход 1: ...", "Ход 2: ..."})
 	assert.Equal(t, "naruto", d.World)
@@ -106,4 +110,6 @@ func TestNewStateData(t *testing.T) {
 	assert.Equal(t, "Аньбу толкает", d.Moment)
 	assert.Equal(t, []string{"anbu_dog", "anbu_cat"}, d.NPCs)
 	assert.Equal(t, []string{"Ход 1: ...", "Ход 2: ..."}, d.Events)
+	assert.Equal(t, "wave_mission", d.Stage.Current)
+	assert.Equal(t, 1, d.Stage.TimelineIndex)
 }

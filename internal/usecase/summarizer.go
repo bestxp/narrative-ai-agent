@@ -464,6 +464,11 @@ func projectState(stateBody string) *prompts.StateData {
 	return prompts.NewStateData(
 		snap.World, snap.Day, snap.InFlight,
 		snap.Daytime, snap.Location, snap.Moment, snap.Current,
+		prompts.StageStateData{
+			Current:       snap.Stage.Current,
+			TimelineIndex: snap.Stage.TimelineIndex,
+			Next:          snap.Stage.Next,
+		},
 		snap.NPCs, snap.Events,
 	)
 }

@@ -251,21 +251,45 @@ type NPCRelationRow struct {
 	Note   string
 }
 
-// StateData is the structured shape used by
-// state.yaml (planning/0001: state.md + stage.md →
-// state.yaml). The template is state.yaml.tmpl; the
-// on-disk format is the canonical example at
-// running/game-data/worlds/naruto/state.yaml.
+// StateData is the structured shape used by the YAML
+// round-trip in world_state_yaml.go (planning/0001:
+// state.md + stage.md → state.yaml). The on-disk
+// format is the canonical example at
+// running/game-data/worlds/naruto/state.yaml. There is
+// no template — the encoder is plain yaml.v3, not a
+// text template. StateData exists only so tests and
+// non-encoder code paths can hold a typed projection
+// of StateSnapshot without dragging the yaml.v3 types
+// across packages.
+//
+// Every field mirrors StateSnapshot. Optional
+// fields (omitempty) match the wire shape; strings
+// like Moment / Daytime / Location / Current always
+// appear in the file.
 type StateData struct {
 	World    string
 	Day      int
 	InFlight bool
 	Daytime  string
-	NPCs     []string
-	Current  string
 	Location string
 	Moment   string
+	NPCs     []string
+	Current  string
 	Events   []string
+	// Stage is the runtime-only slice of the plot
+	// graph. Same shape as domain.StageState; mirrored
+	// here to keep prompts free of staging imports.
+	// Value, not pointer — the stage block is a
+	// permanent part of state.yaml from the first turn.
+	Stage StageStateData
+}
+
+// StageStateData mirrors domain.StageState — three
+// primitives (current / timeline_index / next).
+type StageStateData struct {
+	Current       string
+	TimelineIndex int
+	Next          string
 }
 
 // NarrativeConfigSnapshot is the projection of the
@@ -360,6 +384,7 @@ func NewPromptData(
 func NewStateData(
 	world string, day int, inFlight bool,
 	daytime, location, moment, current string,
+	stage StageStateData,
 	npcs, events []string,
 ) *StateData {
 	return &StateData{
@@ -372,6 +397,7 @@ func NewStateData(
 		Location: location,
 		Moment:   moment,
 		Events:   append([]string(nil), events...),
+		Stage:    stage,
 	}
 }
 

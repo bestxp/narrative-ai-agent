@@ -17,9 +17,8 @@ import (
 	"strconv"
 	"strings"
 
-	"gopkg.in/yaml.v3"
-
 	"github.com/bestxp/narrative-ai-agent/internal/limits"
+	"gopkg.in/yaml.v3"
 )
 
 // MaxStageRenderBytes is the hard cap on the rendered size of the
@@ -97,19 +96,27 @@ type transitionYAML struct {
 	Requirements []string `yaml:"requirements"`
 }
 
-// stageStateFile is the on-disk shape of stage.md.
-type stageStateFile struct {
-	Staging struct {
-		Current       string `yaml:"current"`
-		TimelineIndex int    `yaml:"timeline_index"`
-		Next          string `yaml:"next"`
-	} `yaml:"staging"`
-}
+// stageStateFile used to be the on-disk shape of stage.md —
+// merged into state.yaml in planning/0001. The
+// runtime slice of the graph now lives in
+// domain.StageState and is written/read by
+// repository/yaml/world_state_yaml.go alongside
+// the rest of the runtime snapshot.
 
-// Load reads staging.yaml and stage.md for world from fs.
-// If staging.yaml is missing or enabled=false, it returns a zero Staging
-// with Enabled=false and no error.
-func Load(fs FileStore, world string) (*Staging, error) {
+// Load reads staging.yaml for world from fs. If
+// staging.yaml is missing or enabled=false, it returns
+// a zero Staging with Enabled=false and no error.
+//
+// planning/0001: the runtime stage slice (current /
+// timeline_index / next) is no longer in stage.md —
+// it's part of state.yaml. Load takes an explicit
+// runtimeState argument (parsed from state.yaml by
+// the caller) so the in-memory Staging mirrors
+// exactly what was last persisted. A missing or
+// empty runtimeState means "no graph resolved yet" —
+// Load defaults Current to init[0] and TimelineIndex
+// to 0 (the canonical start of any staged world).
+func Load(fs FileStore, world string, runtimeState StageRuntime) (*Staging, error) {
 	stagingPath := stagingPath(world)
 	stagingBody, err := fs.ReadRaw(stagingPath)
 	if err != nil {
@@ -132,79 +139,76 @@ func Load(fs FileStore, world string) (*Staging, error) {
 		return nil, fmt.Errorf("staging: validate %s: %w", stagingPath, err)
 	}
 
-	statePath := stageStatePath(world)
-	stateBody, _ := fs.ReadRaw(statePath)
-	state, err := parseStageState(stateBody)
-	if err != nil {
-		return nil, fmt.Errorf("staging: parse %s: %w", statePath, err)
-	}
-
-	// Default to init[0] if no state file.
-	if state.Staging.Current == "" {
+	currentID := runtimeState.Current
+	if currentID == "" {
 		if len(raw.Init) == 0 {
 			return nil, errors.New("staging: enabled but init is empty")
 		}
-		state.Staging.Current = raw.Init[0]
-		state.Staging.TimelineIndex = 0
-		state.Staging.Next = ""
+		currentID = raw.Init[0]
 	}
 
 	stageMap := buildStageMap(&raw)
-	current, ok := stageMap[state.Staging.Current]
+
+	current, ok := stageMap[currentID]
 	if !ok {
-		return nil, fmt.Errorf("staging: current stage %q not found in %s", state.Staging.Current, stagingPath)
+		return nil, fmt.Errorf("staging: current stage %q not found in %s", currentID, stagingPath)
 	}
 
 	// Repair broken next.
-	if state.Staging.Next != "" {
-		if _, ok := stageMap[state.Staging.Next]; !ok {
-			state.Staging.Next = ""
-		} else {
-			// Also verify next is listed in current.Next.
-			found := false
-			for _, t := range current.Next {
-				if t.ID == state.Staging.Next {
-					found = true
-					break
-				}
-			}
-			if !found {
-				state.Staging.Next = ""
-			}
-		}
-	}
+	next := repairNext(runtimeState.Next, stageMap, current)
 
 	// Repair broken timeline index.
-	if state.Staging.TimelineIndex < 0 || state.Staging.TimelineIndex >= len(current.Timeline) {
-		state.Staging.TimelineIndex = 0
+	idx := runtimeState.TimelineIndex
+	if idx < 0 || idx >= len(current.Timeline) {
+		idx = 0
 	}
 
 	return &Staging{
 		Enabled:       true,
 		Current:       current,
-		TimelineIndex: state.Staging.TimelineIndex,
-		Next:          state.Staging.Next,
+		TimelineIndex: idx,
+		Next:          next,
 		raw:           raw,
 	}, nil
 }
 
-// Save persists the current staging state to stage.md.
-func (s *Staging) Save(fs FileStore, world string) error {
-	state := stageStateFile{}
-	state.Staging.Current = s.Current.ID
-	state.Staging.TimelineIndex = s.TimelineIndex
-	state.Staging.Next = s.Next
-
-	out, err := yaml.Marshal(&state)
-	if err != nil {
-		return fmt.Errorf("staging: marshal stage state: %w", err)
-	}
-	return fs.WriteRawAtomic(stageStatePath(world), string(out))
+// StageRuntime is the runtime slice of the plot
+// graph, taken from state.yaml (planning/0001:
+// state.yaml.stage). The staging package only reads
+// these three primitives — full graph data lives in
+// staging.yaml and is loaded separately.
+type StageRuntime struct {
+	Current       string
+	TimelineIndex int
+	Next          string
 }
 
-// UpdateStage sets Next to nextID. It validates that nextID is a known
-// transition from the current stage.
-func (s *Staging) UpdateStage(fs FileStore, world, nextID string) error {
+// Runtime projects the in-memory staging state back
+// into the three primitives that belong in
+// state.yaml.stage. Used by callers that write to
+// state.yaml (gm.go end-of-day, UpdateState, etc.).
+// Pure function — no disk I/O, no Save call. The
+// single writer to state.yaml is
+// repository/yaml.world_state_yaml.
+func (s *Staging) Runtime() StageRuntime {
+	if s == nil || !s.Enabled {
+		return StageRuntime{}
+	}
+
+	return StageRuntime{
+		Current:       s.Current.ID,
+		TimelineIndex: s.TimelineIndex,
+		Next:          s.Next,
+	}
+}
+
+// UpdateStage sets Next to nextID. It validates that
+// nextID is a known transition from the current
+// stage. In-memory only — the caller must write the
+// resulting state to state.yaml via
+// repository/yaml.world_state_yaml (planning/0001:
+// no more stage.md).
+func (s *Staging) UpdateStage(_ FileStore, _, nextID string) error {
 	if nextID == "" {
 		return errors.New("staging: next_id is empty")
 	}
@@ -220,33 +224,52 @@ func (s *Staging) UpdateStage(fs FileStore, world, nextID string) error {
 	}
 
 	s.Next = nextID
-	return s.Save(fs, world)
+
+	return nil
 }
 
-// AdvanceTimeline increments TimelineIndex if possible.
-func (s *Staging) AdvanceTimeline(fs FileStore, world string) error {
+// AdvanceTimeline increments TimelineIndex if
+// possible. In-memory only — same constraint as
+// UpdateStage.
+func (s *Staging) AdvanceTimeline(_ FileStore, _ string) error {
 	if s.TimelineIndex+1 >= len(s.Current.Timeline) {
 		return errors.New("staging: already at last timeline point")
 	}
+
 	s.TimelineIndex++
-	return s.Save(fs, world)
+
+	return nil
 }
 
-// ApplyPending moves Next into Current and resets TimelineIndex.
-// It is a no-op if Next is empty.
-func (s *Staging) ApplyPending(fs FileStore, world string) error {
+// ApplyPending moves Next into Current and resets
+// TimelineIndex. It is a no-op if Next is empty.
+// In-memory only — same constraint as UpdateStage.
+// The returned StageRuntime reflects the post-apply
+// state so the caller can persist it (planning/0001:
+// stage.md was merged into state.yaml; the single
+// writer of the runtime slice is WorldState.Save).
+func (s *Staging) ApplyPending(_ FileStore, _ string) (StageRuntime, error) {
 	if s.Next == "" {
-		return nil
+		return StageRuntime{
+			Current:       s.Current.ID,
+			TimelineIndex: s.TimelineIndex,
+			Next:          s.Next,
+		}, nil
 	}
 	stageMap := buildStageMap(&s.raw)
 	next, ok := stageMap[s.Next]
 	if !ok {
-		return fmt.Errorf("staging: pending stage %q not found", s.Next)
+		return StageRuntime{}, fmt.Errorf("staging: pending stage %q not found", s.Next)
 	}
 	s.Current = next
 	s.TimelineIndex = 0
 	s.Next = ""
-	return s.Save(fs, world)
+
+	return StageRuntime{
+		Current:       s.Current.ID,
+		TimelineIndex: s.TimelineIndex,
+		Next:          s.Next,
+	}, nil
 }
 
 // Render returns the markdown block for the WorldState prompt.
@@ -305,8 +328,27 @@ func stagingPath(world string) string {
 	return "worlds/" + world + "/staging.yaml"
 }
 
-func stageStatePath(world string) string {
-	return "worlds/" + world + "/stage.md"
+// repairNext clears next when it points at an unknown
+// stage or a transition that is not listed in
+// current.Next. Split out from Load to keep the
+// nestif complexity under threshold (the inlined
+// version nests three levels).
+func repairNext(next string, stageMap map[string]Stage, current Stage) string {
+	if next == "" {
+		return ""
+	}
+
+	if _, ok := stageMap[next]; !ok {
+		return ""
+	}
+
+	for _, t := range current.Next {
+		if t.ID == next {
+			return next
+		}
+	}
+
+	return ""
 }
 
 func buildStageMap(raw *stagingFile) map[string]Stage {
@@ -410,18 +452,6 @@ func validateStagingFile(raw *stagingFile) error {
 	}
 
 	return nil
-}
-
-func parseStageState(body string) (stageStateFile, error) {
-	body = strings.TrimSpace(body)
-	if body == "" {
-		return stageStateFile{}, nil
-	}
-	var s stageStateFile
-	if err := yaml.Unmarshal([]byte(body), &s); err != nil {
-		return stageStateFile{}, err
-	}
-	return s, nil
 }
 
 func normalizeDays(v interface{}) string {

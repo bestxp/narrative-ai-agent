@@ -126,16 +126,50 @@ type ChronicleDay struct {
 // reads/writes this struct; the YAML encoder in
 // internal/repository/yaml/world_state_yaml.go
 // projects it into the canonical YAML shape.
+//
+// Every field here is a permanent part of state.yaml
+// from the very first turn of a new world. Optional
+// fields (omitempty in the wire shape) are only those
+// whose absence carries meaning (e.g. Events — the
+// day's log is empty until the first beat). Strings
+// like Moment / Daytime / Location / Current always
+// appear in the file as quoted (possibly empty)
+// values; the parser treats empty string as
+// "unset for this turn" without dropping the key.
 type StateSnapshot struct {
 	World    string
 	Day      int
 	InFlight bool
-	Daytime  string // "утро" | "день" | "вечер" | "ночь"
-	NPCs     []string
-	Current  string // one-line snapshot of the in-progress scene
+	Daytime  string // clock: "утро" | "день" | "вечер" | "ночь"
 	Location string
-	Moment   string
+	Moment   string // current beat summary, always present
+	NPCs     []string
+	Current  string // in-progress scene snapshot, always present
 	Events   []string
+	// Stage is the runtime snapshot of the active plot
+	// stage (planning/0001 §2.1: previously lived in
+	// stage.md; merged into state.yaml). Value, not
+	// pointer — the stage block is a permanent part of
+	// state.yaml from the first turn. A freshly-
+	// initialised world writes `Stage{Current: "",
+	// TimelineIndex: 0, Next: ""}`; this is the "no
+	// graph yet" baseline that gets filled in once
+	// gm.loadWorldStage resolves the init stage from
+	// staging.yaml.
+	Stage StageState
+}
+
+// StageState is the runtime-only slice of the plot
+// graph: which stage is active, where in its timeline
+// we are, and what comes next. Three primitives only —
+// no graph pointers, no init/stages metadata. Domain
+// owns this type so the staging package can return it
+// without an import cycle (planning/0001 §5.1, variant
+// (a)).
+type StageState struct {
+	Current       string
+	TimelineIndex int
+	Next          string
 }
 
 // NPCEntry is a single row of the NPC registry summary

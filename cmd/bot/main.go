@@ -91,8 +91,8 @@ func main() {
 
 	summarizer := buildSummarizer(cfg, role, compactionSnap, slow, log)
 	slots := buildSummarizerSlots(summarizer)
-	fileTools := buildFileToolset(fs, absData, slots, slow, log)
-	gm := buildGM(cfg, role, systemPrompt, fs, llmCli, fileTools, summarizer, slow, log)
+	fileTools, repos := buildFileToolset(fs, absData, slots, slow, log)
+	gm := buildGM(cfg, role, systemPrompt, fs, llmCli, fileTools, repos, summarizer, slow, log)
 	disp := buildDispatcher(cfg, fs, gitOp, fileTools, slow, log)
 
 	if !*disableLLM {
@@ -584,7 +584,11 @@ type summarizerAdapter struct {
 	s *usecase.Summarizer
 }
 
-func (a summarizerAdapter) SummarizeNPC(ctx context.Context, displayName, world string, yamlBody, chronicleContext []byte) ([]byte, error) {
+func (a summarizerAdapter) SummarizeNPC(
+	ctx context.Context,
+	displayName, world string,
+	yamlBody, chronicleContext []byte,
+) ([]byte, error) {
 	res, err := a.s.SummarizeNPC(ctx, displayName, world, yamlBody, chronicleContext)
 	if err != nil {
 		return nil, err
@@ -592,7 +596,11 @@ func (a summarizerAdapter) SummarizeNPC(ctx context.Context, displayName, world 
 	return res.Body, nil
 }
 
-func (a summarizerAdapter) SummarizeLore(ctx context.Context, world string, loreBody, chronicleContext, stateMD []byte) ([]byte, error) {
+func (a summarizerAdapter) SummarizeLore(
+	ctx context.Context,
+	world string,
+	loreBody, chronicleContext, stateMD []byte,
+) ([]byte, error) {
 	res, err := a.s.SummarizeLore(ctx, world, loreBody, chronicleContext, stateMD)
 	if err != nil {
 		return nil, err

@@ -7,14 +7,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rs/zerolog"
-	gyaml "gopkg.in/yaml.v3"
-
 	"github.com/bestxp/narrative-ai-agent/internal/domain"
 	"github.com/bestxp/narrative-ai-agent/internal/repository/api"
 	"github.com/bestxp/narrative-ai-agent/internal/repository/yaml"
 	"github.com/bestxp/narrative-ai-agent/internal/slowlog"
 	"github.com/bestxp/narrative-ai-agent/internal/usecase/tools"
+	"github.com/rs/zerolog"
+	gyaml "gopkg.in/yaml.v3"
 )
 
 // renderStateBody delegates to the yaml package's
@@ -76,15 +75,6 @@ func (s *State) SetWorldStateInvalidate(fn func(reason string)) {
 // /maintenance command can match the same threshold the
 // toolset uses.
 const NPCCompactLineThreshold = 40
-
-// StateHeader is the very first line of state.md per the skill rules.
-func StateHeader(day int, inFlight bool) string {
-	marker := "в процессе"
-	if !inFlight {
-		marker = "завершён"
-	}
-	return "День " + strconv.Itoa(day) + " (" + marker + ")."
-}
 
 // UpdateState writes a trimmed "here and now" snapshot.
 // The хронология дня section grows by appending
@@ -206,6 +196,7 @@ func ParseStateYAML(body string) int {
 	if strings.TrimSpace(body) == "" {
 		return 0
 	}
+
 	var raw struct {
 		State struct {
 			Day int `yaml:"day"`
@@ -214,6 +205,7 @@ func ParseStateYAML(body string) int {
 	if err := gyaml.Unmarshal([]byte(body), &raw); err != nil {
 		return 0
 	}
+
 	return raw.State.Day
 }
 
@@ -222,27 +214,38 @@ func ParseStateYAML(body string) int {
 // merge): the on-disk format is YAML, not markdown.
 // See running/game-data/worlds/naruto/state.yaml for
 // the reference shape. Tolerant of partial state
-// files; missing fields stay zero. The narrow
-// day-only helper is ParseStateYAML; this is the
-// full-struct sibling used by code that needs NPCs,
-// events, location or moment.
+// files; missing fields stay zero.
+//
+// This is a thin convenience wrapper that callers
+// without an active repos.WorldState (e.g. scene-key
+// derivation in gm.buildContext, which only has the
+// fs.FileStore at hand) use to peek at the day
+// counter without spinning up a full repository
+// stack. For everything else, prefer
+// `s.repos.WorldState.Load(world)`.
 func ParseStateYAMLFull(body string) domain.StateSnapshot {
 	out := domain.StateSnapshot{}
 	if strings.TrimSpace(body) == "" {
 		return out
 	}
+
 	var doc struct {
 		State struct {
 			World    string   `yaml:"world"`
 			Day      int      `yaml:"day"`
 			InFlight bool     `yaml:"in-flight"`
 			Daytime  string   `yaml:"daytime"`
-			NPCs     []string `yaml:"npcs"`
+			NPCs     []string `yaml:"npcs"` //nolint:tagliatelle // npcs is an acronym; kebab split harms readability
 			Current  string   `yaml:"current"`
 			Location string   `yaml:"location"`
 			Moment   string   `yaml:"moment"`
 			Events   []string `yaml:"events"`
 		} `yaml:"state"`
+		Stage struct {
+			Current       string `yaml:"current"`
+			TimelineIndex int    `yaml:"timeline-index"`
+			Next          string `yaml:"next"`
+		} `yaml:"stage"`
 	}
 	if err := gyaml.Unmarshal([]byte(body), &doc); err != nil {
 		return out
@@ -256,6 +259,11 @@ func ParseStateYAMLFull(body string) domain.StateSnapshot {
 	out.Location = doc.State.Location
 	out.Moment = doc.State.Moment
 	out.Events = append(out.Events, doc.State.Events...)
+	out.Stage = domain.StageState{
+		Current:       doc.Stage.Current,
+		TimelineIndex: doc.Stage.TimelineIndex,
+		Next:          doc.Stage.Next,
+	}
 	return out
 }
 

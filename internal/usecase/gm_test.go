@@ -67,7 +67,8 @@ func newGMTestEnv(t *testing.T) (*GM, *storage.FileStore, *fakeLLM) {
 	require.NoError(t, fs.WriteRawAtomic(storage.InfoFile, domain.BuildInfo("markus", "naruto", nil, nil)))
 	require.NoError(t, fs.EnsureDir("characters/markus"))
 	require.NoError(t, fs.WriteRawAtomic("characters/markus/SOUL.md", "# Markus"))
-	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/state.yaml", "state:\n  world: naruto\n  day: 1\n  in-flight: true\n  npcs:\n    - Какаши\n"))
+	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/state.yaml",
+		"state:\n  world: naruto\n  day: 1\n  in-flight: true\n  npcs:\n    - Какаши\n"))
 	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/lore.md", "lore"))
 	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/plan.md", "plan"))
 	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/canon.md", "canon"))

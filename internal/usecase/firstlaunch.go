@@ -6,27 +6,28 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/rs/zerolog"
-
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
 	"github.com/bestxp/narrative-ai-agent/internal/charprofile"
 	"github.com/bestxp/narrative-ai-agent/internal/domain"
+	"github.com/bestxp/narrative-ai-agent/internal/repository/api"
+	"github.com/rs/zerolog"
 )
 
 // FirstLaunch creates the entire on-disk skeleton for a new player +
 // world pair. It is idempotent: if info.yaml already exists and points
 // at a different character, an error is returned and nothing is touched.
 type FirstLaunch struct {
-	fs  *storage.FileStore
-	log zerolog.Logger
+	fs    *storage.FileStore
+	repos api.WorldStateRepository
+	log   zerolog.Logger
 }
 
 func NewFirstLaunch(fs *storage.FileStore) *FirstLaunch {
-	return NewFirstLaunchWithLogger(fs, zerolog.Nop())
+	return NewFirstLaunchWithLogger(fs, nil, zerolog.Nop())
 }
 
-func NewFirstLaunchWithLogger(fs *storage.FileStore, log zerolog.Logger) *FirstLaunch {
-	return &FirstLaunch{fs: fs, log: log.With().Str("component", "first_launch").Logger()}
+func NewFirstLaunchWithLogger(fs *storage.FileStore, repos api.WorldStateRepository, log zerolog.Logger) *FirstLaunch {
+	return &FirstLaunch{fs: fs, repos: repos, log: log.With().Str("component", "first_launch").Logger()}
 }
 
 type CharacterSpec struct {
@@ -86,6 +87,18 @@ func (f *FirstLaunch) Launch(char CharacterSpec, world WorldSpec) error {
 // charprofile.MigrateFromMarkdown as fallback).
 // Today the firstlaunch seed is plain YAML; the
 // migration is wired in tools/files/character.go.
+func (f *FirstLaunch) ensureStateExists(world string, day int, inFlight bool) error {
+	if f.repos == nil {
+		return nil
+	}
+
+	if err := f.repos.EnsureExists(world, day, inFlight); err != nil {
+		return fmt.Errorf("first_launch: ensure state: %w", err)
+	}
+
+	return nil
+}
+
 func (f *FirstLaunch) writeCharacter(dir string, c CharacterSpec) error {
 	root := "characters/" + dir
 	if err := f.fs.EnsureDir(root); err != nil {
@@ -189,8 +202,17 @@ func (f *FirstLaunch) writeWorld(dir string, w WorldSpec) error {
 	if err := f.fs.WriteRawAtomic(root+"/canon.md", canon); err != nil {
 		return err
 	}
-	state := StateHeader(1, true) + "\nСтартовая сцена.\n"
-	if err := f.fs.WriteRawAtomic(root+"/state.md", state); err != nil {
+	// planning/0001: state.yaml is the single
+	// runtime snapshot file. ensureStateExists
+	// writes a minimal placeholder with the `stage:`
+	// baseline (current="" / timeline_index=0 /
+	// next="") so the block is always present from
+	// the very first turn. The model's first
+	// update_state fills in Moment / Daytime / NPCs.
+	// Falls back to a no-op when no WorldStateRepos
+	// was wired (legacy tests + cmd/bot paths that
+	// haven't migrated yet).
+	if err := f.ensureStateExists(dir, 1, true); err != nil {
 		return err
 	}
 	lore := "# Мир " + strings.TrimSpace(w.DisplayName) + "\nКанон актуален, если игрок не вносит изменения.\n"
