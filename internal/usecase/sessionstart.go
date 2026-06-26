@@ -129,20 +129,25 @@ func (s *SessionStart) checkSync(world, state string) (stateAhead, chronicleAhea
 		}
 	}
 
-	switch {
-	case !stateOK && !memOK:
-		return false, false
-	case !stateOK && memOK:
-		return false, true
-	case stateOK && !memOK:
-		return true, false
-	case stateDay > memDay:
-		return true, false
-	case memDay > stateDay:
-		return false, true
+	if !stateOK {
+		// state.md has no parseable day counter. If chronicle does,
+		// chronicle is "ahead" by definition; otherwise there is
+		// nothing to compare.
+		return false, memOK
 	}
 
-	return false, false
+	if !memOK {
+		// state has a day, chronicle doesn't — backfill is needed.
+		return true, false
+	}
+
+	// Both sides have a day. If they agree, neither is ahead.
+	if stateDay == memDay {
+		return false, false
+	}
+
+	// Different days — the larger one is "ahead".
+	return stateDay > memDay, memDay > stateDay
 }
 
 //nolint:gochecknoglobals // precompiled header parser reused across SessionStart calls

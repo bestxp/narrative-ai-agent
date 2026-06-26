@@ -56,8 +56,12 @@ func TestFirstLaunch_Idempotent(t *testing.T) {
 	ys, _ := yamlfs.New(fs.Root())
 	repos := api.NewYamlRepositories(ys)
 	fl := usecase.NewFirstLaunchWithLogger(fs, repos.WorldState, zerolog.Nop())
-	require.NoError(t, fl.Launch(usecase.CharacterSpec{Dir: "a", DisplayName: "A"}, usecase.WorldSpec{Dir: "b", DisplayName: "B", Canon: "x"}))
-	err := fl.Launch(usecase.CharacterSpec{Dir: "c", DisplayName: "C"}, usecase.WorldSpec{Dir: "d", DisplayName: "D", Canon: "x"})
+	charA := usecase.CharacterSpec{Dir: "a", DisplayName: "A"}
+	worldB := usecase.WorldSpec{Dir: "b", DisplayName: "B", Canon: "x"}
+	require.NoError(t, fl.Launch(charA, worldB))
+	charC := usecase.CharacterSpec{Dir: "c", DisplayName: "C"}
+	worldD := usecase.WorldSpec{Dir: "d", DisplayName: "D", Canon: "x"}
+	err := fl.Launch(charC, worldD)
 	assert.ErrorIs(t, err, usecase.ErrAlreadyLaunched)
 }
 

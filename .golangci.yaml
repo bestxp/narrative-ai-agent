@@ -175,6 +175,20 @@ linters:
       - path: .*_test.go
         linters:
           - goconst
+      # White-box tests in internal/usecase depend on many private
+      # helpers (getConversation, dispatchOneTool, runConversation,
+      # loadChronicle, loadWorldStage, buildContext, projectMessages,
+      # Summarizer fields, FakeLLM.rounds, SystemState fields, etc.)
+      # and unexported fields (ContextMu, WorldSnapshot, etc.).
+      # Black-box conversion would either export a wide surface that
+      # pollutes the API or scatter the helpers across multiple
+      # packages. The helpers are test-only plumbing — exporting
+      # them is the wrong shape. Instead these tests stay in
+      # `package usecase` so they can see private API directly.
+      - linters:
+          - testpackage
+        path: internal/usecase/(gm_test|end_of_day_maintain_test|sessionstart_test|summarizer_test|systemstate_test)\.go
+        text: "package should be"
     paths:
       - third_party$
       - builtin$

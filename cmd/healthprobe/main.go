@@ -50,7 +50,9 @@ func main() {
 
 	// request URL is operator-supplied healthcheck target; scheme/host
 	// are validated above before the request is built.
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil) //nolint:gosec // operator URL has validated scheme/host.
+	targetURL := u.String()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil) //nolint:gosec // URL scheme/host validated.
 	if err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, "healthprobe: request:", err)
 

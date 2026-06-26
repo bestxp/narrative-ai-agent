@@ -77,11 +77,6 @@ func (s *State) SetWorldStateInvalidate(fn func(reason string)) {
 	s.worldStateInvalidate = fn
 }
 
-// NPCCompactLineThreshold is exported so the dispatcher's
-// /maintenance command can match the same threshold the
-// toolset uses.
-const NPCCompactLineThreshold = 40
-
 // UpdateState writes a trimmed "here and now" snapshot.
 // The хронология дня section grows by appending
 // AppendEvents — one entry per call. StateSnapshot.AppendEvents
