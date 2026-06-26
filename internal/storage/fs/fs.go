@@ -40,6 +40,7 @@ func New(root string) (*YamlStorage, error) {
 	if err != nil {
 		return nil, fmt.Errorf("fs: abs root: %w", err)
 	}
+
 	if err := os.MkdirAll(abs, 0o755); err != nil {
 		return nil, fmt.Errorf("fs: mkdir root: %w", err)
 	}
@@ -59,12 +60,6 @@ func (s *YamlStorage) Join(key string) string {
 	return filepath.Join(s.root, key)
 }
 
-// Dir returns the parent directory of key, used by
-// EnsureDir.
-func (s *YamlStorage) dirOf(key string) string {
-	return filepath.Dir(s.Join(key))
-}
-
 // Read returns the bytes at key. Returns (nil, nil)
 // for a missing key — the "empty file" case is normal
 // in domain code. Returns the read error otherwise.
@@ -73,6 +68,7 @@ func (s *YamlStorage) Read(key string) ([]byte, error) {
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
+
 	if err != nil {
 		return nil, fmt.Errorf("read: ReadFile failed: %w", err)
 	}
@@ -85,12 +81,14 @@ func (s *YamlStorage) Read(key string) ([]byte, error) {
 // Strips any "  12| " index pollution the input may
 // contain (defensive: editor / viewer side-effects).
 func (s *YamlStorage) Write(key string, data []byte) error {
-	clean := stripIndexPollutionBytes(data)
+	clean := StripIndexPollutionBytes(data)
 
 	if err := os.MkdirAll(s.dirOf(key), 0o755); err != nil {
 		return fmt.Errorf("write: MkdirAll failed: %w", err)
 	}
+
 	target := s.Join(key)
+
 	tmp := target + ".tmp"
 	if err := os.WriteFile(tmp, clean, 0o600); err != nil {
 		return fmt.Errorf("write: %w", err)
@@ -109,6 +107,7 @@ func (s *YamlStorage) Exists(key string) (bool, error) {
 	if err == nil {
 		return true, nil
 	}
+
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
 	}
@@ -124,6 +123,7 @@ func (s *YamlStorage) ListChildren(dir string) ([]string, error) {
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
+
 	if err != nil {
 		return nil, fmt.Errorf("list_children: ReadDir failed: %w", err)
 	}
@@ -147,6 +147,12 @@ func (s *YamlStorage) EnsureDir(key string) error {
 	return nil
 }
 
+// Dir returns the parent directory of key, used by
+// EnsureDir.
+func (s *YamlStorage) dirOf(key string) string {
+	return filepath.Dir(s.Join(key))
+}
+
 // Compile-time guarantee *YamlStorage implements Storage.
 var _ interface {
 	Read(key string) ([]byte, error)
@@ -156,7 +162,7 @@ var _ interface {
 	EnsureDir(key string) error
 } = (*YamlStorage)(nil)
 
-// stripIndexPollutionBytes removes lines like "  12| foo"
+// StripIndexPollutionBytes removes lines like "  12| foo"
 // that some editor tools inject into file reads. This is
 // the bytes variant of the legacy stripIndexPollution
 // (string-based) used by the previous FileStore
@@ -164,8 +170,9 @@ var _ interface {
 // input/output type changed.
 var indexLineRe = regexp.MustCompile(`^\s*\d+\|\s?`)
 
-func stripIndexPollutionBytes(s []byte) []byte {
+func StripIndexPollutionBytes(s []byte) []byte {
 	var buf bytes.Buffer
+
 	scanner := bufio.NewScanner(bytes.NewReader(s))
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 
@@ -174,6 +181,7 @@ func stripIndexPollutionBytes(s []byte) []byte {
 		buf.Write(indexLineRe.ReplaceAll(line, nil))
 		buf.WriteByte('\n')
 	}
+
 	out := buf.Bytes()
 	// Trim a single trailing newline we may have added to
 	// a file that did not originally end with one — but

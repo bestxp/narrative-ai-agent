@@ -52,10 +52,10 @@ type Toolset struct {
 	*NPC
 	*StageTool
 
-	// repos is the bundle every concern reads from.
+	// Repos is the bundle every concern reads from.
 	// Held at the Toolset level so sub-structs can be
 	// built without re-plumbing the dependency.
-	repos *api.Repositories
+	Repos *api.Repositories
 }
 
 // New constructs the repository-backed toolset.
@@ -80,22 +80,32 @@ type Toolset struct {
 // FileStore (via the worldregistry package), so the
 // constructor takes fs alongside repos. fs is used only
 // by NPC; other concerns continue to read through repos.
-func New(fs *storage.FileStore, repos *api.Repositories, log zerolog.Logger, slow *slowlog.Logger, summarizer tools.NPCSummarizer, loreSummarizer tools.LoreSummarizer, chronicleSummarizer tools.ChronicleSummarizer, characterMemorySummarizer tools.CharacterMemorySummarizer) *Toolset {
-	mem := newMemory(log, summarizer, loreSummarizer, chronicleSummarizer, characterMemorySummarizer, repos)
-	st := newState(log, slow, repos)
+func New(
+	fs *storage.FileStore,
+	repos *api.Repositories,
+	log zerolog.Logger,
+	slow *slowlog.Logger,
+	summarizer tools.NPCSummarizer,
+	loreSummarizer tools.LoreSummarizer,
+	chronicleSummarizer tools.ChronicleSummarizer,
+	characterMemorySummarizer tools.CharacterMemorySummarizer,
+) *Toolset {
+	mem := NewMemory(log, summarizer, loreSummarizer, chronicleSummarizer, characterMemorySummarizer, repos)
+	st := NewState(log, slow, repos)
 	// Wire the post-ArchiveChronicleDay hook so the
 	// state writer does not need a direct reference to
 	// the memory struct. The hook is nil-safe — it logs
 	// and skips when no summarizer is wired.
 	st.SetChronicleCompress(mem.chronicleCompressAfterArchive)
+
 	return &Toolset{
 		State:     st,
 		Memory:    mem,
 		World:     newWorld(log, repos),
-		Character: newCharacter(repos, log, slow),
-		NPC:       newNPC(log, slow, repos, fs),
+		Character: NewCharacter(repos, log, slow),
+		NPC:       NewNPC(log, slow, repos, fs),
 		StageTool: newStage(log, repos),
-		repos:     repos,
+		Repos:     repos,
 	}
 }
 
@@ -113,7 +123,7 @@ func (t *Toolset) SetWorldStateInvalidate(fn func(reason string)) {
 // can pass it as tools.Tool without an explicit cast.
 // This method exists for symmetry with future backends
 // that may wrap the concrete struct in a different way.
-func (t *Toolset) AsToolset() tools.Tool {
+func (t *Toolset) AsToolset() tools.Tool { //nolint:ireturn // explicit accessor for tools.Tool interface; intentional.
 	return t
 }
 
@@ -127,7 +137,7 @@ func (t *Toolset) Source() string { return "files" }
 // post-write state of a repository without reading
 // from the filesystem directly.
 func (t *Toolset) Repositories() *api.Repositories {
-	return t.repos
+	return t.Repos
 }
 
 // Compile-time check: *Toolset must satisfy tools.Tool. If
@@ -173,13 +183,16 @@ func (t *Toolset) SearchNPC(world, query string) (*tools.NPCSearchResult, error)
 	defer func() {
 		_ = recover()
 	}()
+
 	if t.NPC == nil {
 		return nil, ErrNPCModuleUnavailable
 	}
+
 	res, e := t.Search(world, query)
 	if e != nil {
 		return nil, e
 	}
+
 	return &tools.NPCSearchResult{
 		DisplayName:   res.DisplayName,
 		Slug:          res.Slug,
@@ -205,6 +218,7 @@ func (t *Toolset) EndScene(world string, permanentParty []string) (*tools.EndSce
 	if err != nil {
 		return nil, err
 	}
+
 	return &tools.EndSceneResult{
 		KeptNPCs:      res.KeptNPCs,
 		PrunedNPCsLen: res.PrunedNPCsLen,

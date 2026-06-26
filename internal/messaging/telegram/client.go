@@ -62,10 +62,12 @@ func New(cfg Config, log zerolog.Logger) (*Client, error) {
 	if cfg.Token == "" {
 		return nil, errors.New("telegram: empty token")
 	}
+
 	api, err := tg.NewBotAPI(cfg.Token)
 	if err != nil {
 		return nil, fmt.Errorf("telegram: auth: %w", err)
 	}
+
 	if cfg.PollingTimeout == 0 {
 		cfg.PollingTimeout = 60
 	}
@@ -77,6 +79,21 @@ func New(cfg Config, log zerolog.Logger) (*Client, error) {
 		recv:        make(chan messaging.IncomingMessage, 64),
 		healthState: messaging.StateStarting,
 	}, nil
+}
+
+// NewForTesting returns a Client without authenticating against
+// the Bot API. Used by unit tests that exercise the Client
+// surface (IsAllowed, Name, SetCommands) without needing
+// network access. NewForTesting intentionally returns the zero
+// api pointer — callers must not invoke methods that send
+// network requests.
+func NewForTesting(cfg Config, log zerolog.Logger) *Client {
+	return &Client{
+		cfg:         cfg,
+		log:         log,
+		recv:        make(chan messaging.IncomingMessage, 64),
+		healthState: messaging.StateStarting,
+	}
 }
 
 // Name implements messaging.Client.
@@ -112,51 +129,59 @@ func (c *Client) IsAllowed(senderID string) bool {
 // same shape the BotFather UI uses.
 func (c *Client) SetCommands(_ context.Context, cmds []messaging.BotCommand) error {
 	params := make(map[string]string)
-	params["commands"] = encodeCommandsJSON(cmds)
-	_, err := c.api.MakeRequest("setMyCommands", asURLValues(params))
+	params["commands"] = EncodeCommandsJSON(cmds)
+
+	_, err := c.api.MakeRequest("setMyCommands", AsURLValues(params))
 	if err != nil {
 		c.log.Warn().Err(err).Int("count", len(cmds)).Msg("telegram: setMyCommands failed")
+
 		return fmt.Errorf("set_commands: MakeRequest failed: %w", err)
 	}
+
 	c.log.Info().Int("count", len(cmds)).Msg("telegram: setMyCommands ok")
 
 	return nil
 }
 
-// encodeCommandsJSON serialises a command list the way the
+// EncodeCommandsJSON serialises a command list the way the
 // Telegram API expects: a single JSON array string passed as
 // the "commands" query parameter. We hand-build the JSON
 // rather than calling json.Marshal so we don't pull in any
 // allocation overhead — this is a startup-time call only.
-func encodeCommandsJSON(cmds []messaging.BotCommand) string {
+func EncodeCommandsJSON(cmds []messaging.BotCommand) string {
 	if len(cmds) == 0 {
 		return "[]"
 	}
+
 	var b strings.Builder
 	b.WriteString("[")
+
 	for i, c := range cmds {
 		if i > 0 {
 			b.WriteString(",")
 		}
+
 		b.WriteString(`{"command":`)
-		b.WriteString(jsonString(c.Command))
+		b.WriteString(JSONString(c.Command))
 		b.WriteString(`,"description":`)
-		b.WriteString(jsonString(c.Description))
+		b.WriteString(JSONString(c.Description))
 		b.WriteString("}")
 	}
+
 	b.WriteString("]")
 
 	return b.String()
 }
 
-// jsonString returns a JSON string literal for s. The
+// JSONString returns a JSON string literal for s. The
 // conversion is intentionally minimal — Telegram does not
 // accept special characters in command names (a-z, 0-9, _),
 // so the only characters that need escaping in descriptions
 // are " and \ plus the basic control characters.
-func jsonString(s string) string {
+func JSONString(s string) string {
 	var b strings.Builder
 	b.WriteByte('"')
+
 	for _, r := range s {
 		switch r {
 		case '"':
@@ -173,18 +198,20 @@ func jsonString(s string) string {
 			if r < 0x20 {
 				continue
 			}
+
 			b.WriteRune(r)
 		}
 	}
+
 	b.WriteByte('"')
 
 	return b.String()
 }
 
-// asURLValues is a tiny adapter from map[string]string to
+// AsURLValues is a tiny adapter from map[string]string to
 // url.Values. We can't import net/url here without bloating
 // the import block; the parameter shape is trivial.
-func asURLValues(m map[string]string) url.Values {
+func AsURLValues(m map[string]string) url.Values {
 	v := make(url.Values, len(m))
 	for k, val := range m {
 		v.Set(k, val)
@@ -198,11 +225,14 @@ func asURLValues(m map[string]string) url.Values {
 func (c *Client) Run(ctx context.Context) error {
 	u := tg.NewUpdate(0)
 	u.Timeout = c.cfg.PollingTimeout
+
 	updates, err := c.api.GetUpdatesChan(u)
 	if err != nil {
 		c.setHealth(messaging.StateReconnect, "", err.Error())
+
 		return fmt.Errorf("telegram: get updates: %w", err)
 	}
+
 	c.setHealth(messaging.StateConnected, c.api.Self.UserName, "")
 	c.log.Info().Str("username", c.api.Self.UserName).Msg("bot started")
 
@@ -222,14 +252,19 @@ func (c *Client) Run(ctx context.Context) error {
 
 				return errors.New("telegram: updates channel closed")
 			}
+
 			if upd.Message == nil {
 				continue
 			}
+
 			if !c.IsAllowed(strconv.Itoa(upd.Message.From.ID)) {
 				c.log.Warn().Int("user_id", upd.Message.From.ID).Msg("rejected user")
+
 				continue
 			}
+
 			text := strings.TrimSpace(upd.Message.Text)
+
 			msg := messaging.IncomingMessage{
 				Sender: messaging.Sender{
 					ID:   strconv.Itoa(upd.Message.From.ID),
@@ -241,6 +276,7 @@ func (c *Client) Run(ctx context.Context) error {
 			}
 			if strings.HasPrefix(text, "/") {
 				parts := strings.Fields(text)
+
 				msg.Command = strings.TrimPrefix(parts[0], "/")
 				if len(parts) > 1 {
 					msg.Args = parts[1:]
@@ -260,9 +296,9 @@ func (c *Client) Send(_ context.Context, msg messaging.OutgoingMessage) error {
 	// character) have to be split; the first chunk is the
 	// "main" reply, the rest are continuations sent as
 	// fresh messages in the same chat.
-	chunks := splitForTelegram(wire)
+	chunks := SplitForTelegram(wire)
 	for i, chunk := range chunks {
-		m := tg.NewMessage(parseChatID(msg.ChatID), chunk)
+		m := tg.NewMessage(ParseChatID(msg.ChatID), chunk)
 		if msg.ParseMode != "" {
 			m.ParseMode = msg.ParseMode
 		} else if c.cfg.ParseMode != "" {
@@ -275,12 +311,24 @@ func (c *Client) Send(_ context.Context, msg messaging.OutgoingMessage) error {
 		if i == 0 && msg.ReplyToMessageID > 0 {
 			m.ReplyToMessageID = msg.ReplyToMessageID
 		}
+
 		if _, err := c.api.Send(m); err != nil {
-			c.log.Error().Err(err).Str("chat", msg.ChatID).Int("reply_to", msg.ReplyToMessageID).Int("text_len", len(chunk)).Int("chunk", i).Msg("telegram: send failed")
+			c.log.Error().Err(err).
+				Str("chat", msg.ChatID).
+				Int("reply_to", msg.ReplyToMessageID).
+				Int("text_len", len(chunk)).
+				Int("chunk", i).
+				Msg("telegram: send failed")
+
 			return fmt.Errorf("wrap: Send failed: %w", err)
 		}
 	}
-	c.log.Debug().Str("chat", msg.ChatID).Int("reply_to", msg.ReplyToMessageID).Int("text_len", len(msg.Text)).Int("chunks", len(chunks)).Msg("send ok")
+
+	c.log.Debug().Str("chat", msg.ChatID).
+		Int("reply_to", msg.ReplyToMessageID).
+		Int("text_len", len(msg.Text)).
+		Int("chunks", len(chunks)).
+		Msg("send ok")
 
 	return nil
 }
@@ -292,30 +340,74 @@ func (c *Client) StartStream(ctx context.Context, chatID string, replyToMessageI
 	return c.startStream(ctx, chatID, replyToMessageID)
 }
 
+// Close stops accepting new updates and closes the receive channel.
+func (c *Client) Close() error {
+	if c.isOpen {
+		return nil
+	}
+
+	c.isOpen = false
+	close(c.recv)
+
+	return nil
+}
+
+// --- internals ---
+
+func ParseChatID(s string) int64 {
+	id, _ := strconv.ParseInt(s, 10, 64)
+
+	return id
+}
+
+// Health implements messaging.Client. It is safe to call from any
+// goroutine at any time and must not block.
+func (c *Client) Health() messaging.HealthReport {
+	c.healthMu.RLock()
+	defer c.healthMu.RUnlock()
+
+	return messaging.HealthReport{
+		Name:      "telegram",
+		State:     c.healthState,
+		StartedAt: c.healthStartedAt,
+		Message:   c.healthMessage,
+	}
+}
+
+//nolint:ireturn // interface contract for messaging.Client.StartStream.
 func (c *Client) startStream(_ context.Context, chatID string, replyToMessageID int) (messaging.StreamSession, error) {
-	chat := parseChatID(chatID)
+	chat := ParseChatID(chatID)
 	if chat == 0 {
 		return nil, fmt.Errorf("telegram: invalid chat id %q", chatID)
 	}
+
 	m := tg.NewMessage(chat, "…")
 	if replyToMessageID > 0 {
 		m.ReplyToMessageID = replyToMessageID
 	}
+
 	sent, err := c.api.Send(m)
 	if err != nil {
-		c.log.Error().Err(err).Str("chat", chatID).Int64("chat_int", chat).Int("reply_to", replyToMessageID).Msg("telegram: stream start failed")
+		c.log.Error().Err(err).
+			Str("chat", chatID).
+			Int64("chat_int", chat).
+			Int("reply_to", replyToMessageID).
+			Msg("telegram: stream start failed")
+
 		return nil, fmt.Errorf("telegram: stream start: %w", err)
 	}
+
 	c.streamsMu.Lock()
 	if c.activeStreams == nil {
 		c.activeStreams = make(map[string]int)
 	}
+
 	c.activeStreams[chatID] = sent.MessageID
 	c.streamsMu.Unlock()
 	c.sendTyping(chatID)
 	c.log.Debug().Str("chat", chatID).Int("msg_id", sent.MessageID).Int("reply_to", replyToMessageID).Msg("stream started")
 
-	return &stream{
+	return &Stream{
 		client:   c,
 		chatID:   chatID,
 		msgID:    sent.MessageID,
@@ -338,33 +430,16 @@ func (c *Client) formatText(text, msgMode string) string {
 	if mode == "" {
 		mode = c.cfg.ParseMode
 	}
+
 	if mode == "HTML" || mode == "html" {
-		return markdownToHTML(text)
+		return MarkdownToHTML(text)
 	}
 
 	return text
 }
 
-// Close stops accepting new updates and closes the receive channel.
-func (c *Client) Close() error {
-	if c.isOpen {
-		return nil
-	}
-	c.isOpen = false
-	close(c.recv)
-
-	return nil
-}
-
-// --- internals ---
-
-func parseChatID(s string) int64 {
-	id, _ := strconv.ParseInt(s, 10, 64)
-	return id
-}
-
 func (c *Client) sendTyping(chatID string) {
-	chat := parseChatID(chatID)
+	chat := ParseChatID(chatID)
 	action := tg.NewChatAction(chat, tg.ChatTyping)
 	_, _ = c.api.Send(action)
 }
@@ -390,20 +465,6 @@ func (c *Client) typingLoop(ctx context.Context) {
 	}
 }
 
-// Health implements messaging.Client. It is safe to call from any
-// goroutine at any time and must not block.
-func (c *Client) Health() messaging.HealthReport {
-	c.healthMu.RLock()
-	defer c.healthMu.RUnlock()
-
-	return messaging.HealthReport{
-		Name:      "telegram",
-		State:     c.healthState,
-		StartedAt: c.healthStartedAt,
-		Message:   c.healthMessage,
-	}
-}
-
 // setHealth updates the snapshot fields atomically. name is the
 // transport identifier embedded in the report (passed so the helper
 // can also serve clients whose Name() is non-trivial); message is a
@@ -411,7 +472,9 @@ func (c *Client) Health() messaging.HealthReport {
 func (c *Client) setHealth(state messaging.HealthState, _ string, message string) {
 	c.healthMu.Lock()
 	defer c.healthMu.Unlock()
+
 	c.healthState = state
+
 	c.healthMessage = message
 	if state == messaging.StateConnected && c.healthStartedAt.IsZero() {
 		c.healthStartedAt = time.Now()

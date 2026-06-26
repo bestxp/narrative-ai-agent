@@ -29,8 +29,11 @@ import (
 	"github.com/rs/zerolog"
 )
 
-//nolint:gocognit // intentional complexity; main wiring function
-func main() { //nolint:funlen // complex function; splitting would harm readability.
+// main wiring is intentionally dense (config + DI + signal handling);
+// splitting harms readability
+//
+//nolint:gocognit,cyclop,funlen // main wires every subsystem and intentionally keeps the flow visible at the top.
+func main() {
 	cfgPath := flag.String("config", "config.yaml", "path to config.yaml")
 	logLevel := flag.String("log-level", "", "override log level (trace/debug/info/warn/error)")
 
@@ -50,6 +53,7 @@ func main() { //nolint:funlen // complex function; splitting would harm readabil
 	if level == "" {
 		level = "info"
 	}
+
 	log := logging.New(logging.Config{Level: level, Pretty: *prettyLog})
 
 	log.Info().Str("config", *cfgPath).Bool("no_llm", *disableLLM).Msg("starting lazy-universe bot")
@@ -59,6 +63,7 @@ func main() { //nolint:funlen // complex function; splitting would harm readabil
 	if !gitops.IsRepo(cfg.Paths.GitWorkdir) {
 		log.Warn().Str("workdir", cfg.Paths.GitWorkdir).Msg("not a git repo — commits will fail")
 	}
+
 	gitOp := buildGit(cfg, log)
 
 	slow, slowWriter, err := buildSlowlog(cfg, log)
@@ -75,7 +80,9 @@ func main() { //nolint:funlen // complex function; splitting would harm readabil
 	if !ok {
 		log.Fatal().Str("role", config.NarrativeRole).Msg("narrative role not configured")
 	}
+
 	log.Info().Strs("prompts", promptpkg.List()).Msg("bundled prompts")
+
 	renderSnap := promptpkg.NarrativeConfigSnapshot{
 		WordLimit:                  cfg.Narrative.WordLimit,
 		Language:                   cfg.Narrative.Language,
@@ -85,6 +92,7 @@ func main() { //nolint:funlen // complex function; splitting would harm readabil
 		CompactionNotifyVerbose:    cfg.Narrative.CompactionNotifyVerbose,
 	}
 	compactionSnap := renderSnap
+
 	systemPrompt, err := renderNarrativePrompt(role.SystemPromptPath, renderSnap)
 	if err != nil {
 		log.Fatal().Err(err).Str("path", role.SystemPromptPath).Msg("read system prompt")
@@ -124,6 +132,7 @@ func main() { //nolint:funlen // complex function; splitting would harm readabil
 
 			os.Exit(1)
 		}
+
 		hs.srv = srv
 		log.Info().Str("addr", srv.Addr()).Msg("health server ready")
 	} else {
@@ -163,6 +172,7 @@ func main() { //nolint:funlen // complex function; splitting would harm readabil
 					if !ok {
 						return
 					}
+
 					pm := cfg.Messaging.Telegram.ParseMode
 					rt := cfg.Messaging.Telegram.ReplyToUser
 
@@ -170,6 +180,7 @@ func main() { //nolint:funlen // complex function; splitting would harm readabil
 						pm = ""
 						rt = true
 					}
+
 					handleIncoming(ctx, log, c, disp,
 						pm,
 						cfg.LLM.IncludeInReply,
@@ -181,11 +192,12 @@ func main() { //nolint:funlen // complex function; splitting would harm readabil
 
 					//nolint:nestif // intentional nesting for command vs freeform dispatch
 					if msg.Command == "" {
-						if notify := autoSave.maybeAutoSave(ctx, log, c, gitOp, msg.ChatID, cfg.Git.VerboseSave); notify != "" {
+						if notify := autoSave.maybeAutoSave(ctx, log, gitOp, msg.ChatID, cfg.Git.VerboseSave); notify != "" {
 							notifyPM := cfg.Messaging.Telegram.ParseMode
 							if c.Name() == "vk" || c.Name() == "wschat" {
 								notifyPM = ""
 							}
+
 							if err := c.Send(ctx, messaging.OutgoingMessage{ChatID: msg.ChatID, Text: notify, ParseMode: notifyPM}); err != nil {
 								log.Error().Err(err).Str("chat", msg.ChatID).Msg("auto-save notify failed")
 							}
@@ -258,10 +270,20 @@ func chatLock(chatID string) *sync.Mutex {
 // message from the same player (or a parallel Discord client
 // pointing at the same chat) waits for the first to finish
 // Final. This keeps the conversation thread clean and the
-// reply_to threading correct. //nolint:funlen // complex function; splitting would harm readability.
+// reply_to threading correct.
 //
-//nolint:gocognit // intentional complexity; per-message dispatch loop //nolint:funlen // complex function; splitting would harm readability.
-func handleIncoming(ctx context.Context, log zerolog.Logger, c messaging.Client, disp *dispatcher.Dispatcher, parseMode string, includeTokens, rulesCheckBlock, replyTo, compactionNotify, compactionNotifyVerbose bool, msg messaging.IncomingMessage) { //nolint:funlen // complex function; splitting would harm readability.
+// per-message dispatch loop is intentionally branchy and dense; splitting harms readability.
+//
+//nolint:gocognit,cyclop,funlen,maintidx // main wires every subsystem and intentionally keeps the flow visible at the top
+func handleIncoming(
+	ctx context.Context,
+	log zerolog.Logger,
+	c messaging.Client,
+	disp *dispatcher.Dispatcher,
+	parseMode string,
+	includeTokens, rulesCheckBlock, replyTo, compactionNotify, compactionNotifyVerbose bool,
+	msg messaging.IncomingMessage,
+) {
 	mu := chatLock(msg.ChatID)
 	mu.Lock()
 	defer mu.Unlock()
@@ -279,6 +301,7 @@ func handleIncoming(ctx context.Context, log zerolog.Logger, c messaging.Client,
 	_, ok := c.(interface {
 		StartStream(ctx context.Context, chatID string, replyToMessageID int) (messaging.StreamSession, error)
 	})
+
 	var session messaging.StreamSession
 
 	if ok {
@@ -360,6 +383,7 @@ func handleIncoming(ctx context.Context, log zerolog.Logger, c messaging.Client,
 			textSeen = true
 
 			replyBuf.WriteString(s)
+
 			if !jsonMode && structured.LooksLikeJSON(replyBuf.String()) {
 				// First time we see a JSON-looking
 				// payload: switch to silent mode. We
@@ -368,14 +392,17 @@ func handleIncoming(ctx context.Context, log zerolog.Logger, c messaging.Client,
 				// was seeing becomes a single dot
 				// replaced at Final time).
 				jsonMode = true
+
 				return nil
 			}
+
 			if jsonMode {
 				// Silent accumulation. The Final
 				// call below will deliver the
 				// rendered markdown in one shot.
 				return nil
 			}
+
 			if session != nil {
 				return session.Append(ctx, stripRules(replyBuf.String()))
 			}
@@ -386,6 +413,7 @@ func handleIncoming(ctx context.Context, log zerolog.Logger, c messaging.Client,
 			if textSeen || session == nil {
 				return
 			}
+
 			if err := session.Append(ctx, formatStatus(phase, details)); err != nil {
 				log.Warn().Err(err).Msg("status append failed")
 			}
@@ -410,10 +438,12 @@ func handleIncoming(ctx context.Context, log zerolog.Logger, c messaging.Client,
 			if !compactionNotify {
 				return
 			}
+
 			notice := usecase.DescribeCompaction(r, "narrative", compactionNotifyVerbose)
 			if notice == "" {
 				return
 			}
+
 			if err := c.Send(ctx, messaging.OutgoingMessage{
 				ChatID:           msg.ChatID,
 				Text:             notice,
@@ -427,6 +457,7 @@ func handleIncoming(ctx context.Context, log zerolog.Logger, c messaging.Client,
 
 	if err := disp.HandleStream(ctx, msg, cb); err != nil {
 		log.Error().Err(err).Str("chat", msg.ChatID).Msg("dispatch error")
+
 		if session == nil {
 			_ = c.Send(ctx, messaging.OutgoingMessage{
 				ChatID:           msg.ChatID,
@@ -446,9 +477,11 @@ func handleIncoming(ctx context.Context, log zerolog.Logger, c messaging.Client,
 	tokMu.Lock()
 	tok := lastTok
 	tokMu.Unlock()
+
 	if includeTokens && tok.Source != "" && tok.Source != "off" && tok.TotalTokens > 0 {
 		final += "\n\n🔢 ~" + itoa(tok.TotalTokens) + " tok (" + tok.Source + ")"
 	}
+
 	if final == "" {
 		if session != nil {
 			_ = session.Final(ctx, "…")
@@ -456,6 +489,7 @@ func handleIncoming(ctx context.Context, log zerolog.Logger, c messaging.Client,
 
 		return
 	}
+
 	if session != nil {
 		if err := session.Final(ctx, final); err != nil {
 			log.Error().Err(err).Str("chat", msg.ChatID).Msg("stream final failed, retrying via Send")
@@ -511,10 +545,12 @@ func itoa(n int) string {
 	if n == 0 {
 		return "0"
 	}
+
 	neg := n < 0
 	if neg {
 		n = -n
 	}
+
 	var buf [20]byte
 
 	i := len(buf)
@@ -523,6 +559,7 @@ func itoa(n int) string {
 		buf[i] = byte('0' + n%10)
 		n /= 10
 	}
+
 	if neg {
 		i--
 		buf[i] = '-'
@@ -534,21 +571,26 @@ func itoa(n int) string {
 // runAutoSave commits (and pushes if not remote_disabled) and
 // returns the player-facing notification text. An empty string
 // means "nothing to say" (e.g. the commit was a no-op).
-func runAutoSave(ctx context.Context, log zerolog.Logger, c messaging.Client, op *gitops.Operator, chatID string, verbose bool) string {
+func runAutoSave(ctx context.Context, log zerolog.Logger, op *gitops.Operator, chatID string, verbose bool) string {
 	if op == nil {
 		return ""
 	}
-	res, err := op.CommitAll("auto: save")
+
+	res, err := op.CommitAll(ctx, "auto: save")
 	if err != nil {
 		log.Error().Err(err).Msg("auto-save commit failed")
+
 		return "⚠️ auto-save: " + err.Error()
 	}
+
 	if res.Empty {
 		return ""
 	}
+
 	var b strings.Builder
 	b.WriteString("✅ сохранено: commit ")
 	b.WriteString(res.Hash)
+
 	if verbose {
 		b.WriteString("\n  файлов: ")
 		b.WriteString(itoa(len(res.FilesChanged)))
@@ -558,15 +600,18 @@ func runAutoSave(ctx context.Context, log zerolog.Logger, c messaging.Client, op
 			b.WriteString(f)
 		}
 	}
+
 	body := b.String()
 	if op.RemoteDisabled() {
 		return body + "\n(push пропущен: remote_disabled=true)"
 	}
-	if err := op.SyncRebase(); err != nil {
+
+	if err := op.SyncRebase(ctx); err != nil {
 		body += "\n⚠️ push: " + err.Error()
 	} else {
 		body += "\ngit push ok."
 	}
+
 	log.Info().Str("chat", chatID).Str("hash", res.Hash).Int("files", len(res.FilesChanged)).Msg("auto-save")
 
 	return body
@@ -582,8 +627,10 @@ func runAutoSave(ctx context.Context, log zerolog.Logger, c messaging.Client, op
 func buildSlowlog(cfg *config.Config, log zerolog.Logger) (*slowlog.Logger, *logging.SlowlogWriter, error) {
 	if !cfg.Slowlog.Enabled {
 		log.Info().Msg("slowlog disabled (config: slowlog.enabled=false)")
+
 		return slowlog.Discard(), logging.NewSlowlogWriter(io.Discard), nil
 	}
+
 	sl, err := slowlog.File(cfg.Slowlog.File)
 	if err != nil {
 		return nil, nil, fmt.Errorf("slowlog file open: %w", err)
@@ -607,6 +654,7 @@ func recv(c messaging.Client) <-chan messaging.IncomingMessage {
 	if r, ok := c.(receiver); ok {
 		return r.Recv()
 	}
+
 	ch := make(chan messaging.IncomingMessage)
 	close(ch)
 
@@ -705,7 +753,12 @@ func (a summarizerAdapter) SummarizeCharacterMemory(
 func renderSummarizerPrompt(name string, snap promptpkg.NarrativeConfigSnapshot) (string, error) {
 	data := promptpkg.NewPromptData(snap, promptpkg.CharacterData{}, promptpkg.WorldData{})
 
-	return promptpkg.Render(name, data)
+	out, err := promptpkg.Render(name, data)
+	if err != nil {
+		return "", fmt.Errorf("render summarizer prompt %q: %w", name, err)
+	}
+
+	return out, nil
 }
 
 // renderNarrativePrompt loads the system prompt for
@@ -719,10 +772,17 @@ func renderSummarizerPrompt(name string, snap promptpkg.NarrativeConfigSnapshot)
 // embedded narrative.md.tmpl is rendered.
 func renderNarrativePrompt(overridePath string, snap promptpkg.NarrativeConfigSnapshot) (string, error) {
 	data := promptpkg.PromptData{Character: promptpkg.CharacterData{}, World: promptpkg.WorldData{}}
+
 	data = promptpkg.NewPromptData(snap, data.Character, data.World)
 	if overridePath == "" {
-		return promptpkg.Render("narrative.md.tmpl", data)
+		out, err := promptpkg.Render("narrative.md.tmpl", data)
+		if err != nil {
+			return "", fmt.Errorf("render narrative prompt: %w", err)
+		}
+
+		return out, nil
 	}
+
 	body, err := os.ReadFile(overridePath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -730,11 +790,17 @@ func renderNarrativePrompt(overridePath string, snap promptpkg.NarrativeConfigSn
 			// embedded template. The operator may
 			// have set the path in config but not
 			// created the file yet.
-			return promptpkg.Render("narrative.md.tmpl", data)
+			out, err := promptpkg.Render("narrative.md.tmpl", data)
+			if err != nil {
+				return "", fmt.Errorf("render narrative prompt: %w", err)
+			}
+
+			return out, nil
 		}
 
 		return "", fmt.Errorf("read override %q: %w", overridePath, err)
 	}
+
 	text := strings.TrimSpace(string(body))
 	// Plain markdown override (operator drops a
 	// hand-written narrative.md without template
@@ -766,6 +832,7 @@ func renderFromBody(name, body string, data promptpkg.PromptData) (string, error
 	if err != nil {
 		return "", fmt.Errorf("parse override %q: %w", name, err)
 	}
+
 	var b strings.Builder
 	if err := tpl.Execute(&b, data); err != nil {
 		return "", fmt.Errorf("execute override %q: %w", name, err)
@@ -790,10 +857,12 @@ func (h *healthServer) Reports() []health.Report {
 	out := make([]health.Report, 0, len(h.clients))
 	for _, c := range h.clients {
 		r := c.Health()
+
 		var startedAt string
 		if !r.StartedAt.IsZero() {
 			startedAt = r.StartedAt.UTC().Format(time.RFC3339)
 		}
+
 		out = append(out, health.Report{
 			Name:      health.Status(c.Name()),
 			State:     health.Status(r.State),

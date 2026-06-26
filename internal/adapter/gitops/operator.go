@@ -47,23 +47,6 @@ func (o *Operator) RemoteDisabled() bool {
 	return o.remoteDisabled
 }
 
-func (o *Operator) run(args ...string) (string, error) {
-	cmd := exec.CommandContext(context.Background(), "git", args...)
-	cmd.Dir = o.workdir
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	err := cmd.Run()
-
-	combined := strings.TrimSpace(stdout.String() + "\n" + stderr.String())
-	if err != nil {
-		o.log.Debug().Strs("args", args).Str("output", combined).Err(err).Msg("git cmd failed")
-		return combined, fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, combined)
-	}
-
-	return combined, nil
-}
-
 // CommitResult is the outcome of a successful CommitAll. The hash
 // is the short SHA returned by `git rev-parse --short HEAD` after
 // the commit; FilesChanged is the list of paths from
@@ -82,19 +65,20 @@ type CommitResult struct {
 // nothing to commit Empty=true and the rest of the fields are
 // zero. Network/permission errors are returned as the error
 // value and CommitResult is the zero value.
-func (o *Operator) CommitAll(message string) (CommitResult, error) {
-	if _, err := o.run("config", "user.name", o.author); err != nil {
-		return CommitResult{}, err
-	}
-	if _, err := o.run("config", "user.email", o.email); err != nil {
+func (o *Operator) CommitAll(ctx context.Context, message string) (CommitResult, error) {
+	if _, err := o.Run(ctx, "config", "user.name", o.author); err != nil {
 		return CommitResult{}, err
 	}
 
-	if _, err := o.run("add", "-A"); err != nil {
+	if _, err := o.Run(ctx, "config", "user.email", o.email); err != nil {
 		return CommitResult{}, err
 	}
 
-	if _, err := o.run("commit", "-m", message); err != nil {
+	if _, err := o.Run(ctx, "add", "-A"); err != nil {
+		return CommitResult{}, err
+	}
+
+	if _, err := o.Run(ctx, "commit", "-m", message); err != nil {
 		// "nothing to commit" should not be fatal
 		if strings.Contains(err.Error(), "nothing to commit") || strings.Contains(err.Error(), "no changes added") {
 			o.log.Debug().Msg("nothing to commit")
@@ -105,14 +89,15 @@ func (o *Operator) CommitAll(message string) (CommitResult, error) {
 		return CommitResult{}, err
 	}
 
-	hash, herr := o.run("rev-parse", "--short", "HEAD")
+	hash, herr := o.Run(ctx, "rev-parse", "--short", "HEAD")
 	if herr != nil {
 		// Commit happened, hash retrieval didn't — fall back to
 		// the message in the log and an empty hash. The caller
 		// still knows the commit succeeded.
 		o.log.Warn().Err(herr).Msg("commit ok but hash retrieval failed")
 	}
-	files, _ := o.run("show", "--name-only", "--pretty=format:")
+
+	files, _ := o.Run(ctx, "show", "--name-only", "--pretty=format:")
 
 	res := CommitResult{Hash: strings.TrimSpace(hash)}
 	for ln := range strings.SplitSeq(files, "\n") {
@@ -138,37 +123,47 @@ var ErrRemoteDisabled = errors.New("git remote is disabled — push skipped")
 // so the caller can surface them honestly. When the operator is in
 // local-only mode (remoteDisabled=true) it short-circuits with
 // ErrRemoteDisabled — no network call is made.
-func (o *Operator) SyncRebase() error {
+func (o *Operator) SyncRebase(ctx context.Context) error {
 	if o.remoteDisabled {
 		o.log.Info().Msg("git push skipped — remote disabled")
+
 		return ErrRemoteDisabled
 	}
 
-	if _, err := o.run("pull", "--rebase", o.remote, o.branch); err != nil {
+	if _, err := o.Run(ctx, "pull", "--rebase", o.remote, o.branch); err != nil {
 		o.log.Error().Err(err).Msg("git pull --rebase failed")
+
 		return fmt.Errorf("pull: %w", err)
 	}
 
-	out, err := o.run("push", o.remote, o.branch)
+	out, err := o.Run(ctx, "push", o.remote, o.branch)
 	if err == nil {
 		o.log.Info().Msg("git push ok")
+
 		return nil
 	}
+
 	if !strings.Contains(err.Error(), "[rejected]") && !strings.Contains(out, "[rejected]") {
 		o.log.Error().Err(err).Msg("git push failed")
+
 		return fmt.Errorf("push: %w", err)
 	}
 	// Rejected — rebase onto remote and retry once.
-	if _, ferr := o.run("fetch", o.remote); ferr != nil {
+	if _, ferr := o.Run(ctx, "fetch", o.remote); ferr != nil {
 		o.log.Error().Err(ferr).Msg("git fetch failed")
+
 		return fmt.Errorf("fetch: %w", ferr)
 	}
-	if _, rerr := o.run("rebase", o.remote+"/"+o.branch); rerr != nil {
+
+	if _, rerr := o.Run(ctx, "rebase", o.remote+"/"+o.branch); rerr != nil {
 		o.log.Error().Err(rerr).Msg("git rebase failed")
+
 		return fmt.Errorf("rebase: %w", rerr)
 	}
-	if _, perr := o.run("push", o.remote, o.branch); perr != nil {
+
+	if _, perr := o.Run(ctx, "push", o.remote, o.branch); perr != nil {
 		o.log.Error().Err(perr).Msg("git push after rebase failed")
+
 		return fmt.Errorf("push after rebase: %w", perr)
 	}
 
@@ -178,8 +173,28 @@ func (o *Operator) SyncRebase() error {
 }
 
 // Status is a thin wrapper around `git status --porcelain`.
-func (o *Operator) Status() (string, error) {
-	return o.run("status", "--porcelain")
+func (o *Operator) Status(ctx context.Context) (string, error) {
+	return o.Run(ctx, "status", "--porcelain")
+}
+
+func (o *Operator) Run(ctx context.Context, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = o.workdir
+
+	var stdout, stderr bytes.Buffer
+
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+
+	combined := strings.TrimSpace(stdout.String() + "\n" + stderr.String())
+	if err != nil {
+		o.log.Debug().Strs("args", args).Str("output", combined).Err(err).Msg("git cmd failed")
+
+		return combined, fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, combined)
+	}
+
+	return combined, nil
 }
 
 // IsRepo returns true if workdir is inside a git repository.

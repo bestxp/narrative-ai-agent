@@ -46,14 +46,17 @@ func New(cfg Config, log zerolog.Logger) (*Client, error) {
 	if cfg.AccessToken == "" {
 		return nil, errors.New("vk: empty access token")
 	}
+
 	if cfg.GroupID == 0 {
 		return nil, errors.New("vk: group_id is required")
 	}
+
 	if cfg.PollingWait == 0 {
 		cfg.PollingWait = 25
 	}
 
 	vk := api.NewVK(cfg.AccessToken)
+
 	lp, err := longpoll.NewLongPoll(vk, cfg.GroupID)
 	if err != nil {
 		return nil, fmt.Errorf("vk: longpoll init: %w", err)
@@ -93,53 +96,18 @@ func (c *Client) SetCommands(_ context.Context, _ []messaging.BotCommand) error 
 	return nil
 }
 
-func (c *Client) onMessageNew(_ context.Context, obj events.MessageNewObject) {
-	msg := obj.Message
-
-	if msg.Out || msg.FromID <= 0 {
-		return
-	}
-
-	senderID := strconv.Itoa(msg.FromID)
-	if !c.IsAllowed(senderID) {
-		c.log.Warn().Int("from_id", msg.FromID).Msg("vk: rejected user")
-		return
-	}
-
-	text := strings.TrimSpace(msg.Text)
-	peerID := strconv.Itoa(msg.PeerID)
-
-	incoming := messaging.IncomingMessage{
-		Sender: messaging.Sender{
-			ID:   senderID,
-			Name: "",
-		},
-		ChatID:    peerID,
-		Text:      text,
-		MessageID: msg.ConversationMessageID,
-	}
-	if strings.HasPrefix(text, "/") || strings.HasPrefix(text, "!") {
-		parts := strings.Fields(text)
-		incoming.Command = strings.TrimPrefix(parts[0], "/")
-		incoming.Command = strings.TrimPrefix(incoming.Command, "!")
-		if len(parts) > 1 {
-			incoming.Args = parts[1:]
-		}
-	}
-
-	c.recv <- incoming
-}
-
 func (c *Client) Run(ctx context.Context) error {
 	c.log.Info().Int("group_id", c.cfg.GroupID).Msg("vk bot started")
 
 	go c.typingLoop(ctx)
 
 	backoff := time.Second
+
 	const maxBackoff = 30 * time.Second
 
 	for {
 		c.setHealth(messaging.StateConnected, "", "")
+
 		errCh := make(chan error, 1)
 
 		go func() {
@@ -173,6 +141,7 @@ func (c *Client) Run(ctx context.Context) error {
 				return nil
 			case <-time.After(backoff):
 			}
+
 			if backoff < maxBackoff {
 				backoff *= 2
 			}
@@ -202,6 +171,7 @@ func (c *Client) Send(_ context.Context, msg messaging.OutgoingMessage) error {
 
 		if _, sendErr := c.vk.MessagesSend(params); sendErr != nil {
 			c.log.Error().Err(sendErr).Str("peer", msg.ChatID).Int("chunk", i).Msg("vk: send failed")
+
 			return fmt.Errorf("send_chunks: MessagesSend failed: %w", sendErr)
 		}
 	}
@@ -209,10 +179,12 @@ func (c *Client) Send(_ context.Context, msg messaging.OutgoingMessage) error {
 	return nil
 }
 
+//nolint:ireturn // interface contract for messaging.Client.StartStream.
 func (c *Client) StartStream(_ context.Context, chatID string, _ int) (messaging.StreamSession, error) {
 	if c.cfg.DisableStreaming {
 		return nil, messaging.ErrStreamingDisabled
 	}
+
 	peerID, err := strconv.Atoi(chatID)
 	if err != nil {
 		return nil, fmt.Errorf("vk: invalid peer_id %q: %w", chatID, err)
@@ -224,9 +196,11 @@ func (c *Client) StartStream(_ context.Context, chatID string, _ int) (messaging
 		"random_id": 0,
 		"group_id":  c.cfg.GroupID,
 	}
+
 	msgID, err := c.vk.MessagesSend(params)
 	if err != nil {
 		c.log.Error().Err(err).Str("chat", chatID).Msg("vk: stream start failed")
+
 		return nil, fmt.Errorf("vk: stream start: %w", err)
 	}
 
@@ -246,11 +220,99 @@ func (c *Client) StartStream(_ context.Context, chatID string, _ int) (messaging
 	}), nil
 }
 
+const maxVKMessageLen = 4096
+
+func splitForVK(text string) []string {
+	runes := []rune(text)
+	if len(runes) <= maxVKMessageLen {
+		return []string{text}
+	}
+
+	out := make([]string, 0, 2)
+
+	rest := string(runes)
+	for runeCount := len(runes); runeCount > maxVKMessageLen; runeCount = len([]rune(rest)) {
+		head := string([]rune(rest)[:maxVKMessageLen])
+
+		var cut int
+		if i := strings.LastIndex(head, "\n\n"); i > 0 {
+			cut = i + len("\n\n")
+		} else if i := strings.LastIndex(head, "\n"); i > 0 {
+			cut = i + len("\n")
+		} else {
+			cut = len(head)
+		}
+
+		out = append(out, rest[:cut])
+		rest = rest[cut:]
+	}
+
+	if rest != "" {
+		out = append(out, rest)
+	}
+
+	return out
+}
+
+// Health implements messaging.Client. It is safe to call from any
+// goroutine at any time and must not block.
+func (c *Client) Health() messaging.HealthReport {
+	c.healthMu.RLock()
+	defer c.healthMu.RUnlock()
+
+	return messaging.HealthReport{
+		Name:      "vk",
+		State:     c.healthState,
+		StartedAt: c.healthStartedAt,
+		Message:   c.healthMessage,
+	}
+}
+
+func (c *Client) onMessageNew(_ context.Context, obj events.MessageNewObject) {
+	msg := obj.Message
+
+	if msg.Out || msg.FromID <= 0 {
+		return
+	}
+
+	senderID := strconv.Itoa(msg.FromID)
+	if !c.IsAllowed(senderID) {
+		c.log.Warn().Int("from_id", msg.FromID).Msg("vk: rejected user")
+
+		return
+	}
+
+	text := strings.TrimSpace(msg.Text)
+	peerID := strconv.Itoa(msg.PeerID)
+
+	incoming := messaging.IncomingMessage{
+		Sender: messaging.Sender{
+			ID:   senderID,
+			Name: "",
+		},
+		ChatID:    peerID,
+		Text:      text,
+		MessageID: msg.ConversationMessageID,
+	}
+	if strings.HasPrefix(text, "/") || strings.HasPrefix(text, "!") {
+		parts := strings.Fields(text)
+		incoming.Command = strings.TrimPrefix(parts[0], "/")
+
+		incoming.Command = strings.TrimPrefix(incoming.Command, "!")
+		if len(parts) > 1 {
+			incoming.Args = parts[1:]
+		}
+	}
+
+	c.recv <- incoming
+}
+
 func (c *Client) sendTyping(chatID string) {
 	peerID, err := strconv.Atoi(chatID)
 	if err != nil {
 		return
 	}
+
 	_, _ = c.vk.MessagesSetActivity(api.Params{
 		"peer_id":  peerID,
 		"type":     "typing",
@@ -276,57 +338,14 @@ func (c *Client) typingLoop(ctx context.Context) {
 	}
 }
 
-const maxVKMessageLen = 4096
-
-func splitForVK(text string) []string {
-	runes := []rune(text)
-	if len(runes) <= maxVKMessageLen {
-		return []string{text}
-	}
-	out := make([]string, 0, 2)
-
-	rest := string(runes)
-	for runeCount := len(runes); runeCount > maxVKMessageLen; runeCount = len([]rune(rest)) {
-		head := string([]rune(rest)[:maxVKMessageLen])
-		var cut int
-		if i := strings.LastIndex(head, "\n\n"); i > 0 {
-			cut = i + len("\n\n")
-		} else if i := strings.LastIndex(head, "\n"); i > 0 {
-			cut = i + len("\n")
-		} else {
-			cut = len(head)
-		}
-
-		out = append(out, rest[:cut])
-		rest = rest[cut:]
-	}
-	if rest != "" {
-		out = append(out, rest)
-	}
-
-	return out
-}
-
-// Health implements messaging.Client. It is safe to call from any
-// goroutine at any time and must not block.
-func (c *Client) Health() messaging.HealthReport {
-	c.healthMu.RLock()
-	defer c.healthMu.RUnlock()
-
-	return messaging.HealthReport{
-		Name:      "vk",
-		State:     c.healthState,
-		StartedAt: c.healthStartedAt,
-		Message:   c.healthMessage,
-	}
-}
-
 // setHealth atomically updates the snapshot fields. message is
 // a free-form detail string and must not contain secrets.
 func (c *Client) setHealth(state messaging.HealthState, _ string, message string) {
 	c.healthMu.Lock()
 	defer c.healthMu.Unlock()
+
 	c.healthState = state
+
 	c.healthMessage = message
 	if state == messaging.StateConnected && c.healthStartedAt.IsZero() {
 		c.healthStartedAt = time.Now()

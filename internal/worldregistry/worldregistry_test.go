@@ -1,9 +1,11 @@
-package worldregistry
+package worldregistry_test
 
 import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/bestxp/narrative-ai-agent/internal/worldregistry"
 )
 
 type fakeFS struct {
@@ -23,6 +25,7 @@ func (f *fakeFS) WriteRawAtomic(rel, body string) error {
 	if f.files == nil {
 		f.files = map[string]string{}
 	}
+
 	f.files[rel] = body
 
 	return nil
@@ -45,6 +48,7 @@ func (e *fsError) Error() string { return "fs: not found: " + e.rel }
 // and nothing else.
 func TestLoadFromYAML(t *testing.T) {
 	t.Parallel()
+
 	fs := &fakeFS{files: map[string]string{
 		"worlds/naruto/characters.yaml": `npcs:
   - slug: hinata
@@ -54,15 +58,19 @@ func TestLoadFromYAML(t *testing.T) {
     nicknames: [Демон-лис, Блондинка]
 `,
 	}}
-	r, err := Load(fs, "naruto")
+
+	r, err := worldregistry.Load(fs, "naruto")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(r.entries) != 2 {
-		t.Fatalf("entries=%d, want 2", len(r.entries))
+
+	entries := r.All()
+	if len(entries) != 2 {
+		t.Fatalf("entries=%d, want 2", len(entries))
 	}
-	if r.entries[0].Slug != "hinata" {
-		t.Errorf("first slug = %q, want hinata", r.entries[0].Slug)
+
+	if entries[0].Slug != "hinata" {
+		t.Errorf("first slug = %q, want hinata", entries[0].Slug)
 	}
 }
 
@@ -72,13 +80,16 @@ func TestLoadFromYAML(t *testing.T) {
 // call will seed it.
 func TestLoadEmpty(t *testing.T) {
 	t.Parallel()
+
 	fs := &fakeFS{files: map[string]string{}}
-	r, err := Load(fs, "naruto")
-	if !errors.Is(err, ErrEmpty) {
+
+	r, err := worldregistry.Load(fs, "naruto")
+	if !errors.Is(err, worldregistry.ErrEmpty) {
 		t.Fatalf("err = %v, want ErrEmpty", err)
 	}
-	if r == nil || len(r.entries) != 0 {
-		t.Fatalf("entries=%d, want 0", len(r.entries))
+
+	if r == nil || len(r.All()) != 0 {
+		t.Fatalf("entries=%d, want 0", len(r.All()))
 	}
 }
 
@@ -91,6 +102,7 @@ func TestLoadEmpty(t *testing.T) {
 // not.
 func TestNoMarkdownFallback(t *testing.T) {
 	t.Parallel()
+
 	fs := &fakeFS{files: map[string]string{
 		"worlds/naruto/characters.md": `# NPC: naruto
 | Имя | Файл | Прозвища |
@@ -98,13 +110,16 @@ func TestNoMarkdownFallback(t *testing.T) {
 | Хината Хьюга | hinata |  |
 `,
 	}}
-	r, err := Load(fs, "naruto")
-	if !errors.Is(err, ErrEmpty) {
+
+	r, err := worldregistry.Load(fs, "naruto")
+	if !errors.Is(err, worldregistry.ErrEmpty) {
 		t.Fatalf("err = %v, want ErrEmpty", err)
 	}
-	if r == nil || len(r.entries) != 0 {
-		t.Fatalf("entries=%d, want 0 (markdown must be ignored)", len(r.entries))
+
+	if r == nil || len(r.All()) != 0 {
+		t.Fatalf("entries=%d, want 0 (markdown must be ignored)", len(r.All()))
 	}
+
 	if _, ok := fs.files["worlds/naruto/characters.yaml"]; ok {
 		t.Fatal("characters.yaml must NOT be created from a characters.md side-channel")
 	}
@@ -116,12 +131,15 @@ func TestNoMarkdownFallback(t *testing.T) {
 // The registry must accept both.
 func TestLookupSlug(t *testing.T) {
 	t.Parallel()
-	r := &Registry{}
-	_ = r.Add(Entry{Slug: "naruto_uzumaki", DisplayName: "Наруто Узумаки"})
+
+	r := &worldregistry.Registry{}
+	_ = r.Add(worldregistry.Entry{Slug: "naruto_uzumaki", DisplayName: "Наруто Узумаки"})
+
 	e, ok := r.Lookup("naruto_uzumaki")
 	if !ok {
 		t.Fatal("slug lookup must hit")
 	}
+
 	if e.DisplayName != "Наруто Узумаки" {
 		t.Errorf("display_name = %q, want Наруто Узумаки", e.DisplayName)
 	}
@@ -134,8 +152,10 @@ func TestLookupSlug(t *testing.T) {
 // directive.
 func TestLookupEmpty(t *testing.T) {
 	t.Parallel()
-	r := &Registry{}
-	_ = r.Add(Entry{Slug: "hinata", DisplayName: "Хината"})
+
+	r := &worldregistry.Registry{}
+
+	_ = r.Add(worldregistry.Entry{Slug: "hinata", DisplayName: "Хината"})
 	for _, q := range []string{"", "   ", "\t"} {
 		if _, ok := r.Lookup(q); ok {
 			t.Errorf("query %q must not match", q)
@@ -149,8 +169,10 @@ func TestLookupEmpty(t *testing.T) {
 // trailing newline from the model still resolves.
 func TestLookupTrimsWhitespace(t *testing.T) {
 	t.Parallel()
-	r := &Registry{}
-	_ = r.Add(Entry{Slug: "hinata", DisplayName: "Хината"})
+
+	r := &worldregistry.Registry{}
+
+	_ = r.Add(worldregistry.Entry{Slug: "hinata", DisplayName: "Хината"})
 	if _, ok := r.Lookup("  Хината  "); !ok {
 		t.Fatal("trailing whitespace must not break lookup")
 	}
@@ -163,14 +185,17 @@ func TestLookupTrimsWhitespace(t *testing.T) {
 // caller (Create) logs and continues.
 func TestAddDuplicateSlug(t *testing.T) {
 	t.Parallel()
-	r := &Registry{}
-	if err := r.Add(Entry{Slug: "hinata", DisplayName: "Хината"}); err != nil {
+
+	r := &worldregistry.Registry{}
+	if err := r.Add(worldregistry.Entry{Slug: "hinata", DisplayName: "Хината"}); err != nil {
 		t.Fatal(err)
 	}
-	err := r.Add(Entry{Slug: "hinata", DisplayName: "Хината Хьюга"})
+
+	err := r.Add(worldregistry.Entry{Slug: "hinata", DisplayName: "Хината Хьюга"})
 	if err == nil {
 		t.Fatal("duplicate slug must be rejected")
 	}
+
 	if !strings.Contains(err.Error(), "hinata") {
 		t.Errorf("error must name the slug, got: %v", err)
 	}
@@ -182,20 +207,25 @@ func TestAddDuplicateSlug(t *testing.T) {
 // order explicitly.
 func TestSaveSortsBySlug(t *testing.T) {
 	t.Parallel()
-	r := &Registry{}
-	_ = r.Add(Entry{Slug: "zzz", DisplayName: "Z"})
-	_ = r.Add(Entry{Slug: "aaa", DisplayName: "A"})
-	_ = r.Add(Entry{Slug: "mmm", DisplayName: "M"})
+
+	r := &worldregistry.Registry{}
+	_ = r.Add(worldregistry.Entry{Slug: "zzz", DisplayName: "Z"})
+	_ = r.Add(worldregistry.Entry{Slug: "aaa", DisplayName: "A"})
+	_ = r.Add(worldregistry.Entry{Slug: "mmm", DisplayName: "M"})
+
 	out, err := r.Save()
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	idxA := strings.Index(out, "aaa")
 	idxM := strings.Index(out, "mmm")
+
 	idxZ := strings.Index(out, "zzz")
 	if idxA < 0 || idxM < 0 || idxZ < 0 {
 		t.Fatalf("slugs missing from output:\n%s", out)
 	}
+
 	if idxA >= idxM || idxM >= idxZ {
 		t.Fatalf("not sorted: aaa=%d mmm=%d zzz=%d", idxA, idxM, idxZ)
 	}

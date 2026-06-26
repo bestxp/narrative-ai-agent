@@ -45,10 +45,17 @@ func (s *SystemState) Load() (domain.SystemState, error) {
 	if err != nil {
 		return domain.SystemState{}, fmt.Errorf("load: ReadRaw failed: %w", err)
 	}
+
 	if body == "" {
 		return domain.DefaultSystemState(), nil
 	}
-	return domain.ParseSystemState(body)
+
+	st, err := domain.ParseSystemState(body)
+	if err != nil {
+		return domain.SystemState{}, fmt.Errorf("load: parse: %w", err)
+	}
+
+	return st, nil
 }
 
 // Save writes the entire system_state.md body in one shot.
@@ -59,10 +66,13 @@ func (s *SystemState) Save(state domain.SystemState) error {
 	if err != nil {
 		return fmt.Errorf("save: MarshalSystemState failed: %w", err)
 	}
+
 	if err := s.fs.WriteRawAtomic(domain.SystemStateFile, body); err != nil {
 		return fmt.Errorf("save: WriteRawAtomic failed: %w", err)
 	}
+
 	s.log.Debug().Msg("system_state saved")
+
 	return nil
 }
 
@@ -71,6 +81,7 @@ func (s *SystemState) Save(state domain.SystemState) error {
 // (Character, World, ChatID) are kept untouched.
 func (s *SystemState) TouchSession(state *domain.SystemState, isFreeform bool, now time.Time) {
 	state.Session.LastActive = now
+
 	state.Session.TurnCount++
 	if isFreeform {
 		state.Session.FreeformTurnCount++
@@ -101,10 +112,13 @@ func (s *SystemState) AppendCompaction(ev domain.CompactionEvent) (domain.System
 	if err != nil {
 		return domain.SystemState{}, err
 	}
+
 	state.Compaction.AppendCompactionEvent(ev, s.maxCompactionHistory)
+
 	if err := s.Save(state); err != nil {
 		return domain.SystemState{}, err
 	}
+
 	s.log.Info().
 		Time("at", ev.At).
 		Str("trigger", ev.Trigger).
@@ -112,6 +126,7 @@ func (s *SystemState) AppendCompaction(ev domain.CompactionEvent) (domain.System
 		Int("after", ev.AfterTokens).
 		Int("dropped", ev.DroppedTurns).
 		Msg("compaction logged")
+
 	if s.slow != nil {
 		_ = s.slow.Write("compaction", "", map[string]any{
 			"trigger":       ev.Trigger,
@@ -122,6 +137,7 @@ func (s *SystemState) AppendCompaction(ev domain.CompactionEvent) (domain.System
 			"kept_recent":   ev.KeptRecent,
 		})
 	}
+
 	return state, nil
 }
 
@@ -137,19 +153,23 @@ func (s *SystemState) RecordAutosave(hash string, now time.Time) (domain.SystemS
 	if err != nil {
 		return domain.SystemState{}, err
 	}
+
 	if hash != "" {
 		state.Autosave.LastHash = hash
 		state.Autosave.LastSaveAt = now
 		state.Autosave.TotalSaves++
 	}
+
 	if err := s.Save(state); err != nil {
 		return domain.SystemState{}, err
 	}
+
 	if s.slow != nil && hash != "" {
 		_ = s.slow.Write("autosave", "", map[string]any{
 			"hash":        hash,
 			"total_saves": state.Autosave.TotalSaves,
 		})
 	}
+
 	return state, nil
 }

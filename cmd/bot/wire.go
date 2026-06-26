@@ -34,6 +34,7 @@ func buildStorage(cfg *config.Config, log zerolog.Logger) (*storage.FileStore, s
 	if err != nil {
 		log.Fatal().Err(err).Msg("data root")
 	}
+
 	fs, err := storage.NewFileStoreWithLogger(absData, log)
 	if err != nil {
 		log.Fatal().Err(err).Msg("storage init")
@@ -48,6 +49,7 @@ func buildStorage(cfg *config.Config, log zerolog.Logger) (*storage.FileStore, s
 func buildGit(cfg *config.Config, log zerolog.Logger) *gitops.Operator {
 	if cfg.Git.Disabled {
 		log.Info().Msg("git disabled (config: git.disabled=true)")
+
 		return nil
 	}
 
@@ -63,7 +65,12 @@ func buildGit(cfg *config.Config, log zerolog.Logger) *gitops.Operator {
 // narrative role's config.
 //
 //nolint:ireturn // driver interface is the intended return type
-func buildLLMDriver(cfg *config.Config, role config.LLMRoleConfig, slow *slowlog.Logger, log zerolog.Logger) (llm.Driver, driverClient) {
+func buildLLMDriver(
+	cfg *config.Config,
+	role config.LLMRoleConfig,
+	slow *slowlog.Logger,
+	log zerolog.Logger,
+) (llm.Driver, driverClient) {
 	rc := llm.RoleConfig{
 		APIURL:                   role.APIURL,
 		APIKey:                   role.APIKey,
@@ -77,6 +84,7 @@ func buildLLMDriver(cfg *config.Config, role config.LLMRoleConfig, slow *slowlog
 		MaxEmptyRetries:          role.MaxEmptyRetries,
 		EmptyRetryTimeoutSeconds: role.EmptyRetryTimeoutSeconds,
 	}
+
 	var driver llm.Driver
 
 	switch cfg.LLM.Driver {
@@ -107,9 +115,11 @@ func buildSummarizer( //nolint:funlen // complex function; splitting would harm 
 	cfg *config.Config, role config.LLMRoleConfig,
 	snap promptpkg.NarrativeConfigSnapshot, slow *slowlog.Logger, log zerolog.Logger,
 ) *usecase.Summarizer {
-	var sumRole llm.RoleConfig
-	var sumPrompt string
-	var ok bool
+	var (
+		sumRole   llm.RoleConfig
+		sumPrompt string
+		ok        bool
+	)
 
 	if sumRoleCfg, hasSummary := cfg.Role("summary"); hasSummary {
 		sumRole = llm.RoleConfig{
@@ -124,14 +134,17 @@ func buildSummarizer( //nolint:funlen // complex function; splitting would harm 
 			MaxEmptyRetries:          sumRoleCfg.MaxEmptyRetries,
 			EmptyRetryTimeoutSeconds: sumRoleCfg.EmptyRetryTimeoutSeconds,
 		}
+
 		p, err := renderSummarizerPrompt("summary.md.tmpl", snap)
 		if err != nil {
 			log.Warn().Err(err).Str("path", sumRoleCfg.SystemPromptPath).Msg("summary prompt unreadable; dropping to fallback")
 		} else {
 			sumPrompt, ok = p, true
 		}
+
 		log.Info().Str("model", sumRoleCfg.Model).Msg("summarizer: dedicated role")
 	}
+
 	if !ok {
 		sumRole = llm.RoleConfig{
 			APIURL:                role.APIURL,
@@ -143,17 +156,21 @@ func buildSummarizer( //nolint:funlen // complex function; splitting would harm 
 			DisableThinking:       role.DisableThinking,
 			ReasoningEffort:       role.ReasoningEffort,
 		}
+
 		p, err := renderSummarizerPrompt("summary.md.tmpl", snap)
 		if err != nil || p == "" {
 			log.Warn().Err(err).Msg("fallback summary prompt unreadable; compaction will be drop-only")
 		} else {
 			sumPrompt, ok = p, true
 		}
+
 		log.Info().Str("model", role.Model).Msg("summarizer: fallback to narrative role (clamped)")
 	}
+
 	if !ok {
 		return nil
 	}
+
 	var sumLLM llm.Driver
 
 	switch cfg.LLM.Driver {
@@ -162,13 +179,19 @@ func buildSummarizer( //nolint:funlen // complex function; splitting would harm 
 	default:
 		sumLLM = llmopenai.New(sumRole, log)
 	}
+
 	var summarizer *usecase.Summarizer
 	if _, hasSummary := cfg.Role("summary"); hasSummary {
 		summarizer = usecase.NewSummarizer(sumLLM, sumRole, sumPrompt, slow, log)
 	} else {
 		summarizer = usecase.NewFallbackSummarizer(sumLLM, sumRole, sumPrompt, slow, log)
 	}
-	wireSummarizerPrompt("compaction_in_place.md.tmpl", snap, summarizer.SetCompactionInPlacePrompt, "in-place compaction will no-op", log)
+
+	wireSummarizerPrompt(
+		"compaction_in_place.md.tmpl", snap,
+		summarizer.SetCompactionInPlacePrompt,
+		"in-place compaction will no-op", log,
+	)
 
 	wireSummarizerPrompt("end_of_day.md.tmpl", snap, summarizer.SetEndOfDayPrompt, "end-of-day protocol will no-op", log)
 
@@ -206,6 +229,7 @@ func wireSummarizerPrompt(
 
 		return
 	}
+
 	setter(p)
 }
 
@@ -225,6 +249,7 @@ func buildSummarizerSlots(s *usecase.Summarizer) summarizerAdapterSlots {
 	if s == nil {
 		return slots
 	}
+
 	adapter := summarizerAdapter{s: s}
 	slots.npc = adapter
 	slots.lore = adapter
@@ -318,11 +343,13 @@ func buildMessagingPool(
 		}
 
 		clients = append(clients, tgClient)
+
 		commands := disp.Commands()
 		if err := tgClient.SetCommands(context.Background(), commands); err != nil {
 			log.Warn().Err(err).Msg("telegram: setMyCommands failed; native menu may be stale")
 		}
 	}
+
 	if cfg.Messaging.VK.IsConfigured() {
 		vkClient, err := vktransport.New(vktransport.Config{
 			AccessToken:      cfg.Messaging.VK.AccessToken,
@@ -337,6 +364,7 @@ func buildMessagingPool(
 
 		clients = append(clients, vkClient)
 	}
+
 	if cfg.Messaging.WSChat.IsConfigured() {
 		wsClient, err := wschat.New(cfg.Messaging.WSChat, disp, disp.Commands(), log)
 		if err != nil {
@@ -347,9 +375,11 @@ func buildMessagingPool(
 
 		log.Info().Str("addr", cfg.Messaging.WSChat.ListenAddr).Msg("wschat transport enabled")
 	}
+
 	if len(clients) == 0 {
 		log.Fatal().Msg("no messaging transport configured")
 	}
+
 	return messaging.NewMultiClient(clients...), clients
 }
 
@@ -368,13 +398,20 @@ func newAutoSaveState(cfg *config.Config) *autoSaveState {
 // reply (commands are excluded) and runs a git commit +
 // push when the threshold is reached. Returns the
 // notify text (empty when no save ran).
-func (a *autoSaveState) maybeAutoSave(ctx context.Context, log zerolog.Logger, c messaging.Client, gitOp *gitops.Operator, chatID string, verbose bool) string {
+func (a *autoSaveState) maybeAutoSave(
+	ctx context.Context,
+	log zerolog.Logger,
+	gitOp *gitops.Operator,
+	chatID string,
+	verbose bool,
+) string {
 	if a.threshold <= 0 || gitOp == nil {
 		return ""
 	}
+
 	if n := a.count.Add(1); int(n)%a.threshold != 0 {
 		return ""
 	}
 
-	return runAutoSave(ctx, log, c, gitOp, chatID, verbose)
+	return runAutoSave(ctx, log, gitOp, chatID, verbose)
 }

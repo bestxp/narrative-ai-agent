@@ -263,6 +263,7 @@ func BuildWorldStateMessage(world WorldContext, char CharacterContext) (string, 
 		SKILL:  char.CharacterSKILL,
 		Memory: char.CharacterMemory,
 	}
+
 	worldData := prompts.WorldData{
 		Name:        world.World,
 		State:       world.WorldState,
@@ -281,8 +282,10 @@ func BuildWorldStateMessage(world WorldContext, char CharacterContext) (string, 
 			displayNames[i] = n.DisplayName
 			profiles[i] = n.Profile
 		}
+
 		worldData.ActiveNPCs = prompts.ConvertNPCSnapshots(displayNames, profiles)
 	}
+
 	out, err := prompts.Render("world_state.md.tmpl", prompts.PromptData{
 		Character: charData,
 		World:     worldData,
@@ -328,6 +331,7 @@ func convertChronicle(in *Chronicle) *prompts.ChronicleData {
 	if in == nil {
 		return nil
 	}
+
 	out := &prompts.ChronicleData{
 		Periods: make([]prompts.ChroniclePeriodData, len(in.Periods)),
 		Days:    make([]prompts.ChronicleDayData, len(in.Days)),

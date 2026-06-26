@@ -118,10 +118,12 @@ type transitionYAML struct {
 // to 0 (the canonical start of any staged world).
 func Load(fs FileStore, world string, runtimeState StageRuntime) (*Staging, error) {
 	stagingPath := stagingPath(world)
+
 	stagingBody, err := fs.ReadRaw(stagingPath)
 	if err != nil {
 		return nil, fmt.Errorf("staging: read %s: %w", stagingPath, err)
 	}
+
 	if strings.TrimSpace(stagingBody) == "" {
 		return &Staging{Enabled: false}, nil
 	}
@@ -144,6 +146,7 @@ func Load(fs FileStore, world string, runtimeState StageRuntime) (*Staging, erro
 		if len(raw.Init) == 0 {
 			return nil, errors.New("staging: enabled but init is empty")
 		}
+
 		currentID = raw.Init[0]
 	}
 
@@ -212,14 +215,17 @@ func (s *Staging) UpdateStage(_ FileStore, _, nextID string) error {
 	if nextID == "" {
 		return errors.New("staging: next_id is empty")
 	}
+
 	found := false
 
 	for _, t := range s.Current.Next {
 		if t.ID == nextID {
 			found = true
+
 			break
 		}
 	}
+
 	if !found {
 		return fmt.Errorf("staging: %q is not a valid transition from %q", nextID, s.Current.ID)
 	}
@@ -257,11 +263,14 @@ func (s *Staging) ApplyPending(_ FileStore, _ string) (StageRuntime, error) {
 			Next:          s.Next,
 		}, nil
 	}
+
 	stageMap := buildStageMap(&s.raw)
+
 	next, ok := stageMap[s.Next]
 	if !ok {
 		return StageRuntime{}, fmt.Errorf("staging: pending stage %q not found", s.Next)
 	}
+
 	s.Current = next
 	s.TimelineIndex = 0
 	s.Next = ""
@@ -282,9 +291,11 @@ func (s *Staging) Render(characterName string) string {
 	var b strings.Builder
 	b.WriteString("### Сюжетная стадия\n")
 	fmt.Fprintf(&b, "**%s — %s**\n", s.Current.ID, s.Current.Name)
+
 	if s.Next != "" {
 		fmt.Fprintf(&b, "(завершается) → %s\n", s.Next)
 	}
+
 	b.WriteString("\n")
 
 	desc := s.Current.Description
@@ -305,13 +316,16 @@ func (s *Staging) Render(characterName string) string {
 			} else if i == s.TimelineIndex {
 				prefix = "[>]"
 			}
+
 			fmt.Fprintf(&b, "%s %s: %s\n", prefix, p.Days, p.Info)
 		}
+
 		b.WriteString("\n")
 	}
 
 	if len(s.Current.Next) > 0 {
 		b.WriteString("**Возможные переходы:**\n")
+
 		for _, t := range s.Current.Next {
 			reqs := strings.Join(t.Requirements, "; ")
 			fmt.Fprintf(&b, "- → %s, если: %s\n", t.ID, reqs)
@@ -366,17 +380,20 @@ func buildStageMap(raw *stagingFile) map[string]Stage {
 				Description: strings.TrimSpace(ty.Description),
 			}
 		}
+
 		next := make([]Transition, len(sy.Next))
 		for i, ny := range sy.Next {
 			reqs := make([]string, len(ny.Requirements))
 			for j, r := range ny.Requirements {
 				reqs[j] = strings.TrimSpace(r)
 			}
+
 			next[i] = Transition{
 				ID:           strings.TrimSpace(ny.ID),
 				Requirements: reqs,
 			}
 		}
+
 		out[strings.TrimSpace(sy.ID)] = Stage{
 			ID:          strings.TrimSpace(sy.ID),
 			Name:        strings.TrimSpace(sy.Name),
@@ -389,11 +406,17 @@ func buildStageMap(raw *stagingFile) map[string]Stage {
 	return out
 }
 
-//nolint:gocognit // complex validation logic
-func validateStagingFile(raw *stagingFile) error { //nolint:funlen // complex function; splitting would harm readability.
+// validateStagingFile is a flat sequence of field-level validations; each branch maps to one config field
+// and is clearer inline than behind a helper
+//
+// each branch maps to one config field, clearer inline than behind a helper.
+//
+//nolint:gocognit,cyclop,funlen // validateStagingFile is a flat sequence of field-level validations;
+func validateStagingFile(raw *stagingFile) error {
 	if !raw.Enabled {
 		return nil
 	}
+
 	if len(raw.Init) == 0 {
 		return errors.New("enabled=true but init is empty")
 	}
@@ -405,9 +428,11 @@ func validateStagingFile(raw *stagingFile) error { //nolint:funlen // complex fu
 		if id == "" {
 			return errors.New("stage with empty id")
 		}
+
 		if _, ok := ids[id]; ok {
 			return fmt.Errorf("duplicate stage id %q", id)
 		}
+
 		ids[id] = struct{}{}
 	}
 
@@ -423,9 +448,11 @@ func validateStagingFile(raw *stagingFile) error { //nolint:funlen // complex fu
 			if strings.TrimSpace(p.Info) == "" {
 				return fmt.Errorf("stage %q: timeline point with empty info", st.ID)
 			}
+
 			if strings.TrimSpace(p.Description) == "" {
 				return fmt.Errorf("stage %q: timeline point %q: empty description", st.ID, p.Info)
 			}
+
 			if p.Days != "" {
 				hasDays = true
 
@@ -436,6 +463,7 @@ func validateStagingFile(raw *stagingFile) error { //nolint:funlen // complex fu
 				noDays = true
 			}
 		}
+
 		if len(st.Next) == 0 {
 			return fmt.Errorf("stage %q: no transitions", st.ID)
 		}
@@ -444,14 +472,17 @@ func validateStagingFile(raw *stagingFile) error { //nolint:funlen // complex fu
 			if strings.TrimSpace(n.ID) == "" {
 				return fmt.Errorf("stage %q: transition with empty id", st.ID)
 			}
+
 			if _, ok := ids[n.ID]; !ok {
 				return fmt.Errorf("stage %q: transition to unknown stage %q", st.ID, n.ID)
 			}
+
 			if len(n.Requirements) == 0 {
 				return fmt.Errorf("stage %q: transition %q: no requirements", st.ID, n.ID)
 			}
 		}
 	}
+
 	if hasDays && noDays {
 		return errors.New("timeline days must be either present for all points or absent for all")
 	}
@@ -481,22 +512,27 @@ func parseDaysRange(s string) (lo, hi int, err error) {
 	if s == "" {
 		return 0, 0, nil
 	}
+
 	if strings.Contains(s, "-") {
 		parts := strings.SplitN(s, "-", 2)
+
 		lo, err = strconv.Atoi(strings.TrimSpace(parts[0]))
 		if err != nil {
 			return 0, 0, fmt.Errorf("parse_days_range: Atoi failed: %w", err)
 		}
+
 		hi, err = strconv.Atoi(strings.TrimSpace(parts[1]))
 		if err != nil {
 			return 0, 0, fmt.Errorf("wrap: %w", err)
 		}
+
 		if lo > hi {
 			return 0, 0, errors.New("min > max")
 		}
 
 		return lo, hi, nil
 	}
+
 	n, err := strconv.Atoi(s)
 	if err != nil {
 		return 0, 0, fmt.Errorf("wrap: %w", err)

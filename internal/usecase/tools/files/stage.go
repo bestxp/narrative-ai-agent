@@ -30,6 +30,7 @@ func (s *StageTool) UpdateStage(_ context.Context, world, nextID string) (bool, 
 	if world == "" {
 		return false, errors.New("stage: world is empty")
 	}
+
 	if nextID == "" {
 		return false, errors.New("stage: next_id is empty")
 	}
@@ -119,6 +120,7 @@ func (s *StageTool) ApplyPendingStage(world string) error {
 		Str("world", world).
 		Str("current", newRT.Current).
 		Msg("apply_pending_stage: transition activated")
+
 	return nil
 }
 

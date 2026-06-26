@@ -1,9 +1,10 @@
-package npcprofile
+package npcprofile_test
 
 import (
 	"strings"
 	"testing"
 
+	"github.com/bestxp/narrative-ai-agent/internal/npcprofile"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -33,7 +34,8 @@ last_update: "День 3, обед в Ичираку"
 
 func TestLoad_OK(t *testing.T) {
 	t.Parallel()
-	p, err := Load(fullYAML)
+
+	p, err := npcprofile.Load(fullYAML)
 	require.NoError(t, err)
 	assert.Equal(t, "Хината Хьюга", p.DisplayName)
 	assert.Equal(t, "hinata_hyuga", p.FileSlug)
@@ -58,35 +60,40 @@ func TestLoad_OK(t *testing.T) {
 
 func TestLoad_Empty(t *testing.T) {
 	t.Parallel()
-	_, err := Load("")
-	require.ErrorIs(t, err, ErrNotFound)
-	_, err = Load("   \n\t  ")
-	require.ErrorIs(t, err, ErrNotFound)
+
+	_, err := npcprofile.Load("")
+	require.ErrorIs(t, err, npcprofile.ErrNotFound)
+	_, err = npcprofile.Load("   \n\t  ")
+	require.ErrorIs(t, err, npcprofile.ErrNotFound)
 }
 
 func TestLoad_BadYAML(t *testing.T) {
 	t.Parallel()
-	_, err := Load("display_name: [unclosed")
+
+	_, err := npcprofile.Load("display_name: [unclosed")
 	assert.Error(t, err)
 }
 
 func TestSave_RoundTrip(t *testing.T) {
 	t.Parallel()
-	p, err := Load(fullYAML)
+
+	p, err := npcprofile.Load(fullYAML)
 	require.NoError(t, err)
 	out, err := p.Save()
 	require.NoError(t, err)
-	p2, err := Load(out)
+	p2, err := npcprofile.Load(out)
 	require.NoError(t, err)
 	assert.Equal(t, p, p2)
 }
 
 func TestBuildMarkdown_AllSections(t *testing.T) {
 	t.Parallel()
-	p, err := Load(fullYAML)
+
+	p, err := npcprofile.Load(fullYAML)
 	require.NoError(t, err)
 	md, err := p.BuildMarkdown()
 	require.NoError(t, err)
+
 	for _, header := range []string{
 		"# Хината Хьюга",
 		"## Темперамент",
@@ -111,7 +118,8 @@ func TestBuildMarkdown_AllSections(t *testing.T) {
 
 func TestBuildMarkdown_EmptySectionsOmitted(t *testing.T) {
 	t.Parallel()
-	p := Profile{
+
+	p := npcprofile.Profile{
 		DisplayName: "Ирука",
 		FileSlug:    "iruka",
 		Temperament: "Добрый учитель",
@@ -127,96 +135,105 @@ func TestBuildMarkdown_EmptySectionsOmitted(t *testing.T) {
 
 func TestMatchSection(t *testing.T) {
 	t.Parallel()
-	cases := map[string]SectionKind{
-		"темперамент":          SectionTemperament,
-		"Темперамент":          SectionTemperament,
-		"temperament":          SectionTemperament,
-		"RelationsGG":          SectionRelationsGG,
-		"отношения с гг":       SectionRelationsGG,
-		"Relations_npcs":       SectionRelationsNPCs,
-		"npc_relations":        SectionRelationsNPCs,
-		"abilities":            SectionAbilities,
-		"Способности":          SectionAbilities,
-		"personal_memory":      SectionPersonalMemory,
-		"Личная память":        SectionPersonalMemory,
-		"личная память/факты":  SectionPersonalMemory,
-		"status":               SectionCurrentStatus,
-		"текущий статус":       SectionCurrentStatus,
-		"critical_knowledge":   SectionCriticalKnowledge,
-		"критические знания":   SectionCriticalKnowledge,
-		"nicknames":            SectionNicknames,
-		"Никнеймы":             SectionNicknames,
-		"last_update":          SectionLastUpdate,
-		"последнее обновление": SectionLastUpdate,
-		"unknown_section":      SectionUnknown,
-		"":                     SectionUnknown,
+
+	cases := map[string]npcprofile.SectionKind{
+		"темперамент":          npcprofile.SectionTemperament,
+		"Темперамент":          npcprofile.SectionTemperament,
+		"temperament":          npcprofile.SectionTemperament,
+		"RelationsGG":          npcprofile.SectionRelationsGG,
+		"отношения с гг":       npcprofile.SectionRelationsGG,
+		"Relations_npcs":       npcprofile.SectionRelationsNPCs,
+		"npc_relations":        npcprofile.SectionRelationsNPCs,
+		"abilities":            npcprofile.SectionAbilities,
+		"Способности":          npcprofile.SectionAbilities,
+		"personal_memory":      npcprofile.SectionPersonalMemory,
+		"Личная память":        npcprofile.SectionPersonalMemory,
+		"личная память/факты":  npcprofile.SectionPersonalMemory,
+		"status":               npcprofile.SectionCurrentStatus,
+		"текущий статус":       npcprofile.SectionCurrentStatus,
+		"critical_knowledge":   npcprofile.SectionCriticalKnowledge,
+		"критические знания":   npcprofile.SectionCriticalKnowledge,
+		"nicknames":            npcprofile.SectionNicknames,
+		"Никнеймы":             npcprofile.SectionNicknames,
+		"last_update":          npcprofile.SectionLastUpdate,
+		"последнее обновление": npcprofile.SectionLastUpdate,
+		"unknown_section":      npcprofile.SectionUnknown,
+		"":                     npcprofile.SectionUnknown,
 	}
 	for in, want := range cases {
-		assert.Equal(t, want, MatchSection(in), "input=%q", in)
+		assert.Equal(t, want, npcprofile.MatchSection(in), "input=%q", in)
 	}
 }
 
 func TestUpdateSection_Replace(t *testing.T) {
 	t.Parallel()
-	p, _ := Load(fullYAML)
-	changed := p.UpdateSection(SectionTemperament, "Другая черта")
+
+	p, _ := npcprofile.Load(fullYAML)
+	changed := p.UpdateSection(npcprofile.SectionTemperament, "Другая черта")
 	assert.True(t, changed)
 	assert.Equal(t, "Другая черта", p.Temperament)
 }
 
 func TestUpdateSection_ReplaceSameTextNoop(t *testing.T) {
 	t.Parallel()
-	p, _ := Load(fullYAML)
-	changed := p.UpdateSection(SectionTemperament, p.Temperament)
+
+	p, _ := npcprofile.Load(fullYAML)
+	changed := p.UpdateSection(npcprofile.SectionTemperament, p.Temperament)
 	assert.False(t, changed)
 }
 
 func TestUpdateSection_EmptyTextNoop(t *testing.T) {
 	t.Parallel()
-	p, _ := Load(fullYAML)
-	changed := p.UpdateSection(SectionTemperament, "   ")
+
+	p, _ := npcprofile.Load(fullYAML)
+	changed := p.UpdateSection(npcprofile.SectionTemperament, "   ")
 	assert.False(t, changed)
 	assert.Equal(t, "Застенчивая, но решительная в бою", p.Temperament)
 }
 
 func TestUpdateSection_AppendAbility(t *testing.T) {
 	t.Parallel()
-	p, _ := Load(fullYAML)
-	changed := p.UpdateSection(SectionAbilities, "Илливой техника")
+
+	p, _ := npcprofile.Load(fullYAML)
+	changed := p.UpdateSection(npcprofile.SectionAbilities, "Илливой техника")
 	assert.True(t, changed)
 	assert.Contains(t, p.Abilities, "Илливой техника")
 }
 
 func TestUpdateSection_DedupAbility(t *testing.T) {
 	t.Parallel()
-	p, _ := Load(fullYAML)
+
+	p, _ := npcprofile.Load(fullYAML)
 	before := len(p.Abilities)
-	changed := p.UpdateSection(SectionAbilities, p.Abilities[0])
+	changed := p.UpdateSection(npcprofile.SectionAbilities, p.Abilities[0])
 	assert.False(t, changed)
 	assert.Len(t, p.Abilities, before)
 }
 
 func TestUpdateSection_AppendPersonalMemory(t *testing.T) {
 	t.Parallel()
-	p, _ := Load(fullYAML)
-	changed := p.UpdateSection(SectionPersonalMemory, "День 4: новый факт")
+
+	p, _ := npcprofile.Load(fullYAML)
+	changed := p.UpdateSection(npcprofile.SectionPersonalMemory, "День 4: новый факт")
 	assert.True(t, changed)
 	assert.Equal(t, "День 4: новый факт", p.PersonalMemory[len(p.PersonalMemory)-1])
 }
 
 func TestUpdateSection_PersonalMemoryCaseInsensitiveDedup(t *testing.T) {
 	t.Parallel()
-	p, _ := Load(fullYAML)
+
+	p, _ := npcprofile.Load(fullYAML)
 	before := len(p.PersonalMemory)
-	changed := p.UpdateSection(SectionPersonalMemory, strings.ToUpper(p.PersonalMemory[0]))
+	changed := p.UpdateSection(npcprofile.SectionPersonalMemory, strings.ToUpper(p.PersonalMemory[0]))
 	assert.False(t, changed)
 	assert.Len(t, p.PersonalMemory, before)
 }
 
 func TestUpdateSection_AppendRelation(t *testing.T) {
 	t.Parallel()
-	p, _ := Load(fullYAML)
-	changed := p.UpdateSection(SectionRelationsNPCs, "Саске: неприязнь")
+
+	p, _ := npcprofile.Load(fullYAML)
+	changed := p.UpdateSection(npcprofile.SectionRelationsNPCs, "Саске: неприязнь")
 	assert.True(t, changed)
 	require.Len(t, p.RelationsNPCs, 3)
 	assert.Equal(t, "Саске", p.RelationsNPCs[2].Target)
@@ -225,8 +242,9 @@ func TestUpdateSection_AppendRelation(t *testing.T) {
 
 func TestUpdateSection_ReplaceExistingRelation(t *testing.T) {
 	t.Parallel()
-	p, _ := Load(fullYAML)
-	changed := p.UpdateSection(SectionRelationsNPCs, "Наруто: помирились, отклонение от канона")
+
+	p, _ := npcprofile.Load(fullYAML)
+	changed := p.UpdateSection(npcprofile.SectionRelationsNPCs, "Наруто: помирились, отклонение от канона")
 	assert.True(t, changed)
 	require.Len(t, p.RelationsNPCs, 2)
 	// Same target, new note.
@@ -236,8 +254,9 @@ func TestUpdateSection_ReplaceExistingRelation(t *testing.T) {
 
 func TestUpdateSection_RelationNoColon(t *testing.T) {
 	t.Parallel()
-	p := Profile{DisplayName: "X"}
-	changed := p.UpdateSection(SectionRelationsNPCs, "Саске")
+
+	p := npcprofile.Profile{DisplayName: "X"}
+	changed := p.UpdateSection(npcprofile.SectionRelationsNPCs, "Саске")
 	assert.True(t, changed)
 	require.Len(t, p.RelationsNPCs, 1)
 	assert.Equal(t, "Саске", p.RelationsNPCs[0].Target)
@@ -246,37 +265,42 @@ func TestUpdateSection_RelationNoColon(t *testing.T) {
 
 func TestUpdateSection_AppendNickname(t *testing.T) {
 	t.Parallel()
-	p, _ := Load(fullYAML)
-	changed := p.UpdateSection(SectionNicknames, "Хината-сама")
+
+	p, _ := npcprofile.Load(fullYAML)
+	changed := p.UpdateSection(npcprofile.SectionNicknames, "Хината-сама")
 	assert.True(t, changed)
 	assert.Contains(t, p.Nicknames, "Хината-сама")
 }
 
 func TestUpdateSection_AppendCriticalKnowledge(t *testing.T) {
 	t.Parallel()
-	p, _ := Load(fullYAML)
-	changed := p.UpdateSection(SectionCriticalKnowledge, "Тайна клана Хьюга")
+
+	p, _ := npcprofile.Load(fullYAML)
+	changed := p.UpdateSection(npcprofile.SectionCriticalKnowledge, "Тайна клана Хьюга")
 	assert.True(t, changed)
 	assert.Contains(t, p.CriticalKnowledge, "Тайна клана Хьюга")
 }
 
 func TestUpdateSection_LastUpdateReplace(t *testing.T) {
 	t.Parallel()
-	p, _ := Load(fullYAML)
-	changed := p.UpdateSection(SectionLastUpdate, "День 5, новая сцена")
+
+	p, _ := npcprofile.Load(fullYAML)
+	changed := p.UpdateSection(npcprofile.SectionLastUpdate, "День 5, новая сцена")
 	assert.True(t, changed)
 	assert.Equal(t, "День 5, новая сцена", p.LastUpdate)
 }
 
 func TestUpdateSection_UnknownSectionNoop(t *testing.T) {
 	t.Parallel()
-	p, _ := Load(fullYAML)
-	changed := p.UpdateSection(SectionUnknown, "anything")
+
+	p, _ := npcprofile.Load(fullYAML)
+	changed := p.UpdateSection(npcprofile.SectionUnknown, "anything")
 	assert.False(t, changed)
 }
 
 func TestMigrateFromMarkdown_OK(t *testing.T) {
 	t.Parallel()
+
 	body := `# Хината Хьюга
 
 ## Темперамент
@@ -309,7 +333,7 @@ func TestMigrateFromMarkdown_OK(t *testing.T) {
 ## Последнее обновление
 День 3, обед в Ичираку
 `
-	p, err := MigrateFromMarkdown(body, "hinata_hyuga")
+	p, err := npcprofile.MigrateFromMarkdown(body, "hinata_hyuga")
 	require.NoError(t, err)
 	assert.Equal(t, "Хината Хьюга", p.DisplayName)
 	assert.Equal(t, "Застенчивая, но решительная в бою", p.Temperament)
@@ -327,14 +351,16 @@ func TestMigrateFromMarkdown_OK(t *testing.T) {
 
 func TestMigrateFromMarkdown_Empty(t *testing.T) {
 	t.Parallel()
-	_, err := MigrateFromMarkdown("", "slug")
-	assert.ErrorIs(t, err, ErrNotFound)
+
+	_, err := npcprofile.MigrateFromMarkdown("", "slug")
+	assert.ErrorIs(t, err, npcprofile.ErrNotFound)
 }
 
 func TestMigrateFromMarkdown_Minimal(t *testing.T) {
 	t.Parallel()
+
 	body := "# Ирука"
-	p, err := MigrateFromMarkdown(body, "iruka")
+	p, err := npcprofile.MigrateFromMarkdown(body, "iruka")
 	require.NoError(t, err)
 	assert.Equal(t, "Ирука", p.DisplayName)
 	assert.Equal(t, "iruka", p.FileSlug)
@@ -344,6 +370,7 @@ func TestMigrateFromMarkdown_Minimal(t *testing.T) {
 
 func TestMigrateFromMarkdown_NumberedList(t *testing.T) {
 	t.Parallel()
+
 	body := `# X
 
 ## Личная память/факты
@@ -351,7 +378,7 @@ func TestMigrateFromMarkdown_NumberedList(t *testing.T) {
 2. Второй факт
 3. Третий факт
 `
-	p, err := MigrateFromMarkdown(body, "x")
+	p, err := npcprofile.MigrateFromMarkdown(body, "x")
 	require.NoError(t, err)
 	require.Len(t, p.PersonalMemory, 3)
 	assert.Equal(t, "Первый факт", p.PersonalMemory[0])
@@ -360,7 +387,8 @@ func TestMigrateFromMarkdown_NumberedList(t *testing.T) {
 
 func TestSortedKeys(t *testing.T) {
 	t.Parallel()
-	p, _ := Load(fullYAML)
+
+	p, _ := npcprofile.Load(fullYAML)
 	keys := p.SortedKeys()
 	// All 9 sections populated.
 	assert.Len(t, keys, 9)
@@ -372,7 +400,8 @@ func TestSortedKeys(t *testing.T) {
 
 func TestSortedKeys_Partial(t *testing.T) {
 	t.Parallel()
-	p := Profile{DisplayName: "X", Temperament: "Y"}
+
+	p := npcprofile.Profile{DisplayName: "X", Temperament: "Y"}
 	keys := p.SortedKeys()
 	assert.Equal(t, []string{"Темперамент"}, keys)
 }
@@ -383,7 +412,7 @@ func TestNPCPersonalMemoryLimit(t *testing.T) {
 	// summarizer will compare against. If we change
 	// it we need to update both call sites in
 	// sync, so we assert the value here.
-	assert.Equal(t, 25, NPCPersonalMemoryLimit)
+	assert.Equal(t, 25, npcprofile.NPCPersonalMemoryLimit)
 }
 
 // TestProfile_BuildCompact: the compact LOD drops the
@@ -394,7 +423,8 @@ func TestNPCPersonalMemoryLimit(t *testing.T) {
 // when the cast grows past 4-5 NPCs.
 func TestProfile_BuildCompact(t *testing.T) {
 	t.Parallel()
-	p, err := Load(`display_name: "Какаши"
+
+	p, err := npcprofile.Load(`display_name: "Какаши"
 file_slug: "kakashi"
 temperament: "хладнокровный, методичный"
 relations_gg: "наставник ГГ, уважает"
@@ -439,7 +469,8 @@ last_update: "тренировал ГГ"
 // expensive.
 func TestProfile_BuildOneLine(t *testing.T) {
 	t.Parallel()
-	p, err := Load(`display_name: "Хината"
+
+	p, err := npcprofile.Load(`display_name: "Хината"
 file_slug: "hinata"
 temperament: "застенчивая, добрая"
 current_status: "тренируется у Какаши"
@@ -466,7 +497,8 @@ personal_memory:
 // empty placeholders.
 func TestProfile_BuildCompact_EmptyFieldsDropped(t *testing.T) {
 	t.Parallel()
-	p, err := Load(`display_name: "Безликий"
+
+	p, err := npcprofile.Load(`display_name: "Безликий"
 file_slug: "x"
 `)
 	require.NoError(t, err)
@@ -485,8 +517,11 @@ file_slug: "x"
 // the field.
 func TestProfile_BuildOneLine_TruncatesLongFields(t *testing.T) {
 	t.Parallel()
+
 	long := strings.Repeat("X", 200)
-	p, err := Load("display_name: \"Long\"\nfile_slug: \"x\"\ntemperament: \"" + long + "\"\ncurrent_status: \"" + long + "\"\n")
+	body := "display_name: \"Long\"\nfile_slug: \"x\"\ntemperament: \"" + long +
+		"\"\ncurrent_status: \"" + long + "\"\n"
+	p, err := npcprofile.Load(body)
 	require.NoError(t, err)
 
 	one := p.BuildOneLine()

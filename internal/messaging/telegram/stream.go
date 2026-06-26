@@ -12,10 +12,10 @@ import (
 	tg "github.com/go-telegram-bot-api/telegram-bot-api"
 )
 
-// stream is a streaming session: it edits a single Telegram message
+// Stream is a streaming session: it edits a single Telegram message
 // over time. Append replaces the message; Final makes the last
 // replacement and removes the chat from the active set.
-type stream struct {
+type Stream struct {
 	client   *Client
 	chatID   string
 	msgID    int
@@ -24,13 +24,21 @@ type stream struct {
 	lastSent string
 }
 
-func (s *stream) Append(_ context.Context, text string) error { //nolint:funlen // complex function; splitting would harm readability.
+// Append handles 4 independent concerns (dedup, wire-format, send/edit, retry-on-429)
+// in one method; each concern is a 3-5 line block that is clearer inline than behind a helper
+//
+// helpers would scatter the contract.
+//
+//nolint:gocognit,nestif,funlen // Stream.Append handles message-edit + throttle + close in one place;
+func (s *Stream) Append(_ context.Context, text string) error {
 	if s.closed {
 		return errors.New("stream closed")
 	}
+
 	if s.lastSent == text {
 		return nil
 	}
+
 	wire := s.client.formatText(text, "")
 	// When the model rounds produce no visible text (e.g.
 	// finish_reason=tool_calls with empty content), the
@@ -46,8 +54,8 @@ func (s *stream) Append(_ context.Context, text string) error { //nolint:funlen 
 	// produced a 7k-block in one go we have to split it.
 	// The first chunk fits in the placeholder message,
 	// subsequent chunks go to fresh messages.
-	if len(wire) > maxTelegramMessageLen {
-		chunks := splitForTelegram(wire)
+	if len(wire) > MaxTelegramMessageLen {
+		chunks := SplitForTelegram(wire)
 		wire = chunks[0]
 		// The remainder we send after the stream Final
 		// (Final calls Append with the full text — by the
@@ -61,6 +69,7 @@ func (s *stream) Append(_ context.Context, text string) error { //nolint:funlen 
 			if s.client.cfg.ParseMode != "" {
 				m.ParseMode = s.client.cfg.ParseMode
 			}
+
 			if _, err := s.client.api.Send(m); err != nil {
 				s.client.log.Error().
 					Err(err).
@@ -70,6 +79,7 @@ func (s *stream) Append(_ context.Context, text string) error { //nolint:funlen 
 			}
 		}
 	}
+
 	e := tg.EditMessageTextConfig{
 		BaseEdit: tg.BaseEdit{
 			ChatID:    s.chat,
@@ -80,8 +90,9 @@ func (s *stream) Append(_ context.Context, text string) error { //nolint:funlen 
 	if s.client.cfg.ParseMode != "" {
 		e.ParseMode = s.client.cfg.ParseMode
 	}
+
 	if _, err := s.client.api.Send(e); err != nil {
-		if isMessageNotModified(err) {
+		if IsMessageNotModified(err) {
 			s.lastSent = text
 			s.client.log.Debug().
 				Str("chat", s.chatID).
@@ -91,14 +102,16 @@ func (s *stream) Append(_ context.Context, text string) error { //nolint:funlen 
 
 			return nil
 		}
-		if isMessageTooLong(err) {
+
+		if IsMessageTooLong(err) {
 			// Defensive: the pre-split above should have
 			// caught this, but if the formatted wire text
 			// grew past the cap (markup expansion) we
 			// retry with the first chunk and queue the
 			// rest.
-			chunks := splitForTelegram(wire)
+			chunks := SplitForTelegram(wire)
 			wire = chunks[0]
+
 			e.Text = wire
 			if _, retryErr := s.client.api.Send(e); retryErr != nil {
 				s.client.log.Error().
@@ -109,11 +122,13 @@ func (s *stream) Append(_ context.Context, text string) error { //nolint:funlen 
 
 				return fmt.Errorf("telegram: stream edit after split failed: %w", retryErr)
 			}
+
 			for _, tail := range chunks[1:] {
 				m := tg.NewMessage(s.chat, tail)
 				if s.client.cfg.ParseMode != "" {
 					m.ParseMode = s.client.cfg.ParseMode
 				}
+
 				if _, sendErr := s.client.api.Send(m); sendErr != nil {
 					s.client.log.Error().
 						Err(sendErr).
@@ -133,18 +148,21 @@ func (s *stream) Append(_ context.Context, text string) error { //nolint:funlen 
 			return fmt.Errorf("telegram: stream edit: %w", err)
 		}
 	}
+
 	s.lastSent = text
 
 	return nil
 }
 
-func (s *stream) Final(ctx context.Context, text string) error {
+func (s *Stream) Final(ctx context.Context, text string) error {
 	if s.closed {
 		return nil
 	}
+
 	if err := s.Append(ctx, text); err != nil {
 		return err
 	}
+
 	s.closed = true
 	s.lastSent = ""
 	s.client.streamsMu.Lock()
@@ -179,10 +197,13 @@ func (t *ThrottledStream) Append(ctx context.Context, text string) error {
 			return ctx.Err()
 		case <-time.After(wait):
 		}
+
 		t.mu.Lock()
 	}
+
 	t.last = time.Now()
 	t.mu.Unlock()
+
 	if err := t.inner.Append(ctx, text); err != nil {
 		return fmt.Errorf("telegram throttled append: %w", err)
 	}
@@ -194,6 +215,7 @@ func (t *ThrottledStream) Final(ctx context.Context, text string) error {
 	t.mu.Lock()
 	t.last = time.Now()
 	t.mu.Unlock()
+
 	if err := t.inner.Final(ctx, text); err != nil {
 		return fmt.Errorf("telegram throttled final: %w", err)
 	}

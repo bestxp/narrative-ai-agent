@@ -146,6 +146,7 @@ func ParseSystemState(content string) (SystemState, error) {
 	if content == "" {
 		return SystemState{}, errors.New("system_state.md: empty document")
 	}
+
 	var s SystemState
 	if err := yaml.Unmarshal([]byte(content), &s); err != nil {
 		return SystemState{}, fmt.Errorf("system_state.md: parse: %w", err)
@@ -172,6 +173,7 @@ func (c *CompactionLog) AppendCompactionEvent(ev CompactionEvent, maxEntries int
 
 	c.History = append(c.History, ev)
 	c.TotalCompactions++
+
 	c.LastCompactionAt = ev.At
 	if len(c.History) > maxEntries {
 		// Drop from the front. Slice reallocation is cheap at

@@ -1,4 +1,4 @@
-package storage
+package storage_test
 
 import (
 	"os"
@@ -6,14 +6,16 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
+	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage/storagetest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func newTestStore(t *testing.T) *FileStore {
+func newTestStore(t *testing.T) *storage.FileStore {
 	t.Helper()
 	dir := t.TempDir()
-	fs, err := NewFileStore(dir)
+	fs, err := storage.NewFileStore(dir)
 	require.NoError(t, err)
 
 	return fs
@@ -42,7 +44,7 @@ func TestPatch_NotFound(t *testing.T) {
 	fs := newTestStore(t)
 	require.NoError(t, fs.WriteRawAtomic("a.md", "x"))
 	err := fs.Patch("a.md", "y", "z")
-	assert.ErrorIs(t, err, ErrPatchNotFound)
+	assert.ErrorIs(t, err, storage.ErrPatchNotFound)
 }
 
 func TestPatch_Ambiguous(t *testing.T) {
@@ -50,7 +52,7 @@ func TestPatch_Ambiguous(t *testing.T) {
 	fs := newTestStore(t)
 	require.NoError(t, fs.WriteRawAtomic("a.md", "x\nx\n"))
 	err := fs.Patch("a.md", "x", "y")
-	assert.ErrorIs(t, err, ErrPatchAmbiguous)
+	assert.ErrorIs(t, err, storage.ErrPatchAmbiguous)
 }
 
 func TestAppendIfMissing(t *testing.T) {
@@ -110,10 +112,13 @@ func TestStripPollution_HandlesClean(t *testing.T) {
 
 func TestWriteRaw_LogsAtDebugLevel(t *testing.T) {
 	t.Parallel()
+
 	var buf strings.Builder
+
 	dir := t.TempDir()
-	fsI, err := NewFileStoreWithLogger(dir, newBufLogger(&buf, "debug"))
+	fsI, err := storage.NewFileStoreWithLogger(dir, storagetest.NewBufLogger(&buf, "debug"))
 	require.NoError(t, err)
+
 	fs := fsI
 	require.NoError(t, fs.WriteRaw("a.md", "x"))
 	assert.Contains(t, buf.String(), "write_raw")
@@ -121,10 +126,13 @@ func TestWriteRaw_LogsAtDebugLevel(t *testing.T) {
 
 func TestPatch_LogsWarningOnMissing(t *testing.T) {
 	t.Parallel()
+
 	var buf strings.Builder
+
 	dir := t.TempDir()
-	fsI, err := NewFileStoreWithLogger(dir, newBufLogger(&buf, "debug"))
+	fsI, err := storage.NewFileStoreWithLogger(dir, storagetest.NewBufLogger(&buf, "debug"))
 	require.NoError(t, err)
+
 	fs := fsI
 	require.NoError(t, fs.WriteRawAtomic("a.md", "x"))
 	err = fs.Patch("a.md", "missing", "y")

@@ -96,6 +96,7 @@ func New(addr string, r Reporter) *Server {
 func (s *Server) Addr() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
 	if s.srv == nil || s.srv.Addr == "" {
 		return s.addr
 	}
@@ -121,6 +122,7 @@ func (s *Server) Start() error {
 	if err != nil {
 		return fmt.Errorf("start: Listen failed: %w", err)
 	}
+
 	if s.addr == ":0" || s.addr == "" {
 		s.mu.Lock()
 		s.srv.Addr = ln.Addr().String()
@@ -144,9 +146,11 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	s.mu.Lock()
 	srv := s.srv
 	s.mu.Unlock()
+
 	if srv == nil {
 		return nil
 	}
+
 	if err := srv.Shutdown(ctx); err != nil {
 		return fmt.Errorf("shutdown: %w", err)
 	}
@@ -166,26 +170,35 @@ func (s *Server) handleReady(w http.ResponseWriter, _ *http.Request) {
 
 	if !ready {
 		http.Error(w, "starting", http.StatusServiceUnavailable)
+
 		return
 	}
+
 	if s.reporter == nil {
 		http.Error(w, "no clients configured", http.StatusServiceUnavailable)
+
 		return
 	}
+
 	reports := s.reporter.Reports()
 	connected := 0
+
 	for _, r := range reports {
 		if r.State == StatusConnected {
 			connected++
 		}
 	}
+
 	if connected == 0 {
 		http.Error(w, "no transport connected", http.StatusServiceUnavailable)
+
 		return
 	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(map[string]any{ //nolint:errchkjson // HTTP response stream is already started; encode errors are unobservable to the client
+	//nolint:errchkjson // HTTP response stream is already started; encode errors are unobservable to the client
+	_ = json.NewEncoder(w).Encode(map[string]any{
 		"status":    "ready",
 		"clients":   reports,
 		"connected": connected,
@@ -196,13 +209,15 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	if s.reporter == nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(map[string]any{ //nolint:errchkjson // HTTP response stream is already started; encode errors are unobservable to the client
+		//nolint:errchkjson // HTTP response stream is already started; encode errors are unobservable to the client
+		_ = json.NewEncoder(w).Encode(map[string]any{
 			"status":  "no clients configured",
 			"clients": []Report{},
 		})
 
 		return
 	}
+
 	reports := s.reporter.Reports()
 	connected := 0
 
@@ -211,6 +226,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 			connected++
 		}
 	}
+
 	body := map[string]any{
 		"clients":   reports,
 		"connected": connected,
@@ -220,13 +236,16 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusServiceUnavailable)
-		_ = json.NewEncoder(w).Encode(body) //nolint:errchkjson // HTTP response stream is already started; encode errors are unobservable to the client
+		//nolint:errchkjson // HTTP response stream is already started; encode errors are unobservable to the client
+		_ = json.NewEncoder(w).Encode(body)
 
 		return
 	}
+
 	body["status"] = "ready"
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(body) //nolint:errchkjson // HTTP response stream is already started; encode errors are unobservable to the client
+	//nolint:errchkjson // HTTP response stream is already started; encode errors are unobservable to the client
+	_ = json.NewEncoder(w).Encode(body)
 }

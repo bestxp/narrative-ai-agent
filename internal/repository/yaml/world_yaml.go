@@ -34,6 +34,7 @@ func (r *PlanYaml) Load(world string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("plan_load: Read failed: %w", err)
 	}
+
 	return string(body), nil
 }
 
@@ -42,6 +43,7 @@ func (r *PlanYaml) Save(world, body string) error {
 	if err := r.store.Write(planKey(world), []byte(body)); err != nil {
 		return fmt.Errorf("save: %w", err)
 	}
+
 	return nil
 }
 
@@ -55,13 +57,16 @@ func (r *PlanYaml) ReplaceEvents(_ context.Context, world string, events []strin
 	if len(events) > 0 && (len(events) < 3 || len(events) > 5) {
 		return fmt.Errorf("plan: must contain 3-5 events, got %d", len(events))
 	}
+
 	var b strings.Builder
 	b.WriteString("## План\n")
+
 	for _, e := range events {
 		b.WriteString("- ")
 		b.WriteString(strings.TrimSpace(e))
 		b.WriteString("\n")
 	}
+
 	return r.Save(world, b.String())
 }
 
@@ -88,6 +93,7 @@ func (r *LoreYaml) Load(world string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("lore_load: Read failed: %w", err)
 	}
+
 	return string(body), nil
 }
 
@@ -96,6 +102,7 @@ func (r *LoreYaml) Save(world, body string) error {
 	if err := r.store.Write(loreKey(world), []byte(body)); err != nil {
 		return fmt.Errorf("save: %w", err)
 	}
+
 	return nil
 }
 
@@ -103,18 +110,23 @@ func (r *LoreYaml) Save(world, body string) error {
 // the end of lore.md. Empty header / bullet is rejected.
 func (r *LoreYaml) AppendEntry(world, header, bullet string) error {
 	header = strings.TrimSpace(header)
+
 	bullet = strings.TrimSpace(bullet)
 	if header == "" || bullet == "" {
 		return errors.New("lore: empty header or bullet")
 	}
+
 	current, err := r.Load(world)
 	if err != nil {
 		return err
 	}
+
 	if current != "" && !strings.HasSuffix(current, "\n") {
 		current += "\n"
 	}
+
 	next := current + "\n## " + header + "\n- " + bullet + "\n"
+
 	return r.Save(world, next)
 }
 
@@ -141,6 +153,7 @@ func (r *CanonYaml) Load(world string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("canon_load: Read failed: %w", err)
 	}
+
 	return string(body), nil
 }
 
@@ -153,11 +166,13 @@ var planEventRe = regexp.MustCompile(`^\s*-\s+(.+?)\s*$`)
 // body. Used by tests + the /inspect command.
 func ParsePlanEvents(body string) []string {
 	var out []string
+
 	for line := range strings.SplitSeq(body, "\n") {
 		if m := planEventRe.FindStringSubmatch(line); m != nil {
 			out = append(out, m[1])
 		}
 	}
+
 	return out
 }
 

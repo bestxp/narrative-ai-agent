@@ -1,8 +1,10 @@
-package staging
+package staging_test
 
 import (
 	"strings"
 	"testing"
+
+	"github.com/bestxp/narrative-ai-agent/internal/staging"
 )
 
 // memFS is a tiny in-memory FileStore for tests.
@@ -20,11 +22,13 @@ func (m *memFS) ReadRaw(rel string) (string, error) {
 
 func (m *memFS) WriteRawAtomic(rel, body string) error {
 	m.files[rel] = body
+
 	return nil
 }
 
 func (m *memFS) Exists(rel string) bool {
 	_, ok := m.files[rel]
+
 	return ok
 }
 
@@ -62,12 +66,14 @@ stages:
 
 func TestLoad_Sandbox(t *testing.T) {
 	t.Parallel()
+
 	fs := newMemFS()
 	// No staging.yaml at all.
-	s, err := Load(fs, "naruto", StageRuntime{})
+	s, err := staging.Load(fs, "naruto", staging.StageRuntime{})
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
+
 	if s.Enabled {
 		t.Fatalf("sandbox: expected Enabled=false, got true")
 	}
@@ -75,13 +81,15 @@ func TestLoad_Sandbox(t *testing.T) {
 
 func TestLoad_DisabledExplicit(t *testing.T) {
 	t.Parallel()
+
 	fs := newMemFS()
 	fs.files["worlds/naruto/staging.yaml"] = "enabled: false\ninit: []\nstages: []\n"
 
-	s, err := Load(fs, "naruto", StageRuntime{})
+	s, err := staging.Load(fs, "naruto", staging.StageRuntime{})
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
+
 	if s.Enabled {
 		t.Fatalf("expected Enabled=false")
 	}
@@ -89,31 +97,38 @@ func TestLoad_DisabledExplicit(t *testing.T) {
 
 func TestLoad_BrokenYAML(t *testing.T) {
 	t.Parallel()
+
 	fs := newMemFS()
+
 	fs.files["worlds/naruto/staging.yaml"] = "enabled: true\nstages: : :\n"
-	if _, err := Load(fs, "naruto", StageRuntime{}); err == nil {
+	if _, err := staging.Load(fs, "naruto", staging.StageRuntime{}); err == nil {
 		t.Fatalf("expected parse error")
 	}
 }
 
 func TestLoad_EnabledInitialisesFromInit(t *testing.T) {
 	t.Parallel()
+
 	fs := newMemFS()
 	fs.files["worlds/naruto/staging.yaml"] = validYAML
 
-	s, err := Load(fs, "naruto", StageRuntime{})
+	s, err := staging.Load(fs, "naruto", staging.StageRuntime{})
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
+
 	if !s.Enabled {
 		t.Fatalf("expected Enabled=true")
 	}
+
 	if s.Current.ID != "beginning" {
 		t.Fatalf("expected current=beginning, got %q", s.Current.ID)
 	}
+
 	if s.TimelineIndex != 0 {
 		t.Fatalf("expected timeline_index=0, got %d", s.TimelineIndex)
 	}
+
 	if s.Next != "" {
 		t.Fatalf("expected empty next, got %q", s.Next)
 	}
@@ -121,15 +136,17 @@ func TestLoad_EnabledInitialisesFromInit(t *testing.T) {
 
 func TestLoad_ReusesStageState(t *testing.T) {
 	t.Parallel()
+
 	fs := newMemFS()
 	fs.files["worlds/naruto/staging.yaml"] = validYAML
 
 	// planning/0001: stage.md no longer exists; the
 	// runtime slice is passed in by the caller.
-	s, err := Load(fs, "naruto", StageRuntime{Current: "accepted"})
+	s, err := staging.Load(fs, "naruto", staging.StageRuntime{Current: "accepted"})
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
+
 	if s.Current.ID != "accepted" {
 		t.Fatalf("expected current=accepted, got %q", s.Current.ID)
 	}
@@ -137,13 +154,15 @@ func TestLoad_ReusesStageState(t *testing.T) {
 
 func TestLoad_RepairsUnknownNext(t *testing.T) {
 	t.Parallel()
+
 	fs := newMemFS()
 	fs.files["worlds/naruto/staging.yaml"] = validYAML
 
-	s, err := Load(fs, "naruto", StageRuntime{Current: "beginning", Next: "ghost"})
+	s, err := staging.Load(fs, "naruto", staging.StageRuntime{Current: "beginning", Next: "ghost"})
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
+
 	if s.Next != "" {
 		t.Fatalf("expected next cleared, got %q", s.Next)
 	}
@@ -151,13 +170,15 @@ func TestLoad_RepairsUnknownNext(t *testing.T) {
 
 func TestLoad_RepairsTimelineIndex(t *testing.T) {
 	t.Parallel()
+
 	fs := newMemFS()
 	fs.files["worlds/naruto/staging.yaml"] = validYAML
 
-	s, err := Load(fs, "naruto", StageRuntime{Current: "beginning", TimelineIndex: 99})
+	s, err := staging.Load(fs, "naruto", staging.StageRuntime{Current: "beginning", TimelineIndex: 99})
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
+
 	if s.TimelineIndex != 0 {
 		t.Fatalf("expected timeline_index=0, got %d", s.TimelineIndex)
 	}
@@ -165,16 +186,19 @@ func TestLoad_RepairsTimelineIndex(t *testing.T) {
 
 func TestUpdateStage_Valid(t *testing.T) {
 	t.Parallel()
+
 	fs := newMemFS()
 	fs.files["worlds/naruto/staging.yaml"] = validYAML
 
-	s, err := Load(fs, "naruto", StageRuntime{})
+	s, err := staging.Load(fs, "naruto", staging.StageRuntime{})
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
+
 	if err := s.UpdateStage(fs, "naruto", "accepted"); err != nil {
 		t.Fatalf("UpdateStage: %v", err)
 	}
+
 	if s.Next != "accepted" {
 		t.Fatalf("expected next=accepted, got %q", s.Next)
 	}
@@ -189,13 +213,15 @@ func TestUpdateStage_Valid(t *testing.T) {
 
 func TestUpdateStage_InvalidTransition(t *testing.T) {
 	t.Parallel()
+
 	fs := newMemFS()
 	fs.files["worlds/naruto/staging.yaml"] = validYAML
 
-	s, err := Load(fs, "naruto", StageRuntime{})
+	s, err := staging.Load(fs, "naruto", staging.StageRuntime{})
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
+
 	if err := s.UpdateStage(fs, "naruto", "nowhere"); err == nil {
 		t.Fatalf("expected error for invalid transition")
 	}
@@ -203,13 +229,15 @@ func TestUpdateStage_InvalidTransition(t *testing.T) {
 
 func TestUpdateStage_Idempotent(t *testing.T) {
 	t.Parallel()
+
 	fs := newMemFS()
 	fs.files["worlds/naruto/staging.yaml"] = validYAML
 
-	s, err := Load(fs, "naruto", StageRuntime{})
+	s, err := staging.Load(fs, "naruto", staging.StageRuntime{})
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
+
 	if err := s.UpdateStage(fs, "naruto", "accepted"); err != nil {
 		t.Fatalf("UpdateStage #1: %v", err)
 	}
@@ -217,6 +245,7 @@ func TestUpdateStage_Idempotent(t *testing.T) {
 	if err := s.UpdateStage(fs, "naruto", "accepted"); err != nil {
 		t.Fatalf("UpdateStage #2: %v", err)
 	}
+
 	if s.Next != "accepted" {
 		t.Fatalf("expected next=accepted, got %q", s.Next)
 	}
@@ -224,10 +253,11 @@ func TestUpdateStage_Idempotent(t *testing.T) {
 
 func TestAdvanceTimeline(t *testing.T) {
 	t.Parallel()
+
 	fs := newMemFS()
 	fs.files["worlds/naruto/staging.yaml"] = validYAML
 
-	s, err := Load(fs, "naruto", StageRuntime{})
+	s, err := staging.Load(fs, "naruto", staging.StageRuntime{})
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -235,6 +265,7 @@ func TestAdvanceTimeline(t *testing.T) {
 	if err := s.AdvanceTimeline(fs, "naruto"); err != nil {
 		t.Fatalf("AdvanceTimeline: %v", err)
 	}
+
 	if s.TimelineIndex != 1 {
 		t.Fatalf("expected timeline_index=1, got %d", s.TimelineIndex)
 	}
@@ -246,13 +277,15 @@ func TestAdvanceTimeline(t *testing.T) {
 
 func TestApplyPending(t *testing.T) {
 	t.Parallel()
+
 	fs := newMemFS()
 	fs.files["worlds/naruto/staging.yaml"] = validYAML
 
-	s, err := Load(fs, "naruto", StageRuntime{})
+	s, err := staging.Load(fs, "naruto", staging.StageRuntime{})
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
+
 	if err := s.UpdateStage(fs, "naruto", "accepted"); err != nil {
 		t.Fatalf("UpdateStage: %v", err)
 	}
@@ -260,12 +293,15 @@ func TestApplyPending(t *testing.T) {
 	if _, err := s.ApplyPending(fs, "naruto"); err != nil {
 		t.Fatalf("ApplyPending: %v", err)
 	}
+
 	if s.Current.ID != "accepted" {
 		t.Fatalf("expected current=accepted, got %q", s.Current.ID)
 	}
+
 	if s.Next != "" {
 		t.Fatalf("expected next cleared, got %q", s.Next)
 	}
+
 	if s.TimelineIndex != 0 {
 		t.Fatalf("expected timeline_index=0, got %d", s.TimelineIndex)
 	}
@@ -273,10 +309,11 @@ func TestApplyPending(t *testing.T) {
 
 func TestApplyPending_NoopIfEmpty(t *testing.T) {
 	t.Parallel()
+
 	fs := newMemFS()
 	fs.files["worlds/naruto/staging.yaml"] = validYAML
 
-	s, err := Load(fs, "naruto", StageRuntime{})
+	s, err := staging.Load(fs, "naruto", staging.StageRuntime{})
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -284,6 +321,7 @@ func TestApplyPending_NoopIfEmpty(t *testing.T) {
 	if _, err := s.ApplyPending(fs, "naruto"); err != nil {
 		t.Fatalf("ApplyPending: %v", err)
 	}
+
 	if s.Current.ID != "beginning" {
 		t.Fatalf("expected current unchanged=beginning, got %q", s.Current.ID)
 	}
@@ -291,26 +329,32 @@ func TestApplyPending_NoopIfEmpty(t *testing.T) {
 
 func TestRender_Basic(t *testing.T) {
 	t.Parallel()
+
 	fs := newMemFS()
 	fs.files["worlds/naruto/staging.yaml"] = validYAML
 
-	s, err := Load(fs, "naruto", StageRuntime{Current: "beginning", TimelineIndex: 1})
+	s, err := staging.Load(fs, "naruto", staging.StageRuntime{Current: "beginning", TimelineIndex: 1})
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
+
 	out := s.Render("Маркус")
 	if !strings.Contains(out, "Сюжетная стадия") {
 		t.Fatalf("missing header in render: %q", out)
 	}
+
 	if !strings.Contains(out, "Маркус") {
 		t.Fatalf("expected character name in render: %q", out)
 	}
+
 	if !strings.Contains(out, "[>]") {
 		t.Fatalf("expected [>] current marker: %q", out)
 	}
+
 	if !strings.Contains(out, "[X]") {
 		t.Fatalf("expected [X] done marker: %q", out)
 	}
+
 	if !strings.Contains(out, "→ accepted") {
 		t.Fatalf("expected transition listed: %q", out)
 	}
@@ -318,9 +362,10 @@ func TestRender_Basic(t *testing.T) {
 
 func TestRender_SandboxEmpty(t *testing.T) {
 	t.Parallel()
+
 	fs := newMemFS()
 
-	s, _ := Load(fs, "naruto", StageRuntime{})
+	s, _ := staging.Load(fs, "naruto", staging.StageRuntime{})
 	if s.Render("Маркус") != "" {
 		t.Fatalf("sandbox render should be empty")
 	}
@@ -328,11 +373,13 @@ func TestRender_SandboxEmpty(t *testing.T) {
 
 func TestRender_PendingShown(t *testing.T) {
 	t.Parallel()
+
 	fs := newMemFS()
 	fs.files["worlds/naruto/staging.yaml"] = validYAML
 
-	s, _ := Load(fs, "naruto", StageRuntime{})
+	s, _ := staging.Load(fs, "naruto", staging.StageRuntime{})
 	_ = s.UpdateStage(fs, "naruto", "accepted")
+
 	out := s.Render("")
 	if !strings.Contains(out, "(завершается) → accepted") {
 		t.Fatalf("expected pending marker: %q", out)
@@ -341,6 +388,7 @@ func TestRender_PendingShown(t *testing.T) {
 
 func TestValidation_DuplicateID(t *testing.T) {
 	t.Parallel()
+
 	bad := `enabled: true
 init: [a]
 stages:
@@ -360,14 +408,16 @@ stages:
         requirements: [r]
 `
 	fs := newMemFS()
+
 	fs.files["worlds/naruto/staging.yaml"] = bad
-	if _, err := Load(fs, "naruto", StageRuntime{}); err == nil {
+	if _, err := staging.Load(fs, "naruto", staging.StageRuntime{}); err == nil {
 		t.Fatalf("expected duplicate-id validation error")
 	}
 }
 
 func TestValidation_MixedDays(t *testing.T) {
 	t.Parallel()
+
 	bad := `enabled: true
 init: [a]
 stages:
@@ -385,14 +435,16 @@ stages:
         requirements: [r]
 `
 	fs := newMemFS()
+
 	fs.files["worlds/naruto/staging.yaml"] = bad
-	if _, err := Load(fs, "naruto", StageRuntime{}); err == nil {
+	if _, err := staging.Load(fs, "naruto", staging.StageRuntime{}); err == nil {
 		t.Fatalf("expected mixed-days validation error")
 	}
 }
 
 func TestValidation_UnknownTransition(t *testing.T) {
 	t.Parallel()
+
 	bad := `enabled: true
 init: [a]
 stages:
@@ -405,8 +457,9 @@ stages:
         requirements: [r]
 `
 	fs := newMemFS()
+
 	fs.files["worlds/naruto/staging.yaml"] = bad
-	if _, err := Load(fs, "naruto", StageRuntime{}); err == nil {
+	if _, err := staging.Load(fs, "naruto", staging.StageRuntime{}); err == nil {
 		t.Fatalf("expected unknown-transition validation error")
 	}
 }

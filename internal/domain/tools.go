@@ -67,16 +67,19 @@ func Object(props ...Property) Schema {
 	for _, p := range props {
 		out.Properties[p.Name] = p.Schema
 	}
+
 	required := make([]string, 0, len(props))
 	for _, p := range props {
 		if p.Required {
 			required = append(required, p.Name)
 		}
 	}
+
 	if len(required) > 0 {
 		sort.Strings(required) // stable wire format regardless of declaration order
 		out.Required = required
 	}
+
 	if len(props) > 0 {
 		// additionalProperties=false is required by the OpenAI strict
 		// subset for tool calls.

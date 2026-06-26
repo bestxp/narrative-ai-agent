@@ -167,6 +167,7 @@ func NewMultiClient(clients ...Client) *MultiClient {
 func (m *MultiClient) Run(ctx context.Context) error {
 	if len(m.clients) == 0 {
 		<-ctx.Done()
+
 		return ctx.Err()
 	}
 

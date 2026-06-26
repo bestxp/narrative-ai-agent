@@ -63,9 +63,12 @@ func ParseInfo(content string) (Info, error) {
 	if content == "" {
 		return Info{}, errors.New("info.yaml: empty document")
 	}
+
 	var info Info
+
 	dec := yaml.NewDecoder(bytes.NewReader([]byte(content)))
 	dec.KnownFields(false)
+
 	if err := dec.Decode(&info); err != nil {
 		return Info{}, fmt.Errorf("parse info.yaml: %w", err)
 	}
@@ -104,14 +107,17 @@ func mergeUnique(extras []string, primary string) []string {
 			if e == "" {
 				continue
 			}
+
 			out = append(out, e)
 		}
+
 		if len(out) == 0 {
 			return nil
 		}
 
 		return out
 	}
+
 	seen := map[string]bool{primary: true}
 	out := []string{primary}
 
@@ -119,6 +125,7 @@ func mergeUnique(extras []string, primary string) []string {
 		if e == "" || seen[e] {
 			continue
 		}
+
 		seen[e] = true
 		out = append(out, e)
 	}

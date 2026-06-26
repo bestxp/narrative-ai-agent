@@ -37,6 +37,7 @@ func TestSessionStart_BootstrapsEmptyRegistry(t *testing.T) {
 	require.NoError(t, fs.WriteRawAtomic(storage.InfoFile, ""))
 	s := NewSessionStart(fs)
 	require.NoError(t, s.ensureRegistry())
+
 	body, _ := fs.ReadRaw(storage.InfoFile)
 	assert.NotEmpty(t, body, "empty registry should be replaced with placeholder")
 }
@@ -46,10 +47,12 @@ func TestSessionStart_BootstrapsEmptyRegistry(t *testing.T) {
 // entries. Used by the checkSync tests below.
 func writeChronicleDays(t *testing.T, fs *storage.FileStore, world string, days map[int]string) {
 	t.Helper()
+
 	c := chronicle.Chronicle{Periods: []chronicle.Period{}, Days: map[int]string{}}
 	for d, txt := range days {
 		c.AppendDay(d, txt)
 	}
+
 	body, err := c.Save()
 	require.NoError(t, err)
 	require.NoError(t, fs.WriteRawAtomic(fs.WorldChronicle(world), body))
@@ -58,7 +61,7 @@ func writeChronicleDays(t *testing.T, fs *storage.FileStore, world string, days 
 func TestSessionStart_OK(t *testing.T) {
 	t.Parallel()
 	fs, _ := storage.NewFileStore(t.TempDir())
-	seedWorld(t, fs)
+	SeedWorld(t, fs)
 	require.NoError(t, fs.WriteRawAtomic(storage.InfoFile, domain.BuildInfo("markus", "naruto", nil, nil)))
 	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/state.md", "День 3 (в процессе).\nЧто-то происходит.\n"))
 	writeChronicleDays(t, fs, "naruto", map[int]string{1: "a", 2: "b"})
@@ -73,7 +76,7 @@ func TestSessionStart_OK(t *testing.T) {
 func TestSessionStart_DetectsStateAhead(t *testing.T) {
 	t.Parallel()
 	fs, _ := storage.NewFileStore(t.TempDir())
-	seedWorld(t, fs)
+	SeedWorld(t, fs)
 	require.NoError(t, fs.WriteRawAtomic(storage.InfoFile, domain.BuildInfo("markus", "naruto", nil, nil)))
 	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/state.md", "День 5 (в процессе).\n"))
 	writeChronicleDays(t, fs, "naruto", map[int]string{1: "a", 2: "b"})
@@ -85,7 +88,7 @@ func TestSessionStart_DetectsStateAhead(t *testing.T) {
 func TestSessionStart_DetectsChronicleAhead(t *testing.T) {
 	t.Parallel()
 	fs, _ := storage.NewFileStore(t.TempDir())
-	seedWorld(t, fs)
+	SeedWorld(t, fs)
 	require.NoError(t, fs.WriteRawAtomic(storage.InfoFile, domain.BuildInfo("markus", "naruto", nil, nil)))
 	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/state.md", "День 1 (в процессе).\n"))
 	writeChronicleDays(t, fs, "naruto", map[int]string{1: "a", 5: "b"})
@@ -97,7 +100,7 @@ func TestSessionStart_DetectsChronicleAhead(t *testing.T) {
 func TestSessionStart_PopulatesStateString(t *testing.T) {
 	t.Parallel()
 	fs, _ := storage.NewFileStore(t.TempDir())
-	seedWorld(t, fs)
+	SeedWorld(t, fs)
 	require.NoError(t, fs.WriteRawAtomic(storage.InfoFile, domain.BuildInfo("markus", "naruto", nil, nil)))
 	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/state.md", "День 7 (в процессе).\nNPC: Какаши\n"))
 	s := NewSessionStart(fs)

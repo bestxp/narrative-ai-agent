@@ -26,13 +26,16 @@ func (s *stream) Append(_ context.Context, text string) error {
 	if s.closed {
 		return errors.New("vk: stream closed")
 	}
+
 	if s.lastSent == text {
 		return nil
 	}
+
 	wire := text
 	if strings.TrimSpace(wire) == "" {
 		return nil
 	}
+
 	if len(wire) > maxVKMessageLen {
 		chunks := splitForVK(wire)
 
@@ -46,6 +49,7 @@ func (s *stream) Append(_ context.Context, text string) error {
 			})
 		}
 	}
+
 	_, err := s.client.vk.MessagesEdit(api.Params{
 		"peer_id":    s.peerID,
 		"message":    wire,
@@ -64,6 +68,7 @@ func (s *stream) Append(_ context.Context, text string) error {
 
 		return fmt.Errorf("vk: stream edit: %w", err)
 	}
+
 	s.lastSent = text
 
 	return nil
@@ -73,9 +78,11 @@ func (s *stream) Final(ctx context.Context, text string) error {
 	if s.closed {
 		return nil
 	}
+
 	if err := s.Append(ctx, text); err != nil {
 		return err
 	}
+
 	s.closed = true
 	s.lastSent = ""
 	s.client.mu.Lock()
@@ -113,36 +120,6 @@ func NewThrottledStream(inner messaging.StreamSession) *ThrottledStream {
 	return t
 }
 
-func (t *ThrottledStream) loop() {
-	defer t.wg.Done()
-
-	for {
-		select {
-		case <-t.ticker.C:
-			t.flush()
-		case <-t.stop:
-			t.flush()
-			return
-		}
-	}
-}
-
-// flush sends the current buffer to the inner stream and clears it.
-func (t *ThrottledStream) flush() {
-	t.mu.Lock()
-	text := t.buffer
-	t.buffer = ""
-	t.mu.Unlock()
-
-	if text == "" {
-		return
-	}
-	// Best-effort flush; errors are logged by the inner stream.
-	//
-	//nolint:contextcheck // background loop has no per-turn ctx
-	_ = t.inner.Append(context.Background(), text)
-}
-
 func (t *ThrottledStream) Append(_ context.Context, text string) error {
 	if text == "" {
 		return nil
@@ -172,9 +149,41 @@ func (t *ThrottledStream) Final(ctx context.Context, text string) error {
 			return fmt.Errorf("wrap: %w", err)
 		}
 	}
+
 	if err := t.inner.Final(ctx, text); err != nil {
 		return fmt.Errorf("throttled final: %w", err)
 	}
 
 	return nil
+}
+
+func (t *ThrottledStream) loop() {
+	defer t.wg.Done()
+
+	for {
+		select {
+		case <-t.ticker.C:
+			t.flush()
+		case <-t.stop:
+			t.flush()
+
+			return
+		}
+	}
+}
+
+// flush sends the current buffer to the inner stream and clears it.
+func (t *ThrottledStream) flush() {
+	t.mu.Lock()
+	text := t.buffer
+	t.buffer = ""
+	t.mu.Unlock()
+
+	if text == "" {
+		return
+	}
+	// Best-effort flush; errors are logged by the inner stream.
+	//
+
+	_ = t.inner.Append(context.Background(), text)
 }

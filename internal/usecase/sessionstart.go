@@ -39,50 +39,36 @@ type SessionContext struct {
 // running /launch.
 var ErrNoActiveSession = errors.New("no active session: run /launch <character> <world>")
 
-// ensureRegistry writes a minimal info.yaml placeholder when the
-// registry is missing or empty. The placeholder has no active
-// character or world; /launch fills them in. The placeholder exists
-// so downstream code (PromptContext, /status, /push) can call
-// ParseInfo without a nil-error special case.
-func (s *SessionStart) ensureRegistry() error {
-	if s.fs.Exists(storage.InfoFile) {
-		raw, _ := s.fs.ReadRaw(storage.InfoFile)
-		if raw != "" {
-			return nil
-		}
-	}
-	placeholder := domain.BuildInfo("", "", nil, nil)
-	if err := s.fs.WriteRawAtomic(storage.InfoFile, placeholder); err != nil {
-		s.log.Error().Err(err).Str("path", s.fs.InfoYAMLPath()).Msg("registry bootstrap failed")
-		return fmt.Errorf("bootstrap %s: %w", storage.InfoFile, err)
-	}
-	s.log.Warn().Str("path", s.fs.InfoYAMLPath()).Msg("registry missing — created empty placeholder, run /launch")
-	return nil
-}
-
 func (s *SessionStart) Start() (*SessionContext, error) {
 	if err := s.ensureRegistry(); err != nil {
 		return nil, err
 	}
+
 	infoRaw, err := s.fs.ReadRaw(storage.InfoFile)
 	if err != nil {
 		return nil, fmt.Errorf("start: ReadRaw failed: %w", err)
 	}
+
 	if infoRaw == "" {
 		return nil, ErrNoActiveSession
 	}
+
 	info, err := domain.ParseInfo(infoRaw)
 	if err != nil {
 		return nil, fmt.Errorf("parse info.yaml: %w", err)
 	}
+
 	if info.ActiveWorld == "" {
 		return nil, ErrNoActiveSession
 	}
+
 	world := info.ActiveWorld
+
 	state, err := s.fs.ReadRaw("worlds/" + world + "/state.md")
 	if err != nil {
 		return nil, fmt.Errorf("read state: %w", err)
 	}
+
 	ctx := &SessionContext{
 		Character: info.ActiveCharacter,
 		World:     world,
@@ -97,6 +83,31 @@ func (s *SessionStart) Start() (*SessionContext, error) {
 	return ctx, nil
 }
 
+// ensureRegistry writes a minimal info.yaml placeholder when the
+// registry is missing or empty. The placeholder has no active
+// character or world; /launch fills them in. The placeholder exists
+// so downstream code (PromptContext, /status, /push) can call
+// ParseInfo without a nil-error special case.
+func (s *SessionStart) ensureRegistry() error {
+	if s.fs.Exists(storage.InfoFile) {
+		raw, _ := s.fs.ReadRaw(storage.InfoFile)
+		if raw != "" {
+			return nil
+		}
+	}
+
+	placeholder := domain.BuildInfo("", "", nil, nil)
+	if err := s.fs.WriteRawAtomic(storage.InfoFile, placeholder); err != nil {
+		s.log.Error().Err(err).Str("path", s.fs.InfoYAMLPath()).Msg("registry bootstrap failed")
+
+		return fmt.Errorf("bootstrap %s: %w", storage.InfoFile, err)
+	}
+
+	s.log.Warn().Str("path", s.fs.InfoYAMLPath()).Msg("registry missing — created empty placeholder, run /launch")
+
+	return nil
+}
+
 // checkSync compares the day counter in state.md with the last archived
 // day in chronicle.yaml. If state is ahead, returns (true, false) — caller
 // must backfill. If chronicle is ahead of state, returns (false, true)
@@ -104,8 +115,12 @@ func (s *SessionStart) Start() (*SessionContext, error) {
 func (s *SessionStart) checkSync(world, state string) (stateAhead, chronicleAhead bool) {
 	stateDay, stateOK := extractDayNumber(state)
 	memRaw, _ := s.fs.ReadRaw(s.fs.WorldChronicle(world))
-	var memDay int
-	var memOK bool
+
+	var (
+		memDay int
+		memOK  bool
+	)
+
 	if strings.TrimSpace(memRaw) != "" {
 		if c, err := chronicle.Load(memRaw); err == nil {
 			memDay, memOK = c.LastDay()
@@ -126,6 +141,7 @@ func (s *SessionStart) checkSync(world, state string) (stateAhead, chronicleAhea
 	case memDay > stateDay:
 		return false, true
 	}
+
 	return false, false
 }
 
@@ -139,19 +155,23 @@ func extractDayHeaderRegex() func(string) (int, bool) {
 		if idx < 0 {
 			return 0, false
 		}
+
 		rest, _ := strings.CutPrefix(s[idx:], "День ")
 
 		end := 0
 		for end < len(rest) && rest[end] >= '0' && rest[end] <= '9' {
 			end++
 		}
+
 		if end == 0 {
 			return 0, false
 		}
+
 		n := 0
 		for i := range end {
 			n = n*10 + int(rest[i]-'0')
 		}
+
 		return n, true
 	}
 }

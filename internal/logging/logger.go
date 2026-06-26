@@ -38,10 +38,12 @@ func NewWithSlowlog(cfg Config, slow *SlowlogWriter) zerolog.Logger {
 	if w == nil {
 		w = os.Stderr
 	}
+
 	level, err := zerolog.ParseLevel(strings.ToLower(cfg.Level))
 	if err != nil || level == zerolog.NoLevel {
 		level = zerolog.InfoLevel
 	}
+
 	zerolog.TimeFieldFormat = time.RFC3339
 
 	if slow != nil {
@@ -52,6 +54,7 @@ func NewWithSlowlog(cfg Config, slow *SlowlogWriter) zerolog.Logger {
 			// to slowlog first, THEN pipe through
 			// ConsoleWriter to stderr.
 			console := zerolog.ConsoleWriter{Out: w, TimeFormat: time.RFC3339}
+
 			return zerolog.New(io.MultiWriter(slow, console)).Level(level).With().Timestamp().Logger()
 		}
 		// Plain JSON mode: both stderr and slowlog get the
@@ -88,6 +91,7 @@ func NewSlowlogWriter(w io.Writer) *SlowlogWriter {
 func (s *SlowlogWriter) Write(p []byte) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
 	n, err := s.w.Write(p)
 	if err != nil {
 		return n, fmt.Errorf("slowlog_writer: %w", err)

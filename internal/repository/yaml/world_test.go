@@ -1,4 +1,4 @@
-package yaml
+package yaml_test
 
 import (
 	"strings"
@@ -6,6 +6,7 @@ import (
 
 	"github.com/bestxp/narrative-ai-agent/internal/chronicle"
 	"github.com/bestxp/narrative-ai-agent/internal/domain"
+	"github.com/bestxp/narrative-ai-agent/internal/repository/yaml"
 	"github.com/bestxp/narrative-ai-agent/internal/storage"
 	"github.com/bestxp/narrative-ai-agent/internal/storage/fs"
 	"github.com/stretchr/testify/assert"
@@ -22,23 +23,27 @@ type testEnv struct {
 
 func newTestEnv(t *testing.T) *testEnv {
 	t.Helper()
+
 	s, err := fs.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("fs.New: %v", err)
 	}
+
 	return &testEnv{store: s}
 }
 
-func (e *testEnv) newInfoRepo() *InfoYaml             { return NewInfoYaml(e.store) }
-func (e *testEnv) newWorldStateRepo() *WorldStateYaml { return NewWorldStateYaml(e.store) }
-func (e *testEnv) newPlanRepo() *PlanYaml             { return NewPlanYaml(e.store) }
-func (e *testEnv) newLoreRepo() *LoreYaml             { return NewLoreYaml(e.store) }
-func (e *testEnv) newCanonRepo() *CanonYaml           { return NewCanonYaml(e.store) }
-func (e *testEnv) newChronicleRepo() *ChronicleYaml   { return NewChronicleYaml(e.store) }
+func (e *testEnv) newInfoRepo() *yaml.InfoYaml             { return yaml.NewInfoYaml(e.store) }
+func (e *testEnv) newWorldStateRepo() *yaml.WorldStateYaml { return yaml.NewWorldStateYaml(e.store) }
+func (e *testEnv) newPlanRepo() *yaml.PlanYaml             { return yaml.NewPlanYaml(e.store) }
+func (e *testEnv) newLoreRepo() *yaml.LoreYaml             { return yaml.NewLoreYaml(e.store) }
+func (e *testEnv) newCanonRepo() *yaml.CanonYaml           { return yaml.NewCanonYaml(e.store) }
+func (e *testEnv) newChronicleRepo() *yaml.ChronicleYaml   { return yaml.NewChronicleYaml(e.store) }
 
 // fs returns the underlying storage. Used by tests
 // that simulate operator hand-edits of files the bot
 // never writes (canon.md).
+//
+//nolint:ireturn // test helper matches storage.Storage interface from production code.
 func (e *testEnv) fs() storage.Storage { return e.store }
 
 func TestInfoYaml_RoundTrip(t *testing.T) {
@@ -140,7 +145,7 @@ func TestPlanYaml_ReplaceEvents(t *testing.T) {
 	require.NoError(t, r.ReplaceEvents(t.Context(), "naruto", []string{"a", "b", "c"}))
 	out, err := r.Load("naruto")
 	require.NoError(t, err)
-	assert.Equal(t, []string{"a", "b", "c"}, ParsePlanEvents(out))
+	assert.Equal(t, []string{"a", "b", "c"}, yaml.ParsePlanEvents(out))
 }
 
 func TestPlanYaml_ReplaceEvents_OutOfRange(t *testing.T) {
@@ -195,12 +200,15 @@ func TestCanonYaml_Load(t *testing.T) {
 	out, err := r.Load("naruto")
 	require.NoError(t, err)
 	assert.Empty(t, out)
+
 	body, _ := r.Load("naruto")
 	assert.Empty(t, body)
 
 	require.NoError(t, env.fs().Write("worlds/naruto/canon.md", []byte("# canon\n")))
+
 	out, _ = r.Load("naruto")
 	assert.True(t, strings.HasPrefix(out, "# canon"))
+
 	body, _ = r.Load("naruto")
 	assert.True(t, strings.HasPrefix(body, "# canon"))
 }

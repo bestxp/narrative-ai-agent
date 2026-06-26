@@ -28,8 +28,11 @@ func TestSummarizer_NotConfigured(t *testing.T) {
 
 func TestSummarizer_EmptyMessagesSkips(t *testing.T) {
 	t.Parallel()
-	fake := &fakeLLM{}
-	s := NewSummarizer(fake, llm.RoleConfig{Model: "summary", MaxTokens: 500, Temperature: 0.2}, "system", slowlog.Discard(), discardLogger())
+
+	fake := &FakeLLM{}
+	s := NewSummarizer(fake,
+		llm.RoleConfig{Model: "summary", MaxTokens: 500, Temperature: 0.2},
+		"system", slowlog.Discard(), DiscardLogger())
 	assert.True(t, s.IsConfigured())
 	res, err := s.SummarizeOldTurns(context.Background(), nil)
 	require.NoError(t, err)
@@ -38,18 +41,25 @@ func TestSummarizer_EmptyMessagesSkips(t *testing.T) {
 
 func TestSummarizer_HappyPath(t *testing.T) {
 	t.Parallel()
-	fake := &fakeLLM{}
-	fake.rounds = [][]fakeChunk{
+
+	fake := &FakeLLM{}
+	fake.rounds = [][]FakeChunk{
 		{
-			{content: "- День 1: Аньбу остановила Маркуса, допрос", finish: "stop"},
-			{content: "- День 2: Хокаге вызвал к себе", finish: "stop"},
-			{content: "- Кагуя через портал вернулась", finish: "stop"},
+			{Content: "- День 1: Аньбу остановила Маркуса, допрос", Finish: "stop"},
+			{Content: "- День 2: Хокаге вызвал к себе", Finish: "stop"},
+			{Content: "- Кагуя через портал вернулась", Finish: "stop"},
 		},
 	}
-	s := NewSummarizer(fake, llm.RoleConfig{Model: "summary", MaxTokens: 500, Temperature: 0.2}, "system-prompt", slowlog.Discard(), discardLogger())
+	s := NewSummarizer(fake,
+		llm.RoleConfig{Model: "summary", MaxTokens: 500, Temperature: 0.2},
+		"system-prompt", slowlog.Discard(), DiscardLogger())
 	msgs := []llm.Message{
 		{Role: "user", Content: "привет"},
-		{Role: "assistant", Content: "Аньбу остановила", ToolCalls: []llm.ToolCall{{Function: llm.FunctionCall{Name: "end_day", Arguments: `{"day":1}`}}}},
+		{
+			Role:      "assistant",
+			Content:   "Аньбу остановила",
+			ToolCalls: []llm.ToolCall{{Function: llm.FunctionCall{Name: "end_day", Arguments: `{"day":1}`}}},
+		},
 		{Role: "tool", Name: "end_day", Content: `{"ok":true}`},
 		{Role: "user", Content: "иду в деревню"},
 		{Role: "assistant", Content: "Хокаге вызвал к себе"},
@@ -64,16 +74,17 @@ func TestSummarizer_HappyPath(t *testing.T) {
 
 func TestSummarizer_FallbackMode(t *testing.T) {
 	t.Parallel()
-	fake := &fakeLLM{}
-	fake.rounds = [][]fakeChunk{
-		{{content: "- compact summary", finish: "stop"}},
+
+	fake := &FakeLLM{}
+	fake.rounds = [][]FakeChunk{
+		{{Content: "- compact summary", Finish: "stop"}},
 	}
 	// Build a fallback summarizer on top of a narrative-like
 	// role with high temperature and big max_tokens. The
 	// fallback constructor must clamp both.
 	s := NewFallbackSummarizer(fake, llm.RoleConfig{
 		Model: "narrative", MaxTokens: 4000, Temperature: 0.9,
-	}, "system-prompt", slowlog.Discard(), discardLogger())
+	}, "system-prompt", slowlog.Discard(), DiscardLogger())
 	assert.True(t, s.IsFallback())
 	assert.Equal(t, 500, s.role.MaxTokens, "fallback must clamp max_tokens")
 	assert.InDelta(t, 0.2, s.role.Temperature, 1e-9, "fallback must clamp temperature")
@@ -90,25 +101,28 @@ func TestSummarizer_FallbackKeepsLowValues(t *testing.T) {
 	// If the operator already configured a tame narrative
 	// role (low temp, small max_tokens) the fallback
 	// constructor should not inflate them.
-	s := NewFallbackSummarizer(&fakeLLM{}, llm.RoleConfig{
+	s := NewFallbackSummarizer(&FakeLLM{}, llm.RoleConfig{
 		Model: "narrative", MaxTokens: 200, Temperature: 0.3,
-	}, "system", slowlog.Discard(), discardLogger())
+	}, "system", slowlog.Discard(), DiscardLogger())
 	assert.Equal(t, 200, s.role.MaxTokens)
 	assert.InDelta(t, 0.3, s.role.Temperature, 1e-9, "fallback should not lower a temperature that is already in the safe range")
 }
 
 func TestSummarizer_StreamErrorReturned(t *testing.T) {
 	t.Parallel()
-	// Empty rounds means fakeLLM fires no chunks and returns
+	// Empty rounds means FakeLLM fires no chunks and returns
 	// nil — our summarizer treats empty response as error.
-	fake := &fakeLLM{}
-	s := NewSummarizer(fake, llm.RoleConfig{Model: "summary", MaxTokens: 500, Temperature: 0.2}, "system", slowlog.Discard(), discardLogger())
+	fake := &FakeLLM{}
+	s := NewSummarizer(fake,
+		llm.RoleConfig{Model: "summary", MaxTokens: 500, Temperature: 0.2},
+		"system", slowlog.Discard(), DiscardLogger())
 	_, err := s.SummarizeOldTurns(context.Background(), []llm.Message{{Role: "user", Content: "x"}})
 	assert.Error(t, err)
 }
 
 func TestRenderTurnsForSummary_AllRoles(t *testing.T) {
 	t.Parallel()
+
 	msgs := []llm.Message{
 		{Role: "user", Content: "hello"},
 		{Role: "assistant", Content: "hi there"},
@@ -124,6 +138,7 @@ func TestRenderTurnsForSummary_AllRoles(t *testing.T) {
 
 func TestRenderTurnsForSummary_AssistantWithToolCalls(t *testing.T) {
 	t.Parallel()
+
 	msgs := []llm.Message{
 		{Role: "assistant", ToolCalls: []llm.ToolCall{
 			{Function: llm.FunctionCall{Name: "end_day", Arguments: `{}`}},
@@ -141,11 +156,15 @@ func TestAppendHistoryToState_AppendsToEnd(t *testing.T) {
 	fs, _ := storage.NewFileStore(t.TempDir())
 	require.NoError(t, fs.WriteRawAtomic("info.yaml", "active_world: naruto\n"))
 	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/state.yaml",
-		"state:\n  world: naruto\n  day: 5\n  in-flight: true\n  moment: допрос\n  events:\n    - \"Ход 1: Аньбу подошла.\"\n"))
+		"state:\n  world: naruto\n  day: 5\n  in-flight: true\n  moment: допрос\n"+
+			"  events:\n    - \"Ход 1: Аньбу подошла.\"\n"))
 	yamlStore, _ := yamlfs.New(fs.Root())
 	repos := api.NewYamlRepositories(yamlStore)
 	tools := NewFileToolset(fs, repos, zerolog.Nop(), slowlog.Discard(), nil, nil, nil, nil)
-	require.NoError(t, tools.AppendHistoryToState("naruto", "- Акацуки собраны\n- Хокаге вызвал", mustParseTime("2026-06-06T14:00:00Z")))
+	require.NoError(t, tools.AppendHistoryToState("naruto",
+		"- Акацуки собраны\n- Хокаге вызвал",
+		mustParseTime("2026-06-06T14:00:00Z")))
+
 	got, _ := fs.ReadRaw("worlds/naruto/state.yaml")
 	assert.Contains(t, got, "[history сжато 2026-06-06 14:00 UTC]")
 	assert.Contains(t, got, "Акацуки собраны")
@@ -163,6 +182,7 @@ func TestAppendHistoryToState_EmptySummaryNoop(t *testing.T) {
 	repos := api.NewYamlRepositories(yamlStore)
 	tools := NewFileToolset(fs, repos, zerolog.Nop(), slowlog.Discard(), nil, nil, nil, nil)
 	require.NoError(t, tools.AppendHistoryToState("naruto", "", mustParseTime("2026-06-06T14:00:00Z")))
+
 	got, _ := fs.ReadRaw("worlds/naruto/state.yaml")
 	assert.Contains(t, got, "world: naruto", "empty summary should be a no-op")
 }
@@ -181,5 +201,6 @@ func mustParseTime(s string) time.Time {
 	if err != nil {
 		panic(err)
 	}
+
 	return parsed
 }

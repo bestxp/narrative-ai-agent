@@ -1,17 +1,19 @@
-package domain
+package domain_test
 
 import (
 	"testing"
 	"time"
 
+	"github.com/bestxp/narrative-ai-agent/internal/domain"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func TestSystemState_RoundTrip(t *testing.T) {
 	t.Parallel()
-	in := SystemState{
-		Session: SessionState{
+
+	in := domain.SystemState{
+		Session: domain.SessionState{
 			StartedAt:         time.Date(2026, 6, 5, 22, 0, 0, 0, time.UTC),
 			LastActive:        time.Date(2026, 6, 6, 14, 23, 0, 0, time.UTC),
 			TurnCount:         50,
@@ -20,10 +22,10 @@ func TestSystemState_RoundTrip(t *testing.T) {
 			Character:         "markus",
 			World:             "naruto",
 		},
-		Compaction: CompactionLog{
+		Compaction: domain.CompactionLog{
 			TotalCompactions: 2,
 			LastCompactionAt: time.Date(2026, 6, 6, 13, 45, 0, 0, time.UTC),
-			History: []CompactionEvent{
+			History: []domain.CompactionEvent{
 				{
 					At:           time.Date(2026, 6, 6, 12, 30, 0, 0, time.UTC),
 					Trigger:      "context_window*0.7",
@@ -35,7 +37,7 @@ func TestSystemState_RoundTrip(t *testing.T) {
 				},
 			},
 		},
-		Autosave: AutosaveState{
+		Autosave: domain.AutosaveState{
 			LastHash:   "abc1234",
 			LastSaveAt: time.Date(2026, 6, 6, 13, 30, 0, 0, time.UTC),
 			TotalSaves: 12,
@@ -43,7 +45,7 @@ func TestSystemState_RoundTrip(t *testing.T) {
 	}
 	body, err := in.MarshalSystemState()
 	require.NoError(t, err)
-	out, err := ParseSystemState(body)
+	out, err := domain.ParseSystemState(body)
 	require.NoError(t, err)
 	assert.Equal(t, in.Session.TurnCount, out.Session.TurnCount)
 	assert.Equal(t, in.Session.Character, out.Session.Character)
@@ -54,21 +56,24 @@ func TestSystemState_RoundTrip(t *testing.T) {
 
 func TestParseSystemState_EmptyErrors(t *testing.T) {
 	t.Parallel()
-	_, err := ParseSystemState("")
+
+	_, err := domain.ParseSystemState("")
 	assert.Error(t, err)
 }
 
 func TestParseSystemState_BadYAMLErrors(t *testing.T) {
 	t.Parallel()
-	_, err := ParseSystemState("session: : :")
+
+	_, err := domain.ParseSystemState("session: : :")
 	assert.Error(t, err)
 }
 
 func TestCompactionLog_AppendEvictsOldest(t *testing.T) {
 	t.Parallel()
-	c := &CompactionLog{}
+
+	c := &domain.CompactionLog{}
 	for i := range 5 {
-		c.AppendCompactionEvent(CompactionEvent{At: time.Unix(int64(i), 0), KeptRecent: i}, 3)
+		c.AppendCompactionEvent(domain.CompactionEvent{At: time.Unix(int64(i), 0), KeptRecent: i}, 3)
 	}
 
 	assert.Len(t, c.History, 3, "history should be capped at 3")
@@ -79,27 +84,29 @@ func TestCompactionLog_AppendEvictsOldest(t *testing.T) {
 
 func TestCompactionLog_AppendHonoursMaxEntries1(t *testing.T) {
 	t.Parallel()
-	c := &CompactionLog{}
-	c.AppendCompactionEvent(CompactionEvent{KeptRecent: 1}, 1)
-	c.AppendCompactionEvent(CompactionEvent{KeptRecent: 2}, 1)
-	c.AppendCompactionEvent(CompactionEvent{KeptRecent: 3}, 1)
+
+	c := &domain.CompactionLog{}
+	c.AppendCompactionEvent(domain.CompactionEvent{KeptRecent: 1}, 1)
+	c.AppendCompactionEvent(domain.CompactionEvent{KeptRecent: 2}, 1)
+	c.AppendCompactionEvent(domain.CompactionEvent{KeptRecent: 3}, 1)
 	assert.Len(t, c.History, 1)
 	assert.Equal(t, 3, c.History[0].KeptRecent)
 }
 
 func TestCompactionLog_AppendHonoursZeroMax(t *testing.T) {
 	t.Parallel()
-	c := &CompactionLog{}
-	c.AppendCompactionEvent(CompactionEvent{KeptRecent: 1}, 0)
+
+	c := &domain.CompactionLog{}
+	c.AppendCompactionEvent(domain.CompactionEvent{KeptRecent: 1}, 0)
 	assert.Len(t, c.History, 1, "maxEntries < 1 is clamped to 1")
 }
 
 func TestDefaultSystemState_IsZero(t *testing.T) {
 	t.Parallel()
-	assert.Equal(t, SystemState{}, DefaultSystemState())
+	assert.Equal(t, domain.SystemState{}, domain.DefaultSystemState())
 }
 
 func TestSystemStateFile_Constant(t *testing.T) {
 	t.Parallel()
-	assert.Equal(t, "system_state.md", SystemStateFile)
+	assert.Equal(t, "system_state.md", domain.SystemStateFile)
 }

@@ -53,23 +53,29 @@ func (f *FirstLaunch) Launch(char CharacterSpec, world WorldSpec) error {
 	if f.fs.Exists(storage.InfoFile) {
 		return ErrAlreadyLaunched
 	}
+
 	charDir, err := domain.SanitizeName(char.Dir)
 	if err != nil {
 		return fmt.Errorf("character dir: %w", err)
 	}
+
 	worldDir, err := domain.SanitizeName(world.Dir)
 	if err != nil {
 		return fmt.Errorf("world dir: %w", err)
 	}
+
 	if err := f.writeCharacter(charDir, char); err != nil {
 		return err
 	}
+
 	if err := f.writeWorld(worldDir, world); err != nil {
 		return err
 	}
+
 	if err := f.fs.WriteRawAtomic(storage.InfoFile, domain.BuildInfo(charDir, worldDir, nil, nil)); err != nil {
 		return fmt.Errorf("wrap: %w", err)
 	}
+
 	f.log.Info().Str("character", charDir).Str("world", worldDir).Msg("first_launch")
 
 	return nil
@@ -105,12 +111,15 @@ func (f *FirstLaunch) writeCharacter(dir string, c CharacterSpec) error {
 	if err := f.fs.EnsureDir(root); err != nil {
 		return fmt.Errorf("write_character: %w", err)
 	}
+
 	if err := f.fs.WriteRawAtomic(root+"/SOUL.yaml", buildSeedSoul(c)); err != nil {
 		return fmt.Errorf("write_character: %w", err)
 	}
+
 	if err := f.fs.WriteRawAtomic(root+"/skill.yaml", buildSeedSkill(c)); err != nil {
 		return fmt.Errorf("write_character: %w", err)
 	}
+
 	if err := f.fs.WriteRawAtomic(root+"/memory.yaml", buildSeedMemory(c)); err != nil {
 		return fmt.Errorf("write_character: %w", err)
 	}
@@ -133,10 +142,12 @@ func buildSeedSoul(c CharacterSpec) string {
 	s := charprofile.Soul{
 		Soul: strings.TrimSpace(c.TrueNature),
 	}
+
 	s.Name = strings.TrimSpace(c.DisplayName)
 	if s.Soul == "" {
 		s.Soul = "—"
 	}
+
 	if strings.TrimSpace(c.Philosophy) != "" {
 		s.Data = []charprofile.Section{
 			{Name: "Истинная сущность", Values: []string{strings.TrimSpace(c.TrueNature)}},
@@ -170,6 +181,7 @@ func buildSeedSkill(_ CharacterSpec) string {
 	for _, name := range charprofile.SkillFixedSections {
 		s.Data = append(s.Data, charprofile.Section{Name: name})
 	}
+
 	out, _ := s.Save()
 
 	return out
@@ -188,6 +200,7 @@ func buildSeedMemory(_ CharacterSpec) string {
 	for _, name := range charprofile.MemoryFixedSections {
 		m.Data = append(m.Data, charprofile.Section{Name: name})
 	}
+
 	out, _ := m.Save()
 
 	return out
@@ -209,6 +222,7 @@ func (f *FirstLaunch) writeWorld(dir string, w WorldSpec) error {
 	if err := f.fs.EnsureDir(root + "/characters"); err != nil {
 		return fmt.Errorf("write_world: %w", err)
 	}
+
 	canon := "# " + strings.TrimSpace(w.DisplayName) + " — канон/сценарий\n" + strings.TrimSpace(w.Canon) + "\n"
 	if err := f.fs.WriteRawAtomic(root+"/canon.md", canon); err != nil {
 		return fmt.Errorf("write_world: %w", err)
@@ -226,16 +240,20 @@ func (f *FirstLaunch) writeWorld(dir string, w WorldSpec) error {
 	if err := f.ensureStateExists(dir, 1, true); err != nil {
 		return err
 	}
+
 	lore := "# Мир " + strings.TrimSpace(w.DisplayName) + "\nКанон актуален, если игрок не вносит изменения.\n"
 	if err := f.fs.WriteRawAtomic(root+"/lore.md", lore); err != nil {
 		return fmt.Errorf("write_world: %w", err)
 	}
+
 	if err := f.fs.WriteRawAtomic(root+"/plan.md", defaultPlan(dir)); err != nil {
 		return fmt.Errorf("write_world: %w", err)
 	}
+
 	if err := f.fs.WriteRawAtomic(root+"/chronicle.yaml", "days: {}\nperiods: []\n"); err != nil {
 		return fmt.Errorf("write_world: %w", err)
 	}
+
 	if err := f.fs.WriteRawAtomic(root+"/staging.yaml", defaultStaging(dir)); err != nil {
 		return fmt.Errorf("write_world: %w", err)
 	}
@@ -274,6 +292,7 @@ func defaultStaging(dir string) string {
 func defaultPlan(dir string) string {
 	var b strings.Builder
 	b.WriteString("# План: " + dir + "\n\n")
+
 	for i, e := range []string{
 		"вводная сцена: знакомство с миром",
 		"первая зацепка / конфликт",

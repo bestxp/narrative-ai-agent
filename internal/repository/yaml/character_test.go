@@ -1,17 +1,20 @@
-package yaml
+package yaml_test
 
 import (
 	"testing"
 
 	"github.com/bestxp/narrative-ai-agent/internal/charprofile"
+	"github.com/bestxp/narrative-ai-agent/internal/repository/yaml"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func (e *testEnv) newSoulRepo() *SoulYaml              { return NewSoulYaml(e.store) }
-func (e *testEnv) newSkillRepo() *SkillYaml            { return NewSkillYaml(e.store) }
-func (e *testEnv) newMemoryRepo() *CharacterMemoryYaml { return NewCharacterMemoryYaml(e.store) }
-func (e *testEnv) newInventoryRepo() *InventoryYaml    { return NewInventoryYaml(e.store) }
+func (e *testEnv) newSoulRepo() *yaml.SoulYaml   { return yaml.NewSoulYaml(e.store) }
+func (e *testEnv) newSkillRepo() *yaml.SkillYaml { return yaml.NewSkillYaml(e.store) }
+func (e *testEnv) newMemoryRepo() *yaml.CharacterMemoryYaml {
+	return yaml.NewCharacterMemoryYaml(e.store)
+}
+func (e *testEnv) newInventoryRepo() *yaml.InventoryYaml { return yaml.NewInventoryYaml(e.store) }
 
 func TestSoulYaml_RoundTrip(t *testing.T) {
 	t.Parallel()
@@ -111,6 +114,7 @@ func TestInventoryYaml_AppendItem(t *testing.T) {
 		Name: "Кунай", Description: "улучшенный", Equip: false,
 	})
 	assert.True(t, ok, "replace on same name should return true")
+
 	inv, _ := env.newInventoryRepo().Load("markus")
 	require.Len(t, inv.Items, 1)
 	assert.Equal(t, "улучшенный", inv.Items[0].Description)
@@ -124,6 +128,7 @@ func TestInventoryYaml_SetCurrency(t *testing.T) {
 	assert.True(t, ok)
 	ok, _ = env.newInventoryRepo().SetCurrency("markus", "Рё", 2000)
 	assert.True(t, ok)
+
 	inv, _ := env.newInventoryRepo().Load("markus")
 	require.Len(t, inv.Currency, 1)
 	assert.Equal(t, 2000, inv.Currency[0].Count)

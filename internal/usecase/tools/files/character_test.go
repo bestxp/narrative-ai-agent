@@ -1,4 +1,4 @@
-package files
+package files_test
 
 import (
 	"testing"
@@ -8,17 +8,19 @@ import (
 	"github.com/bestxp/narrative-ai-agent/internal/repository/api"
 	"github.com/bestxp/narrative-ai-agent/internal/slowlog"
 	yamlfs "github.com/bestxp/narrative-ai-agent/internal/storage/fs"
+	"github.com/bestxp/narrative-ai-agent/internal/usecase/tools/files"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func newTestCharacter(t *testing.T) *Character {
+func newTestCharacter(t *testing.T) *files.Character {
 	t.Helper()
 	fs, _ := storage.NewFileStore(t.TempDir())
 	yamlStore, _ := yamlfs.New(fs.Root())
 	repos := api.NewYamlRepositories(yamlStore)
-	c := newCharacter(repos, zerolog.Nop(), slowlog.Discard())
+	c := files.NewCharacter(repos, zerolog.Nop(), slowlog.Discard())
+
 	return c
 }
 

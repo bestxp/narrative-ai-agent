@@ -146,10 +146,12 @@ func Load(body string) (Chronicle, error) {
 	if strings.TrimSpace(body) == "" {
 		return Chronicle{}, ErrNotFound
 	}
+
 	var raw chronicleFile
 	if err := yaml.Unmarshal([]byte(body), &raw); err != nil {
 		return Chronicle{}, fmt.Errorf("chronicle: yaml.Unmarshal: %w", err)
 	}
+
 	out := Chronicle{Periods: make([]Period, 0, len(raw.Periods))}
 	for _, p := range raw.Periods {
 		out.Periods = append(out.Periods, Period{
@@ -158,6 +160,7 @@ func Load(body string) (Chronicle, error) {
 			Memory: strings.TrimSpace(p.Memory),
 		})
 	}
+
 	if raw.Days != nil {
 		out.Days = make(map[int]string, len(raw.Days))
 		for k, v := range raw.Days {
@@ -181,7 +184,7 @@ func Load(body string) (Chronicle, error) {
 // matters for AppendDay, which always calls Save
 // after mutation (the dispatcher can rely on the
 // file existing post-call).
-func (c Chronicle) Save() (string, error) {
+func (c *Chronicle) Save() (string, error) {
 	out := chronicleFile{
 		Periods: make([]periodYAML, 0, len(c.Periods)),
 		Days:    map[int]string{},
@@ -189,7 +192,9 @@ func (c Chronicle) Save() (string, error) {
 	for _, p := range c.Periods {
 		out.Periods = append(out.Periods, periodYAML(p))
 	}
+
 	maps.Copy(out.Days, c.Days)
+
 	body, err := yaml.Marshal(out)
 	if err != nil {
 		return "", fmt.Errorf("chronicle: yaml.Marshal: %w", err)
@@ -202,11 +207,12 @@ func (c Chronicle) Save() (string, error) {
 // number (ascending). Used by the renderer to emit a
 // stable block; the map iteration order is otherwise
 // non-deterministic.
-func (c Chronicle) SortedDays() []DayEntry {
+func (c *Chronicle) SortedDays() []DayEntry {
 	out := make([]DayEntry, 0, len(c.Days))
 	for k, v := range c.Days {
 		out = append(out, DayEntry{Number: k, Text: v})
 	}
+
 	sort.Slice(out, func(i, j int) bool { return out[i].Number < out[j].Number })
 
 	return out
@@ -227,10 +233,11 @@ type DayEntry struct {
 // compressed). The checkSync helper in
 // usecase/sessionstart.go relies on this to detect
 // "chronicle ahead of state" drift.
-func (c Chronicle) LastDay() (int, bool) {
+func (c *Chronicle) LastDay() (int, bool) {
 	if len(c.Days) == 0 {
 		return 0, false
 	}
+
 	highest := 0
 	for k := range c.Days {
 		if k > highest {
@@ -247,10 +254,11 @@ func (c Chronicle) LastDay() (int, bool) {
 // know which days are already finalised and MUST
 // NOT be touched. Returns (0, false) when no
 // period has been written yet.
-func (c Chronicle) LastPeriodEnd() (int, bool) {
+func (c *Chronicle) LastPeriodEnd() (int, bool) {
 	if len(c.Periods) == 0 {
 		return 0, false
 	}
+
 	m := 0
 	for _, p := range c.Periods {
 		if p.To > m {
@@ -280,12 +288,15 @@ func (c *Chronicle) AppendDay(day int, text string) bool {
 	if text == "" || day <= 0 {
 		return false
 	}
+
 	if c.Days == nil {
 		c.Days = map[int]string{}
 	}
+
 	if _, exists := c.Days[day]; exists {
 		return false
 	}
+
 	c.Days[day] = text
 
 	return true
@@ -320,10 +331,12 @@ func (c *Chronicle) CompressWindow(from, to int, memory string) error {
 	if from > to || from <= 0 || to <= 0 {
 		return fmt.Errorf("chronicle: CompressWindow: invalid range [%d..%d]", from, to)
 	}
+
 	memory = strings.TrimSpace(memory)
 	if memory == "" {
 		return errors.New("chronicle: CompressWindow: empty memory text")
 	}
+
 	if lastEnd, ok := c.LastPeriodEnd(); ok && from <= lastEnd {
 		return fmt.Errorf("chronicle: CompressWindow: window start %d is inside closed period (last end %d)", from, lastEnd)
 	}
@@ -334,6 +347,7 @@ func (c *Chronicle) CompressWindow(from, to int, memory string) error {
 			delete(c.Days, k)
 		}
 	}
+
 	c.Periods = append(c.Periods, Period{
 		From:   from,
 		To:     to,

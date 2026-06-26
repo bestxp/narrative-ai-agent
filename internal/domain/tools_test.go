@@ -1,17 +1,20 @@
-package domain
+package domain_test
 
 import (
 	"encoding/json"
 	"testing"
 
+	"github.com/bestxp/narrative-ai-agent/internal/domain"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func paramsJSON(t *testing.T, s Schema) map[string]any {
+func paramsJSON(t *testing.T, s domain.Schema) map[string]any {
 	t.Helper()
+
 	raw, err := json.Marshal(s)
 	require.NoError(t, err)
+
 	var out map[string]any
 	require.NoError(t, json.Unmarshal(raw, &out))
 
@@ -20,8 +23,10 @@ func paramsJSON(t *testing.T, s Schema) map[string]any {
 
 func TestTools_AllHaveNameAndSchema(t *testing.T) {
 	t.Parallel()
-	tools := Tools()
+
+	tools := domain.Tools()
 	assert.NotEmpty(t, tools)
+
 	seen := map[string]bool{}
 
 	for _, tl := range tools {
@@ -37,7 +42,8 @@ func TestTools_AllHaveNameAndSchema(t *testing.T) {
 
 func TestTools_SchemaIsValidObject(t *testing.T) {
 	t.Parallel()
-	for _, tl := range Tools() {
+
+	for _, tl := range domain.Tools() {
 		probe := paramsJSON(t, tl.Function.Parameters)
 		assert.Equal(t, "object", probe["type"], "tool %s", tl.Function.Name)
 		props, ok := probe["properties"].(map[string]any)
@@ -54,7 +60,7 @@ func TestTools_StrictAdditionalProperties(t *testing.T) {
 	// OpenAI's strict function-calling subset requires
 	// additionalProperties=false. Every tool with at least one
 	// property must declare it.
-	for _, tl := range Tools() {
+	for _, tl := range domain.Tools() {
 		probe := paramsJSON(t, tl.Function.Parameters)
 		ap, ok := probe["additionalProperties"]
 		assert.True(t, ok, "tool %s missing additionalProperties", tl.Function.Name)
@@ -73,9 +79,11 @@ func TestEndDayTool_Shape(t *testing.T) {
 	dayProp, ok := props["day"].(map[string]any)
 	require.True(t, ok, "day prop not a map")
 	assert.Equal(t, "integer", dayProp["type"])
+
 	sumProp, ok := props["summary"].(map[string]any)
 	require.True(t, ok, "summary prop not a map")
 	assert.Equal(t, "string", sumProp["type"])
+
 	req, ok := probe["required"].([]any)
 	require.True(t, ok, "required not a slice")
 	assert.ElementsMatch(t, []any{"day", "summary"}, req)
@@ -85,14 +93,17 @@ func TestRotatePlanTool_HasBounds(t *testing.T) {
 	t.Parallel()
 	tool := findTool(t, "rotate_plan")
 	probe := paramsJSON(t, tool.Function.Parameters)
+
 	props, ok := probe["properties"].(map[string]any)
 	if !ok {
 		t.Fatalf("properties missing or wrong type: %T", probe["properties"])
 	}
+
 	events, ok := props["events"].(map[string]any)
 	if !ok {
 		t.Fatalf("events property missing or wrong type: %T", props["events"])
 	}
+
 	assert.Equal(t, "array", events["type"])
 	assert.InDelta(t, float64(3), events["minItems"], 1e-9)
 	assert.InDelta(t, float64(5), events["maxItems"], 1e-9)
@@ -101,14 +112,16 @@ func TestRotatePlanTool_HasBounds(t *testing.T) {
 func TestUpdateSoulTool_SectionIsFreeString(t *testing.T) {
 	t.Parallel()
 	// SOUL.yaml is free-form: the section arg is a
-	// plain String (not an enum), so the model can
+	// plain domain.String (not an enum), so the model can
 	// invent new section names.
 	tool := findTool(t, "update_soul")
 	probe := paramsJSON(t, tool.Function.Parameters)
+
 	props, ok := probe["properties"].(map[string]any)
 	if !ok {
 		t.Fatalf("properties missing or wrong type: %T", probe["properties"])
 	}
+
 	section, ok := props["section"].(map[string]any)
 	if !ok {
 		t.Fatalf("section property missing or wrong type: %T", props["section"])
@@ -125,14 +138,17 @@ func TestUpdateSkillTool_SectionIsEnum(t *testing.T) {
 	// canonical list.
 	tool := findTool(t, "update_skill")
 	probe := paramsJSON(t, tool.Function.Parameters)
+
 	props, ok := probe["properties"].(map[string]any)
 	if !ok {
 		t.Fatalf("properties missing or wrong type: %T", probe["properties"])
 	}
+
 	section, ok := props["section"].(map[string]any)
 	if !ok {
 		t.Fatalf("section property missing or wrong type: %T", props["section"])
 	}
+
 	enum, ok := section["enum"].([]any)
 	if !ok {
 		t.Fatalf("enum missing or wrong type: %T", section["enum"])
@@ -148,18 +164,22 @@ func TestUpdateMemoryTool_SectionIsEnum(t *testing.T) {
 	// memory.yaml: 4 canonical sections only.
 	tool := findTool(t, "update_memory")
 	probe := paramsJSON(t, tool.Function.Parameters)
+
 	props, ok := probe["properties"].(map[string]any)
 	if !ok {
 		t.Fatalf("properties missing or wrong type: %T", probe["properties"])
 	}
+
 	section, ok := props["section"].(map[string]any)
 	if !ok {
 		t.Fatalf("section property missing or wrong type: %T", props["section"])
 	}
+
 	enum, ok := section["enum"].([]any)
 	if !ok {
 		t.Fatalf("enum missing or wrong type: %T", section["enum"])
 	}
+
 	assert.ElementsMatch(t, []any{
 		"Яркие моменты", "Факты о мире", "Обещания и цели", "Важные люди",
 	}, enum)
@@ -169,14 +189,17 @@ func TestUpdateInventoryTool_TypeIsEnum(t *testing.T) {
 	t.Parallel()
 	tool := findTool(t, "update_inventory")
 	probe := paramsJSON(t, tool.Function.Parameters)
+
 	props, ok := probe["properties"].(map[string]any)
 	if !ok {
 		t.Fatalf("properties missing or wrong type: %T", probe["properties"])
 	}
+
 	typ, ok := props["type"].(map[string]any)
 	if !ok {
 		t.Fatalf("type property missing or wrong type: %T", props["type"])
 	}
+
 	enum, ok := typ["enum"].([]any)
 	if !ok {
 		t.Fatalf("enum missing or wrong type: %T", typ["enum"])
@@ -192,10 +215,12 @@ func TestRemoveInventoryItemTool_HasName(t *testing.T) {
 	t.Parallel()
 	tool := findTool(t, "remove_inventory_item")
 	probe := paramsJSON(t, tool.Function.Parameters)
+
 	required, ok := probe["required"].([]any)
 	if !ok {
 		t.Fatalf("required missing or wrong type: %T", probe["required"])
 	}
+
 	assert.Contains(t, required, "name")
 }
 
@@ -210,14 +235,15 @@ func TestSetCurrencyTool_ClampNoteInDescription(t *testing.T) {
 func TestObject_RequiredIsSorted(t *testing.T) {
 	t.Parallel()
 	// Wire format is stable regardless of declaration order.
-	props := Object(
-		Required("zeta", String("z")),
-		Required("alpha", String("a")),
-		Required("mu", String("m")),
-		Optional("optional", String("o")),
+	props := domain.Object(
+		domain.Required("zeta", domain.String("z")),
+		domain.Required("alpha", domain.String("a")),
+		domain.Required("mu", domain.String("m")),
+		domain.Optional("optional", domain.String("o")),
 	)
 	raw, err := json.Marshal(props)
 	require.NoError(t, err)
+
 	var probe struct {
 		Required []string `json:"required"`
 	}
@@ -227,7 +253,8 @@ func TestObject_RequiredIsSorted(t *testing.T) {
 
 func TestStringEnum_RoundTrips(t *testing.T) {
 	t.Parallel()
-	s := StringEnum("pick one", "a", "b", "c")
+
+	s := domain.StringEnum("pick one", "a", "b", "c")
 	raw, err := json.Marshal(s)
 	require.NoError(t, err)
 	assert.Contains(t, string(raw), `"enum":["a","b","c"]`)
@@ -241,20 +268,22 @@ func TestMarshalParameters_ErrorPropagates(t *testing.T) {
 	tool := findTool(t, "end_day")
 	raw, err := tool.MarshalParameters()
 	require.NoError(t, err)
+
 	var probe map[string]any
 	require.NoError(t, json.Unmarshal(raw, &probe))
 	assert.Equal(t, "object", probe["type"])
 }
 
-func findTool(t *testing.T, name string) Tool {
+func findTool(t *testing.T, name string) domain.Tool {
 	t.Helper()
 
-	for _, tl := range Tools() {
+	for _, tl := range domain.Tools() {
 		if tl.Function.Name == name {
 			return tl
 		}
 	}
+
 	t.Fatalf("tool %q not found", name)
 
-	return Tool{}
+	return domain.Tool{}
 }

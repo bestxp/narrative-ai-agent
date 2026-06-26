@@ -50,11 +50,14 @@ func SanitizeName(name string) (string, error) {
 	if name == "" {
 		return "", ErrEmptyName
 	}
+
 	if hasCyrillic(name) && !looksIntentionalLatin(name) {
 		converted := Transliterate(name)
 		name = converted
 	}
+
 	cleaned := nonLatin.ReplaceAllString(name, "_")
+
 	cleaned = strings.Trim(cleaned, "_-")
 	if cleaned == "" {
 		return "", ErrInvalidName
@@ -81,6 +84,7 @@ func ValidateWorldDir(dir string) error {
 	if strings.TrimSpace(dir) == "" {
 		return ErrEmptyWorldDir
 	}
+
 	if hasCyrillic(dir) {
 		return fmt.Errorf("world dir %q contains cyrillic characters: %w", dir, ErrInvalidName)
 	}

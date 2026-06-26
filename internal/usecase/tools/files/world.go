@@ -46,20 +46,26 @@ func (w *World) Leave(fromWorld, toWorld, skipNote, character string) (*tools.Le
 	if err != nil {
 		return nil, fmt.Errorf("from: %w", err)
 	}
+
 	to, err := domain.SanitizeName(toWorld)
 	if err != nil {
 		return nil, fmt.Errorf("to: %w", err)
 	}
+
 	fromSnap, err := w.repos.WorldState.Load(from)
 	if err != nil {
 		return nil, fmt.Errorf("read from state: %w", err)
 	}
+
 	fromDay := fromSnap.Day
+
 	if skipNote == "" {
 		skipNote = "мгновение"
 	}
+
 	note := fmt.Sprintf("Уход в мир %s. Прошло времени: %s.", to, skipNote)
 	fromSnap.InFlight = false
+
 	fromSnap.Moment = note
 	if err := w.repos.WorldState.Save(from, fromSnap); err != nil {
 		return nil, fmt.Errorf("leave: WorldState.Save failed: %w", err)
@@ -72,21 +78,84 @@ func (w *World) Leave(fromWorld, toWorld, skipNote, character string) (*tools.Le
 	}
 	// Initialise blank world if needed.
 	created := false
+
 	canon, _ := w.repos.Canon.Load(to)
 	if canon == "" {
 		if err := w.initialiseBlankWorld(to); err != nil {
 			return nil, err
 		}
+
 		created = true
 	}
+
 	if err := w.switchActive(to, character); err != nil {
 		return nil, err
 	}
+
 	w.log.Info().Str("from", from).Str("to", to).Bool("new_world", created).Int("from_day", fromDay).Msg("world_leave")
+
 	if w.worldStateInvalidate != nil {
 		w.worldStateInvalidate("leave_world")
 	}
+
 	return &tools.LeaveResult{FromWorld: from, FromDay: fromDay, NewWorld: to, NewWorldInit: created}, nil
+}
+
+// newEmptyChronicle returns a Chronicle with both
+// arrays initialised (not nil) so Save() round-trips
+// to "periods: []\ndays: {}".
+func newEmptyChronicle() chronicle.Chronicle {
+	return chronicle.Chronicle{
+		Periods: []chronicle.Period{},
+		Days:    map[int]string{},
+	}
+}
+
+// chronicleChronicle and chroniclePeriod are local
+// aliases to avoid importing the chronicle package
+// directly (the import is already present via the
+// repository layer). We use the same struct shape.
+
+// ReturnWorld applies a time-skip and re-enters a
+// parked world.
+func (w *World) ReturnWorld(world, days string) (string, error) {
+	wDir, err := domain.SanitizeName(world)
+	if err != nil {
+		return "", fmt.Errorf("return_world: SanitizeName failed: %w", err)
+	}
+
+	d, err := strconv.Atoi(strings.TrimSpace(days))
+	if err != nil {
+		return "", fmt.Errorf("days must be integer: %w", err)
+	}
+
+	if d < 0 {
+		return "", errors.New("days must be non-negative")
+	}
+
+	snap, err := w.repos.WorldState.Load(wDir)
+	if err != nil {
+		return "", fmt.Errorf("return_world: WorldState.Load failed: %w", err)
+	}
+
+	cur := snap.Day
+	note := fmt.Sprintf("Возврат в мир %s. Прошло %d дн. с последней записи (день %d).",
+		wDir, d, cur)
+	snap.Day = cur + d
+	snap.InFlight = true
+
+	snap.Moment = note
+	if err := w.repos.WorldState.Save(wDir, snap); err != nil {
+		return "", fmt.Errorf("return_world: WorldState.Save failed: %w", err)
+	}
+
+	if err := w.switchActive(wDir, ""); err != nil {
+		return "", fmt.Errorf("return_world: switchActive failed: %w", err)
+	}
+
+	w.log.Info().Str("world", wDir).Int("days", d).Int("new_day", cur+d).Msg("world_return")
+
+	return note, nil
 }
 
 func (w *World) switchActive(toWorld, character string) error {
@@ -94,14 +163,21 @@ func (w *World) switchActive(toWorld, character string) error {
 	if err != nil {
 		return fmt.Errorf("read info: %w", err)
 	}
+
 	if character != "" {
 		info.ActiveCharacter = character
 	}
+
 	info.ActiveWorld = toWorld
 	if !slices.Contains(info.Worlds, toWorld) {
 		info.Worlds = append(info.Worlds, toWorld)
 	}
-	return w.repos.Info.Save(info)
+
+	if err := w.repos.Info.Save(info); err != nil {
+		return fmt.Errorf("world.Switch: %w", err)
+	}
+
+	return nil
 }
 
 func (w *World) initialiseBlankWorld(dir string) error {
@@ -133,56 +209,8 @@ func (w *World) initialiseBlankWorld(dir string) error {
 	}); err != nil {
 		return fmt.Errorf("initialise_blank_world: Plan.ReplaceEvents failed: %w", err)
 	}
+
 	return nil
-}
-
-// newEmptyChronicle returns a Chronicle with both
-// arrays initialised (not nil) so Save() round-trips
-// to "periods: []\ndays: {}".
-func newEmptyChronicle() chronicle.Chronicle {
-	return chronicle.Chronicle{
-		Periods: []chronicle.Period{},
-		Days:    map[int]string{},
-	}
-}
-
-// chronicleChronicle and chroniclePeriod are local
-// aliases to avoid importing the chronicle package
-// directly (the import is already present via the
-// repository layer). We use the same struct shape.
-
-// ReturnWorld applies a time-skip and re-enters a
-// parked world.
-func (w *World) ReturnWorld(world, days string) (string, error) {
-	wDir, err := domain.SanitizeName(world)
-	if err != nil {
-		return "", fmt.Errorf("return_world: SanitizeName failed: %w", err)
-	}
-	d, err := strconv.Atoi(strings.TrimSpace(days))
-	if err != nil {
-		return "", fmt.Errorf("days must be integer: %w", err)
-	}
-	if d < 0 {
-		return "", errors.New("days must be non-negative")
-	}
-	snap, err := w.repos.WorldState.Load(wDir)
-	if err != nil {
-		return "", fmt.Errorf("return_world: WorldState.Load failed: %w", err)
-	}
-	cur := snap.Day
-	note := fmt.Sprintf("Возврат в мир %s. Прошло %d дн. с последней записи (день %d).",
-		wDir, d, cur)
-	snap.Day = cur + d
-	snap.InFlight = true
-	snap.Moment = note
-	if err := w.repos.WorldState.Save(wDir, snap); err != nil {
-		return "", fmt.Errorf("return_world: WorldState.Save failed: %w", err)
-	}
-	if err := w.switchActive(wDir, ""); err != nil {
-		return "", fmt.Errorf("return_world: switchActive failed: %w", err)
-	}
-	w.log.Info().Str("world", wDir).Int("days", d).Int("new_day", cur+d).Msg("world_return")
-	return note, nil
 }
 
 // yaml is imported to keep the render helper available

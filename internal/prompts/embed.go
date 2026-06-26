@@ -38,7 +38,9 @@ func List() []string {
 // thing. Templates never change at runtime (they are
 // embedded and stable per process), so no invalidation
 // API is needed.
-var templateCache sync.Map //nolint:gochecknoglobals // process-wide memoisation cache for parsed templates // map[string]*template.Template
+//
+//nolint:gochecknoglobals // process-wide memoisation cache for parsed templates
+var templateCache sync.Map // map[string]*template.Template
 
 // Render reads the named prompt from the embedded FS,
 // parses it as a Go template with missingkey=error,
@@ -59,10 +61,12 @@ func Render(name string, data PromptData) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("prompts: template not found: %q", name)
 	}
+
 	tpl, err := getOrParse(name, string(src))
 	if err != nil {
 		return "", err
 	}
+
 	var b strings.Builder
 	if err := tpl.Execute(&b, data); err != nil {
 		return "", fmt.Errorf("prompts: render %q: %w", name, err)
@@ -110,6 +114,7 @@ func getOrParse(name, src string) (*template.Template, error) {
 func ResetTemplateCache() {
 	templateCache.Range(func(k, _ any) bool {
 		templateCache.Delete(k)
+
 		return true
 	})
 }
@@ -126,5 +131,6 @@ func ResetTemplateCache() {
 // {{ .Summarizer.* }}.
 func RenderSummarizerUser(name string, sum *SummarizerData) (string, error) {
 	data := PromptData{Summarizer: sum}
+
 	return Render(name, data)
 }

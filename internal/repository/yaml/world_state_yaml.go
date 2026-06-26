@@ -59,7 +59,12 @@ func (r *WorldStateYaml) Save(world string, snap domain.StateSnapshot) error {
 	if err != nil {
 		return err
 	}
-	return r.store.Write(stateKey(world), []byte(body))
+
+	if err := r.store.Write(stateKey(world), []byte(body)); err != nil {
+		return fmt.Errorf("world_state.Save: write: %w", err)
+	}
+
+	return nil
 }
 
 // AppendEvent is the read-modify-write helper for the
@@ -73,6 +78,7 @@ func (r *WorldStateYaml) AppendEvent(world, event string) error {
 	if err != nil {
 		return err
 	}
+
 	event = strings.TrimSpace(event)
 	if event == "" {
 		return nil
@@ -86,7 +92,9 @@ func (r *WorldStateYaml) AppendEvent(world, event string) error {
 			return nil
 		}
 	}
+
 	snap.Events = append(snap.Events, event)
+
 	return r.Save(world, snap)
 }
 
@@ -97,9 +105,11 @@ func (r *WorldStateYaml) EnsureExists(world string, day int, inFlight bool) erro
 	if err != nil {
 		return fmt.Errorf("ensure_exists: Exists failed: %w", err)
 	}
+
 	if exists {
 		return nil
 	}
+
 	return r.Save(world, domain.StateSnapshot{
 		World:    world,
 		Day:      day,
@@ -219,6 +229,7 @@ func parseStateYAML(body string) domain.StateSnapshot {
 	if err := gyaml.Unmarshal([]byte(body), &doc); err != nil {
 		return out
 	}
+
 	out.World = doc.State.World
 	out.Day = doc.State.Day
 	out.InFlight = doc.State.InFlight

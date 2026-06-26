@@ -1,9 +1,10 @@
-package domain
+package domain_test
 
 import (
 	"strings"
 	"testing"
 
+	"github.com/bestxp/narrative-ai-agent/internal/domain"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -15,9 +16,10 @@ import (
 // the user message now.
 func TestBuildSystemPrompt_IncludesRulesOnly(t *testing.T) {
 	t.Parallel()
-	got := BuildSystemPrompt(
+
+	got := domain.BuildSystemPrompt(
 		"# Rules\nне управляй персонажем игрока",
-		CharacterContext{
+		domain.CharacterContext{
 			Character:     "Маркус",
 			CharacterSOUL: "человек",
 		},
@@ -40,16 +42,17 @@ func TestBuildSystemPrompt_IncludesRulesOnly(t *testing.T) {
 
 // TestBuildSystemPrompt_StaticOnly: the system prompt
 // output must be byte-for-byte identical when only the
-// CharacterContext is empty. (Same rules in, same
+// domain.CharacterContext is empty. (Same rules in, same
 // string out — the function does not depend on
 // character state any more.)
 func TestBuildSystemPrompt_StaticOnly(t *testing.T) {
 	t.Parallel()
-	base := BuildSystemPrompt("rules", CharacterContext{Character: "Маркус", CharacterSOUL: "x"})
-	withWorld := BuildSystemPrompt("rules", CharacterContext{Character: "Маркус", CharacterSOUL: "x"})
+
+	base := domain.BuildSystemPrompt("rules", domain.CharacterContext{Character: "Маркус", CharacterSOUL: "x"})
+	withWorld := domain.BuildSystemPrompt("rules", domain.CharacterContext{Character: "Маркус", CharacterSOUL: "x"})
 
 	assert.Equal(t, base, withWorld,
-		"BuildSystemPrompt must not depend on world state")
+		"domain.BuildSystemPrompt must not depend on world state")
 }
 
 // TestBuildWorldStateMessage_IncludesEverythingElse: the user
@@ -57,25 +60,26 @@ func TestBuildSystemPrompt_StaticOnly(t *testing.T) {
 // set has to round-trip byte-for-byte.
 func TestBuildWorldStateMessage_IncludesEverythingElse(t *testing.T) {
 	t.Parallel()
-	got, err := BuildWorldStateMessage(WorldContext{
+
+	got, err := domain.BuildWorldStateMessage(domain.WorldContext{
 		World:      "naruto",
 		WorldState: "День 3 (в процессе).\nУтро.",
 		WorldPlan:  "- День +1: встреча с Какаши",
-		Chronicle: &Chronicle{
-			Periods: []ChroniclePeriod{
+		Chronicle: &domain.Chronicle{
+			Periods: []domain.ChroniclePeriod{
 				{From: 1, To: 30, Memory: "first window summary"},
 			},
-			Days: []ChronicleDay{
+			Days: []domain.ChronicleDay{
 				{Number: 31, Text: "raw day 31"},
 				{Number: 32, Text: "raw day 32"},
 			},
 		},
 		WorldCanon: "канон",
 		WorldLore:  "отклонения",
-		NPCs: []NPCSnapshot{
+		NPCs: []domain.NPCSnapshot{
 			{DisplayName: "Какаши", Profile: "Шаринган"},
 		},
-	}, CharacterContext{Character: "Маркус"})
+	}, domain.CharacterContext{Character: "Маркус"})
 	require.NoError(t, err)
 	assert.Contains(t, got, "[WORLD_STATE]")
 	assert.Contains(t, got, "## Активный мир: naruto")
@@ -102,23 +106,24 @@ func TestBuildWorldStateMessage_IncludesEverythingElse(t *testing.T) {
 // truncation that would invalidate the cache_pointe).
 func TestBuildWorldStateMessage_PassesLongFieldsThroughUncut(t *testing.T) {
 	t.Parallel()
+
 	longCanon := strings.Repeat("A", 5000)
 	longLore := strings.Repeat("B", 5000)
 	longMemory := strings.Repeat("M", 10000)
 	longProfile := strings.Repeat("X", 3000)
-	got, err := BuildWorldStateMessage(WorldContext{
+	got, err := domain.BuildWorldStateMessage(domain.WorldContext{
 		World:      "w",
 		WorldCanon: longCanon,
 		WorldLore:  longLore,
-		Chronicle: &Chronicle{
-			Periods: []ChroniclePeriod{
+		Chronicle: &domain.Chronicle{
+			Periods: []domain.ChroniclePeriod{
 				{From: 1, To: 30, Memory: longMemory},
 			},
 		},
-		NPCs: []NPCSnapshot{
+		NPCs: []domain.NPCSnapshot{
 			{DisplayName: "Какаши", Profile: longProfile},
 		},
-	}, CharacterContext{})
+	}, domain.CharacterContext{})
 	require.NoError(t, err)
 	assert.NotContains(t, got, "[…truncated…]")
 	assert.Contains(t, got, longCanon)
@@ -133,7 +138,8 @@ func TestBuildWorldStateMessage_PassesLongFieldsThroughUncut(t *testing.T) {
 // cache slot exists. Nothing else is rendered.
 func TestBuildWorldStateMessage_EmptyWorld(t *testing.T) {
 	t.Parallel()
-	got, err := BuildWorldStateMessage(WorldContext{}, CharacterContext{})
+
+	got, err := domain.BuildWorldStateMessage(domain.WorldContext{}, domain.CharacterContext{})
 	require.NoError(t, err)
 	assert.Contains(t, got, "[WORLD_STATE]")
 	assert.NotContains(t, got, "## Активный мир")
@@ -142,7 +148,8 @@ func TestBuildWorldStateMessage_EmptyWorld(t *testing.T) {
 
 func TestBuildSystemPrompt_NoCharacter(t *testing.T) {
 	t.Parallel()
-	got := BuildSystemPrompt("rules", CharacterContext{})
+
+	got := domain.BuildSystemPrompt("rules", domain.CharacterContext{})
 	assert.Contains(t, got, "rules")
 	assert.NotContains(t, got, "## Персонаж")
 }
@@ -158,7 +165,8 @@ func TestBuildSystemPrompt_NoCharacter(t *testing.T) {
 // block is NOT present.
 func TestBuildSystemPrompt_CharacterSectionsIgnored(t *testing.T) {
 	t.Parallel()
-	got := BuildSystemPrompt("rules", CharacterContext{
+
+	got := domain.BuildSystemPrompt("rules", domain.CharacterContext{
 		Character:         "Маркус",
 		CharacterSections: "SOUL: Истинная сущность / Философия\nSKILL: Базовые способности / Оружие",
 	})
@@ -171,11 +179,12 @@ func TestBuildSystemPrompt_CharacterSectionsIgnored(t *testing.T) {
 // the user message contains the stage block in full.
 func TestBuildWorldStateMessage_StageBlockRendered(t *testing.T) {
 	t.Parallel()
+
 	stage := "### Сюжетная стадия\n**beginning — Появление**\n\nГерой появляется.\n\n**Таймлайн:**\n[>] 1: Появление\n\n**Возможные переходы:**\n- → accepted, если: Герой доказал невиновность"
-	got, err := BuildWorldStateMessage(WorldContext{
+	got, err := domain.BuildWorldStateMessage(domain.WorldContext{
 		World:      "naruto",
 		WorldStage: stage,
-	}, CharacterContext{})
+	}, domain.CharacterContext{})
 	require.NoError(t, err)
 	assert.Contains(t, got, "Сюжетная стадия")
 	assert.Contains(t, got, "beginning")
@@ -187,9 +196,10 @@ func TestBuildWorldStateMessage_StageBlockRendered(t *testing.T) {
 // message does NOT contain the stage block.
 func TestBuildWorldStateMessage_NoStage(t *testing.T) {
 	t.Parallel()
-	got, err := BuildWorldStateMessage(WorldContext{
+
+	got, err := domain.BuildWorldStateMessage(domain.WorldContext{
 		World: "naruto",
-	}, CharacterContext{})
+	}, domain.CharacterContext{})
 	require.NoError(t, err)
 	assert.NotContains(t, got, "Сюжетная стадия")
 }
@@ -202,7 +212,8 @@ func TestBuildWorldStateMessage_NoStage(t *testing.T) {
 // [character + world + npcs + ...].
 func TestBuildWorldStateMessage_CharacterBlockInUser(t *testing.T) {
 	t.Parallel()
-	got, err := BuildWorldStateMessage(WorldContext{World: "naruto"}, CharacterContext{
+
+	got, err := domain.BuildWorldStateMessage(domain.WorldContext{World: "naruto"}, domain.CharacterContext{
 		Character:      "Маркус",
 		CharacterSOUL:  "человек",
 		CharacterSKILL: "стрелок",

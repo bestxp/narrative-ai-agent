@@ -13,6 +13,7 @@ import (
 	"github.com/bestxp/narrative-ai-agent/internal/repository/api"
 	"github.com/bestxp/narrative-ai-agent/internal/slowlog"
 	yamlfs "github.com/bestxp/narrative-ai-agent/internal/storage/fs"
+	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -42,6 +43,7 @@ type scriptingCall struct {
 
 func (s *scriptingLLM) Stream(_ context.Context, _ llm.ChatRequest, onChunk func(llm.Chunk) error) error {
 	s.mu.Lock()
+
 	var c scriptingCall
 	if s.idx < len(s.calls) {
 		c = s.calls[s.idx]
@@ -53,9 +55,11 @@ func (s *scriptingLLM) Stream(_ context.Context, _ llm.ChatRequest, onChunk func
 	if c.err != nil {
 		return c.err
 	}
+
 	if c.body == "" {
 		return onChunk(llm.Chunk{Done: true})
 	}
+
 	return onChunk(llm.Chunk{Content: c.body, Finish: "stop"})
 }
 
@@ -95,6 +99,7 @@ func newEndOfDayTestEnv(t *testing.T) (*GM, *storage.FileStore, *scriptingLLM) {
 
 	// Long NPC profile (50 facts) — over the 40-threshold.
 	require.NoError(t, fs.EnsureDir("worlds/naruto/characters"))
+
 	longProfile, err := npcprofile.Load(`display_name: "Какаши"
 file_slug: "kakashi"
 temperament: "спокойный"
@@ -105,6 +110,7 @@ temperament: "спокойный"
 		longProfile.PersonalMemory = append(longProfile.PersonalMemory,
 			"Факт номер "+itoaE2E(i))
 	}
+
 	longBody, err := longProfile.Save()
 	require.NoError(t, err)
 	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/characters/kakashi.yaml", longBody))
@@ -138,7 +144,7 @@ temperament: "спокойный"
 	repos := api.NewYamlRepositories(yamlStore)
 	tools := NewFileToolset(fs, repos, discardLogger(), slowlog.Discard(), adapter, nil, nil, adapter)
 
-	log := newBufLogger()
+	log, _ := newBufLogger()
 	g := NewGM(GMConfig{
 		Role: llm.RoleConfig{
 			Model: "test", MaxTokens: 100, Temperature: 0.5,
@@ -149,6 +155,7 @@ temperament: "спокойный"
 	}, fs, scripting, ss, fl, tools, sum,
 		NewSystemState(fs, discardLogger(), slowlog.Discard()),
 		slowlog.Discard(), "off", false, log)
+
 	return g, fs, scripting
 }
 
@@ -170,6 +177,7 @@ func (a summarizerAdapterForTest) SummarizeNPC(
 	if err != nil {
 		return nil, err
 	}
+
 	return res.Body, nil
 }
 
@@ -182,6 +190,7 @@ func (a summarizerAdapterForTest) SummarizeLore(
 	if err != nil {
 		return nil, err
 	}
+
 	return res.Body, nil
 }
 
@@ -195,6 +204,7 @@ func (a summarizerAdapterForTest) SummarizeChronicle(
 	if err != nil {
 		return nil, err
 	}
+
 	return res.Body, nil
 }
 
@@ -207,6 +217,7 @@ func (a summarizerAdapterForTest) SummarizeCharacterMemory(
 	if err != nil {
 		return nil, err
 	}
+
 	return res.Body, nil
 }
 
@@ -222,6 +233,7 @@ func itoaE2E(n int) string {
 		b = append([]byte{byte('0' + n%10)}, b...)
 		n /= 10
 	}
+
 	return string(b)
 }
 
@@ -253,12 +265,17 @@ file_slug: "kakashi"
 temperament: "спокойный"
 `)
 	require.NoError(t, err)
+
 	for range 25 {
 		shrunk.PersonalMemory = append(shrunk.PersonalMemory, "compacted")
 	}
+
 	shrunkBody, err := shrunk.Save()
 	require.NoError(t, err)
-	scripting.push("[События прошедшего дня Д0001] Утром ГГ встретил Какаши, тот показал ловушку в лесу; днём ГГ и Хината обезвредили её; вечером в Академии Ирука устроил разбор полётов; ГГ пообещал себе вернуться к ловушкам завтра.", nil)
+	scripting.push("[События прошедшего дня Д0001] Утром ГГ встретил Какаши, "+
+		"тот показал ловушку в лесу; днём ГГ и Хината обезвредили её; "+
+		"вечером в Академии Ирука устроил разбор полётов; "+
+		"ГГ пообещал себе вернуться к ловушкам завтра.", nil)
 	scripting.push(shrunkBody, nil)
 
 	require.NoError(t, g.EndOfDay(context.Background(), "naruto", 1))
@@ -292,6 +309,7 @@ temperament: "спокойный"
 	for range 30 {
 		short.PersonalMemory = append(short.PersonalMemory, "под лимитом")
 	}
+
 	shortBody, _ := short.Save()
 	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/characters/kakashi.yaml", shortBody))
 
@@ -325,6 +343,7 @@ func TestEndOfDay_MaintainFailureKeepsOriginal(t *testing.T) {
 	before, _ := fs.ReadRaw("worlds/naruto/characters/kakashi.yaml")
 
 	require.NoError(t, g.EndOfDay(context.Background(), "naruto", 1))
+
 	after, _ := fs.ReadRaw("worlds/naruto/characters/kakashi.yaml")
 
 	assert.Equal(t, before, after, "summarizer failure must not corrupt the file")
@@ -342,11 +361,13 @@ func TestEndOfDay_MaintainBiggerBodyKeepsOriginal(t *testing.T) {
 	// body LONGER than the input. The maintainer rejects
 	// "no shrink" bodies, so the original file stays.
 	scripting.push("[События прошедшего дня Д0001] Утром ГГ встретил Какаши.", nil)
+
 	original, _ := fs.ReadRaw("worlds/naruto/characters/kakashi.yaml")
 	biggerBody := original + "\n# extra padding line to make the body longer\n"
 	scripting.push(biggerBody, nil)
 
 	require.NoError(t, g.EndOfDay(context.Background(), "naruto", 1))
+
 	after, _ := fs.ReadRaw("worlds/naruto/characters/kakashi.yaml")
 	assert.Equal(t, original, after, "no-shrink path preserves the original")
 }
@@ -375,7 +396,9 @@ temperament: "спокойный"
 	for range 25 {
 		shrunk.PersonalMemory = append(shrunk.PersonalMemory, "compacted")
 	}
+
 	shrunkBody, _ := shrunk.Save()
+
 	scripting.push("[События прошедшего дня Д0001] Утром ГГ встретил Какаши.", nil)
 	scripting.push(shrunkBody, nil)
 
@@ -385,9 +408,9 @@ temperament: "спокойный"
 	// "end_day_maintain_npc" reason.
 	require.NoError(t, g.EndOfDay(context.Background(), "naruto", 1))
 
-	g.contextMu.Lock()
-	world := g.worldSnapshot
-	g.contextMu.Unlock()
+	g.ContextMu.Lock()
+	world := g.WorldSnapshot
+	g.ContextMu.Unlock()
 	assert.Empty(t, world, "world snapshot must be dropped after maintain")
 }
 
@@ -485,6 +508,7 @@ stages:
 `))
 
 	scripting.push("[События прошедшего дня Д0001] Утром ГГ встретил Какаши.", nil)
+
 	npc, _ := npcprofile.Load(`display_name: "Какаши"
 file_slug: "kakashi"
 temperament: "спокойный"
@@ -497,4 +521,17 @@ temperament: "спокойный"
 	stateBody, _ := fs.ReadRaw("worlds/naruto/stage.md")
 	assert.Contains(t, stateBody, "current: beginning",
 		"expected current=beginning unchanged; got: %s", stateBody)
+}
+
+// discardLogger returns a no-op zerolog.Logger used by tests that
+// only need to construct dependencies, not assert on log output.
+func discardLogger() zerolog.Logger {
+	return zerolog.Nop()
+}
+
+// newBufLogger returns a zerolog.Logger writing to an in-memory buffer
+// so tests can assert on log output via buf.String().
+func newBufLogger() (zerolog.Logger, *strings.Builder) {
+	buf := &strings.Builder{}
+	return zerolog.New(buf), buf
 }

@@ -56,7 +56,13 @@ type Server struct {
 // chatID. The dispatcher is used to drive freeform / command /
 // edit / resend flows; commands is the initial command hint list
 // (refreshable via SetCommands).
-func NewServer(addr, chatID string, auth AuthConfig, disp *dispatcher.Dispatcher, commands []messaging.BotCommand, log zerolog.Logger) *Server {
+func NewServer(
+	addr, chatID string,
+	auth AuthConfig,
+	disp *dispatcher.Dispatcher,
+	commands []messaging.BotCommand,
+	log zerolog.Logger,
+) *Server {
 	s := &Server{
 		addr:     addr,
 		chatID:   chatID,
@@ -99,9 +105,11 @@ func (s *Server) Run(ctx context.Context) error {
 
 	go func() {
 		s.log.Info().Str("addr", s.addr).Msg("wschat server listening")
+
 		err := s.httpSrv.ListenAndServe()
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			listenErr <- err
+
 			return
 		}
 
@@ -119,6 +127,7 @@ func (s *Server) Run(ctx context.Context) error {
 	case <-ctx.Done():
 		shutCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
+
 		_ = s.httpSrv.Shutdown(shutCtx)
 		s.closeSession()
 		s.setHealth(messaging.HealthReport{Name: "wschat", State: messaging.StateStopped})
@@ -126,6 +135,7 @@ func (s *Server) Run(ctx context.Context) error {
 		return nil
 	case err := <-listenErr:
 		s.setHealth(messaging.HealthReport{Name: "wschat", State: messaging.StateStopped, Message: "bind failed"})
+
 		return err
 	}
 }
@@ -139,18 +149,18 @@ func (s *Server) Health() messaging.HealthReport {
 	return s.health
 }
 
-func (s *Server) setHealth(r messaging.HealthReport) {
-	s.healthMtx.Lock()
-	s.health = r
-	s.healthMtx.Unlock()
-}
-
 // SetCommands replaces the command hint list. Called by the
 // messaging.Client SetCommands method.
 func (s *Server) SetCommands(cmds []messaging.BotCommand) {
 	s.sessionMtx.Lock()
 	s.commands = cmds
 	s.sessionMtx.Unlock()
+}
+
+func (s *Server) setHealth(r messaging.HealthReport) {
+	s.healthMtx.Lock()
+	s.health = r
+	s.healthMtx.Unlock()
 }
 
 // handleIndex serves the embedded React app. The static handler is
@@ -166,6 +176,7 @@ func (s *Server) handleCommandsAPI(w http.ResponseWriter, r *http.Request) {
 	if !requireAuth(w, r, s.auth) {
 		return
 	}
+
 	s.sessionMtx.Lock()
 	cmds := s.commands
 	s.sessionMtx.Unlock()
@@ -174,8 +185,10 @@ func (s *Server) handleCommandsAPI(w http.ResponseWriter, r *http.Request) {
 	for _, c := range cmds {
 		out.Commands = append(out.Commands, CommandDesc{Command: c.Command, Description: c.Description})
 	}
+
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(out) //nolint:errchkjson // HTTP response stream is already started; encode errors are unobservable to the client
+	//nolint:errchkjson // HTTP response stream is already started; encode errors are unobservable to the client
+	_ = json.NewEncoder(w).Encode(out)
 }
 
 // handleWS upgrades the HTTP request to a WebSocket and runs the
@@ -185,11 +198,14 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	if !requireAuth(w, r, s.auth) {
 		return
 	}
+
 	conn, err := s.upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		s.log.Warn().Err(err).Msg("ws upgrade failed")
+
 		return
 	}
+
 	sess := newSession(conn, s.chatID, s.log)
 
 	// Replace any existing session: close it so a tab reload does
@@ -199,6 +215,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	old := s.session
 	s.session = sess
 	s.sessionMtx.Unlock()
+
 	if old != nil {
 		old.close()
 	}
@@ -215,6 +232,7 @@ func (s *Server) closeSession() {
 	sess := s.session
 	s.session = nil
 	s.sessionMtx.Unlock()
+
 	if sess != nil {
 		sess.close()
 	}
@@ -243,6 +261,7 @@ func (s *Server) sendFrame(f Frame) {
 				f.ID = id
 			}
 		}
+
 		sess.send(f)
 	}
 }
@@ -258,25 +277,29 @@ func (s *Server) sendMessage(role, text, command string) {
 			}
 		}
 	}
+
 	payload, _ := json.Marshal(mp) //nolint:errchkjson // wire frame for fixed-shape struct; marshal cannot fail
 	s.sendFrame(Frame{Type: FrameMessage, Payload: payload})
 }
 
 // sendDelta pushes a FrameDelta with the full current assistant text.
 func (s *Server) sendDelta(text string) {
-	payload, _ := json.Marshal(DeltaPayload{Text: text}) //nolint:errchkjson // wire frame for fixed-shape struct; marshal cannot fail
+	//nolint:errchkjson // wire frame for fixed-shape struct; marshal cannot fail
+	payload, _ := json.Marshal(DeltaPayload{Text: text})
 	s.sendFrame(Frame{Type: FrameDelta, Payload: payload})
 }
 
 // sendStatus pushes a FrameStatus.
 func (s *Server) sendStatus(phase string, details map[string]any) {
-	payload, _ := json.Marshal(StatusPayload{Phase: phase, Details: details}) //nolint:errchkjson // wire frame for fixed-shape struct; marshal cannot fail
+	//nolint:errchkjson // wire frame for fixed-shape struct; marshal cannot fail
+	payload, _ := json.Marshal(StatusPayload{Phase: phase, Details: details})
 	s.sendFrame(Frame{Type: FrameStatus, Payload: payload})
 }
 
 // sendError pushes a FrameError with an optional correlation id.
 func (s *Server) sendError(id, code, msg string) {
-	payload, _ := json.Marshal(ErrorPayload{Code: code, Message: msg}) //nolint:errchkjson // wire frame for fixed-shape struct; marshal cannot fail
+	//nolint:errchkjson // wire frame for fixed-shape struct; marshal cannot fail
+	payload, _ := json.Marshal(ErrorPayload{Code: code, Message: msg})
 	s.sendFrame(Frame{Type: FrameError, ID: id, Payload: payload})
 }
 
@@ -299,15 +322,19 @@ func (s *Server) handleClientFrame(ctx context.Context, sess *wsSession, f Frame
 		var p SendPayload
 		if err := json.Unmarshal(f.Payload, &p); err != nil {
 			s.sendError(f.ID, "bad_payload", err.Error())
+
 			return
 		}
+
 		s.handleSend(ctx, sess, f.ID, p)
 	case FrameEditLast:
 		var p EditPayload
 		if err := json.Unmarshal(f.Payload, &p); err != nil {
 			s.sendError(f.ID, "bad_payload", err.Error())
+
 			return
 		}
+
 		s.handleEditLast(ctx, sess, f.ID, p.NewText)
 	case FrameResendLast:
 		s.handleResendLast(ctx, sess, f.ID)
@@ -315,10 +342,12 @@ func (s *Server) handleClientFrame(ctx context.Context, sess *wsSession, f Frame
 		s.sessionMtx.Lock()
 		cmds := s.commands
 		s.sessionMtx.Unlock()
+
 		out := CommandListPayload{Commands: make([]CommandDesc, 0, len(cmds))}
 		for _, c := range cmds {
 			out.Commands = append(out.Commands, CommandDesc{Command: c.Command, Description: c.Description})
 		}
+
 		payload, _ := json.Marshal(out) //nolint:errchkjson // wire frame for fixed-shape struct; marshal cannot fail
 		sess.send(Frame{Type: FrameCommandList, ID: f.ID, Payload: payload})
 	default:
@@ -340,6 +369,7 @@ func (s *Server) handleSend(ctx context.Context, sess *wsSession, id string, p S
 	// streaming is rejected with a short error.
 	if !sess.startTurn(id) {
 		s.sendError(id, "busy", "another turn is in progress")
+
 		return
 	}
 	defer sess.endTurn()
@@ -358,12 +388,16 @@ func (s *Server) handleSend(ctx context.Context, sess *wsSession, id string, p S
 			Command: p.Command,
 			Args:    p.Args,
 		}
+
 		reply, err := s.disp.Handle(ctx, msg)
 		if err != nil {
 			s.sendError(id, "command_error", err.Error())
+
 			return
 		}
+
 		s.sendAck(id)
+
 		if reply != "" {
 			s.sendMessage("assistant", reply, "")
 		}
@@ -374,13 +408,16 @@ func (s *Server) handleSend(ctx context.Context, sess *wsSession, id string, p S
 	// Freeform user message.
 	if p.Text == "" {
 		s.sendError(id, "empty", "text or command required")
+
 		return
 	}
+
 	s.sendMessage("user", p.Text, "")
 	s.lastUserText = p.Text
 	s.sendAck(id)
 
 	cb := s.callbacks(sess)
+
 	msg := messaging.IncomingMessage{
 		Sender: messaging.Sender{ID: "dev", Name: "dev"},
 		ChatID: chatID,
@@ -388,8 +425,10 @@ func (s *Server) handleSend(ctx context.Context, sess *wsSession, id string, p S
 	}
 	if err := s.disp.HandleStream(ctx, msg, cb); err != nil {
 		s.sendError(id, "llm_error", err.Error())
+
 		return
 	}
+
 	final := sess.finalText()
 	s.sendMessage("assistant", final, "")
 }
@@ -405,14 +444,17 @@ func (s *Server) handleSend(ctx context.Context, sess *wsSession, id string, p S
 func (s *Server) handleEditLast(ctx context.Context, sess *wsSession, id, newText string) {
 	if !sess.startTurn(id) {
 		s.sendError(id, "busy", "another turn is in progress")
+
 		return
 	}
 	defer sess.endTurn()
 
 	if newText == "" {
 		s.sendError(id, "empty", "new_text required")
+
 		return
 	}
+
 	s.lastUserText = newText
 	s.sendAck(id)
 
@@ -423,10 +465,12 @@ func (s *Server) handleEditLast(ctx context.Context, sess *wsSession, id, newTex
 
 			return
 		}
+
 		s.sendError(id, "llm_error", err.Error())
 
 		return
 	}
+
 	final := sess.finalText()
 	s.sendMessage("assistant", final, "")
 }
@@ -441,11 +485,13 @@ func (s *Server) handleEditLast(ctx context.Context, sess *wsSession, id, newTex
 func (s *Server) handleResendLast(ctx context.Context, sess *wsSession, id string) {
 	if !sess.startTurn(id) {
 		s.sendError(id, "busy", "another turn is in progress")
+
 		return
 	}
 	defer sess.endTurn()
 
 	s.sendAck(id)
+
 	cb := s.callbacks(sess)
 	if err := s.disp.ResendLast(ctx, s.chatID, cb); err != nil {
 		if errors.Is(err, usecase.ErrNoLastUserTurn) {
@@ -453,10 +499,12 @@ func (s *Server) handleResendLast(ctx context.Context, sess *wsSession, id strin
 
 			return
 		}
+
 		s.sendError(id, "llm_error", err.Error())
 
 		return
 	}
+
 	final := sess.finalText()
 	s.sendMessage("assistant", final, "")
 }
@@ -469,6 +517,7 @@ func (s *Server) callbacks(sess *wsSession) usecase.Callbacks {
 	return usecase.Callbacks{
 		OnDelta: func(delta string) error {
 			sess.accumulateDelta(delta)
+
 			if sess.isJSONMode() {
 				return nil
 			}
@@ -482,6 +531,7 @@ func (s *Server) callbacks(sess *wsSession) usecase.Callbacks {
 			if sess.hasText() {
 				return
 			}
+
 			s.sendStatus(phase, details)
 		},
 		OnTokens: func(u llm.Usage) {

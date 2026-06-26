@@ -232,9 +232,9 @@ func LoadMemory(body string) (Memory, error) {
 //
 // Returns ErrNotFound for an empty body (matches
 // the Load contract).
-func (s Soul) Save() (string, error)   { return saveBase(s) }
-func (s Skill) Save() (string, error)  { return saveBase(s) }
-func (s Memory) Save() (string, error) { return saveBase(s) }
+func (s *Soul) Save() (string, error)   { return saveBase(s) }
+func (s *Skill) Save() (string, error)  { return saveBase(s) }
+func (s *Memory) Save() (string, error) { return saveBase(s) }
 
 // Append adds value to the named section, creating
 // the section if absent. Sections are deduped
@@ -283,11 +283,14 @@ func (s *Memory) ReplaceSection(section, value string) bool {
 
 // loadBaseInto unmarshals body into a fresh T
 // (which embeds Base). Empty body -> ErrNotFound.
+//
+//nolint:ireturn // generic factory returns T by design; ireturn cannot model generics.
 func loadBaseInto[T any](body string) (T, error) {
 	var zero T
 	if strings.TrimSpace(body) == "" {
 		return zero, ErrNotFound
 	}
+
 	if err := yaml.Unmarshal([]byte(body), &zero); err != nil {
 		return zero, fmt.Errorf("charprofile: yaml.Unmarshal: %w", err)
 	}
@@ -313,10 +316,12 @@ func saveBase[T any](s T) (string, error) {
 // rejected (Skill / Memory) or accepted (Soul).
 func appendIntoSections(data *[]Section, section, value string, strict bool) bool {
 	section = strings.TrimSpace(section)
+
 	value = strings.TrimSpace(value)
 	if section == "" || value == "" {
 		return false
 	}
+
 	if strict && !enumContains(section, SkillFixedSections) && !enumContains(section, MemoryFixedSections) {
 		// We could return an error here, but the
 		// Tool contract is "bool, bool changed".
@@ -330,11 +335,13 @@ func appendIntoSections(data *[]Section, section, value string, strict bool) boo
 			if containsString((*data)[i].Values, value) {
 				return false
 			}
+
 			(*data)[i].Values = append((*data)[i].Values, value)
 
 			return true
 		}
 	}
+
 	*data = append(*data, Section{Name: section, Values: []string{value}})
 
 	return true
@@ -349,6 +356,7 @@ func replaceSectionInto(data *[]Section, section, value string, strict ...bool) 
 	if section == "" {
 		return false
 	}
+
 	if len(strict) > 0 && strict[0] {
 		// strict: skill / memory
 		if !enumContains(section, SkillFixedSections) && !enumContains(section, MemoryFixedSections) {
@@ -361,6 +369,7 @@ func replaceSectionInto(data *[]Section, section, value string, strict ...bool) 
 			if len((*data)[i].Values) == 1 && (*data)[i].Values[0] == value {
 				return false
 			}
+
 			(*data)[i].Values = []string{value}
 
 			return true
@@ -401,6 +410,7 @@ func (s *Soul) SortedSectionNames() []string {
 	for _, sec := range s.Data {
 		keys = append(keys, sec.Name)
 	}
+
 	sort.Strings(keys)
 
 	return keys
@@ -411,6 +421,7 @@ func (s *Skill) SortedSectionNames() []string {
 	for _, sec := range s.Data {
 		keys = append(keys, sec.Name)
 	}
+
 	sort.Strings(keys)
 
 	return keys
@@ -421,6 +432,7 @@ func (s *Memory) SortedSectionNames() []string {
 	for _, sec := range s.Data {
 		keys = append(keys, sec.Name)
 	}
+
 	sort.Strings(keys)
 
 	return keys

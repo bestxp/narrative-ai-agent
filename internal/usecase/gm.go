@@ -116,10 +116,12 @@ type TokenUsage struct {
 // GM is the Game Master. It owns the conversation with the LLM and
 // the dispatch of tool calls back into the usecase layer.
 type GM struct {
-	fs           *storage.FileStore
-	llm          LLMClient
+	FS *storage.FileStore
+	// LLM is the chat completion client. Exported so black-box
+	// tests can swap a fake LLM without going through NewGM.
+	LLM          LLMClient
 	role         llm.RoleConfig
-	compaction   CompactionConfig
+	Compaction   CompactionConfig
 	staticPrompt string
 	ss           *SessionStart
 	fl           *FirstLaunch
@@ -128,21 +130,26 @@ type GM struct {
 	// per-concern fields with one interface is the key
 	// simplification of the 2026-06 refactor: a future mock
 	// or alternate backend satisfies one interface, not five.
-	tools        Tool
-	summarizer   *Summarizer
+	tools Tool
+	// Summarizer is the optional compaction / end-of-day
+	// summariser. Exported so tests can install one without
+	// going through NewGM (the field name intentionally
+	// matches the type — Go permits this and the call sites
+	// resolve unambiguously).
+	Summarizer   *Summarizer
 	sysSt        *SystemState
 	slow         *slowlog.Logger
-	tracking     string // "off" | "estimate" | "usage"
+	Tracking     string // "off" | "estimate" | "usage"
 	includeReply bool
 	log          zerolog.Logger
 
 	// stateSnapshot is the in-memory copy of state.yaml,
-	// loaded once per Reply by buildContext and mutated
+	// loaded once per Reply by BuildContext and mutated
 	// in place by update_state / end_day. All runtime
 	// reads of day/location/npcs go through this field;
 	// the file is touched only when the snapshot is
 	// loaded (Read) or persisted (WriteAtomic inside
-	// the file-backed Tool). buildContext guarantees the
+	// the file-backed Tool). BuildContext guarantees the
 	// field is non-nil before any tool call runs.
 	stateSnapshot *domain.StateSnapshot
 
@@ -150,14 +157,14 @@ type GM struct {
 	toolSpecs []llm.ToolSchema
 
 	// search_npc rate-limit. The same query string is
-	// only allowed once per rateWindow turns. A
+	// only allowed once per RateWindow turns. A
 	// different query is always allowed — the limit
 	// guards against "re-asking the same NPC over and
 	// over", not against broad exploration. Counter
 	// is the turn when the query was last asked.
-	rateWindow    int            // default 5
+	RateWindow    int            // default 5
 	npcSearchRate map[string]int // query → last turn
-	turnCounter   int            // increments per Reply
+	TurnCounter   int            // increments per Reply
 
 	// System prompt and world-state user message are snapshotted
 	// separately. The system prompt is rules + character (static
@@ -168,10 +175,10 @@ type GM struct {
 	// tools (update_state, update_npc, ...) do NOT invalidate
 	// either snapshot — the model reads the delta in the short
 	// ToolResult.
-	contextMu          sync.Mutex
-	systemSnapshot     string // rules + character
-	worldSnapshot      string // [WORLD_STATE] world + NPCs
-	contextSceneKey    string // "world|character|day|in_flight" — the inputs the snapshot was built from
+	ContextMu          sync.Mutex
+	SystemSnapshot     string // rules + character
+	WorldSnapshot      string // [WORLD_STATE] world + NPCs
+	ContextSceneKey    string // "world|character|day|in_flight" — the inputs the snapshot was built from
 	contextBuiltAt     time.Time
 	protocolWindowDays int // default 2
 	protocolMaxChars   int // default 5000
@@ -212,13 +219,28 @@ type CompactionConfig struct {
 // The single Tool parameter bundles every domain operation
 // the GM needs. main.go wires the file-backed implementation
 // (NewFileToolset); tests pass a mock.
-func NewGM(cfg GMConfig, fs *storage.FileStore, llmCli LLMClient, ss *SessionStart, fl *FirstLaunch, tools Tool, summarizer *Summarizer, sysSt *SystemState, slow *slowlog.Logger, tracking string, includeReply bool, log zerolog.Logger) *GM {
+func NewGM(
+	cfg GMConfig,
+	fs *storage.FileStore,
+	llmCli LLMClient,
+	ss *SessionStart,
+	fl *FirstLaunch,
+	tools Tool,
+	summarizer *Summarizer,
+	sysSt *SystemState,
+	slow *slowlog.Logger,
+	tracking string,
+	includeReply bool,
+	log zerolog.Logger,
+) *GM {
 	log = log.With().Str("component", "gm").Logger()
+
 	toolSpecs := make([]llm.ToolSchema, 0, len(domain.Tools()))
 	for _, t := range domain.Tools() {
 		raw, err := t.MarshalParameters()
 		if err != nil {
 			log.Warn().Err(err).Str("tool", t.Function.Name).Msg("tool schema marshal failed; skipping")
+
 			continue
 		}
 
@@ -230,18 +252,18 @@ func NewGM(cfg GMConfig, fs *storage.FileStore, llmCli LLMClient, ss *SessionSta
 	}
 
 	return &GM{
-		fs:           fs,
-		llm:          llmCli,
+		FS:           fs,
+		LLM:          llmCli,
 		role:         cfg.Role,
-		compaction:   cfg.Compaction,
+		Compaction:   cfg.Compaction,
 		staticPrompt: cfg.SystemPrompt,
 		ss:           ss,
 		fl:           fl,
 		tools:        tools,
-		summarizer:   summarizer,
+		Summarizer:   summarizer,
 		sysSt:        sysSt,
 		slow:         slow,
-		tracking:     tracking,
+		Tracking:     tracking,
 		includeReply: includeReply,
 		log:          log,
 		toolSpecs:    toolSpecs,
@@ -252,38 +274,30 @@ func NewGM(cfg GMConfig, fs *storage.FileStore, llmCli LLMClient, ss *SessionSta
 		protocolWindowDays: DefaultProtocolWindowDays,
 		protocolMaxChars:   DefaultProtocolMaxChars,
 		npcSearchRate:      make(map[string]int),
-		rateWindow:         5,
+		RateWindow:         5,
 	}
 }
 
-// conversation keeps per-chat history. Kept private to the GM.
-type conversation struct {
+// Conversation keeps per-chat history. Exported so test
+// helpers in `package usecase_test` (via GM.GetConversation)
+// can inspect the message slice without a wrapper.
+type Conversation struct {
 	mu       sync.Mutex
 	messages []llm.Message
 }
 
-var conversations sync.Map //nolint:gochecknoglobals // per-process conversation cache keyed by chatID // map[chatID]*conversation
-
-func (g *GM) getConversation(chatID string) *conversation {
-	v, ok := conversations.Load(chatID)
-	if ok {
-		if conv, ok := v.(*conversation); ok {
-			return conv
-		}
-	}
-	c := &conversation{}
-	actual, _ := conversations.LoadOrStore(chatID, c)
-	if conv, ok := actual.(*conversation); ok {
-		return conv
-	}
-
-	return c
-}
+// Conversations is the per-process conversation cache keyed by
+// chatID. Exposed under this name so black-box tests in
+// `package usecase_test` can assert on the global cache without
+// going through the GM.
+//
+//nolint:gochecknoglobals // per-process conversation cache keyed by chatID.
+var Conversations sync.Map
 
 // ResetConversation clears the per-chat history. Called when the
 // player switches worlds or starts a new session.
 func (g *GM) ResetConversation(chatID string) {
-	conversations.Delete(chatID)
+	Conversations.Delete(chatID)
 }
 
 // ResetAllConversations drops every per-chat in-memory
@@ -292,9 +306,17 @@ func (g *GM) ResetConversation(chatID string) {
 // with a clean dialogue but the freshly-edited
 // WorldState. The next Reply will lazily create a new
 // conversation entry for that chat ID.
+
+// ResetAllConversations drops every per-chat in-memory
+// history. Used by /reload when the operator edited
+// game-data by hand and wants the next turn to start
+// with a clean dialogue but the freshly-edited
+// WorldState. The next Reply will lazily create a new
+// conversation entry for that chat ID.
 func (g *GM) ResetAllConversations() {
-	conversations.Range(func(k, _ any) bool {
-		conversations.Delete(k)
+	Conversations.Range(func(k, _ any) bool {
+		Conversations.Delete(k)
+
 		return true
 	})
 }
@@ -307,17 +329,30 @@ func (g *GM) ResetAllConversations() {
 //
 // Returns ErrNoLastUserTurn when the conversation has no
 // trailing user message to regenerate from.
+
+// RegenerateLast drops the trailing assistant turn (and any
+// tool-role messages that followed it) for the given chat and
+// re-runs runConversation so the model produces a fresh answer
+// to the last user message. This is the "resend" UX: the player
+// keeps their last message as-is and gets a new LLM response.
+//
+// Returns ErrNoLastUserTurn when the conversation has no
+// trailing user message to regenerate from.
 func (g *GM) RegenerateLast(ctx context.Context, chatID string, cb Callbacks) (TokenUsage, error) {
-	g.turnCounter++
+	g.TurnCounter++
 	conv := g.getConversation(chatID)
 	conv.mu.Lock()
+
 	trimmed := trimTrailingAssistant(conv.messages)
 	if len(trimmed) == len(conv.messages) {
 		conv.mu.Unlock()
+
 		return TokenUsage{}, ErrNoLastUserTurn
 	}
+
 	conv.messages = trimmed
 	conv.mu.Unlock()
+
 	if cb.OnStatus != nil {
 		cb.OnStatus("request_received", map[string]any{"text_len": 0, "regenerate": true})
 	}
@@ -334,20 +369,34 @@ func (g *GM) RegenerateLast(ctx context.Context, chatID string, cb Callbacks) (T
 //
 // Returns ErrNoLastUserTurn when the conversation has no user
 // message to edit.
+
+// EditAndRegenerate replaces the last user message text with
+// newText, drops any trailing assistant turn, and re-runs
+// runConversation so the model produces a fresh answer to the
+// edited user message. This is the "edit" UX: the player fixes
+// a typo (or rewrites their intent) and the old LLM answer is
+// discarded.
+//
+// Returns ErrNoLastUserTurn when the conversation has no user
+// message to edit.
 func (g *GM) EditAndRegenerate(ctx context.Context, chatID, newText string, cb Callbacks) (TokenUsage, error) {
-	g.turnCounter++
+	g.TurnCounter++
 	conv := g.getConversation(chatID)
 	conv.mu.Lock()
 	trimmed := trimTrailingAssistant(conv.messages)
+
 	idx := lastUserIndex(trimmed)
 	if idx < 0 {
 		conv.mu.Unlock()
+
 		return TokenUsage{}, ErrNoLastUserTurn
 	}
+
 	trimmed[idx].Content = newText
 	trimmed = trimmed[:idx+1]
 	conv.messages = trimmed
 	conv.mu.Unlock()
+
 	if cb.OnStatus != nil {
 		cb.OnStatus("request_received", map[string]any{"text_len": len(newText), "edit": true})
 	}
@@ -369,6 +418,7 @@ func trimTrailingAssistant(msgs []llm.Message) []llm.Message {
 		if role == "user" {
 			return msgs[:i+1]
 		}
+
 		if role == "system" {
 			return msgs[:i+1]
 		}
@@ -385,6 +435,7 @@ func lastUserIndex(msgs []llm.Message) int {
 			return i
 		}
 	}
+
 	return -1
 }
 
@@ -400,14 +451,14 @@ const maxToolRounds = 10
 
 func (g *GM) Reply(ctx context.Context, chatID, userText string, cb Callbacks) (TokenUsage, error) {
 	var totals TokenUsage
-	if g.tracking == "" || g.tracking == "off" {
+	if g.Tracking == "" || g.Tracking == "off" {
 		totals.Source = "off"
 	}
 
 	// Bump the per-Reply turn counter (used by
 	// search_npc rate-limit). The counter starts at
 	// 0, so the first Reply sees turnCounter=1.
-	g.turnCounter++
+	g.TurnCounter++
 
 	conv := g.getConversation(chatID)
 	conv.mu.Lock()
@@ -428,9 +479,210 @@ func (g *GM) Reply(ctx context.Context, chatID, userText string, cb Callbacks) (
 // drops the trailing assistant turn). Callers are responsible for
 // mutating conv.messages before invoking this; the loop itself only
 // reads and appends. //nolint:funlen // complex function; splitting would harm readability.
-func (g *GM) runConversation(ctx context.Context, chatID string, cb Callbacks) (TokenUsage, error) { //nolint:gocognit // conversation dispatch is inherently complex //nolint:funlen // complex function; splitting would harm readability.
+
+// InvalidateWorldState is the public version of
+// invalidateWorldState for callers outside this package
+// (dispatcher /reload, world.Leave hook, etc.).
+func (g *GM) InvalidateWorldState(reason string) {
+	g.invalidateWorldState(reason)
+}
+
+// InvalidateWorldSnapshot drops only the world snapshot
+// (leaving the system snapshot untouched). The exported
+// wrapper is used by tests that need to simulate a
+// stage transition or NPC maintain without triggering a
+// full rebuild of both blocks.
+func (g *GM) InvalidateWorldSnapshot(reason string) {
+	g.invalidateWorldSnapshot(reason)
+}
+
+// BuildContext is the exported counterpart of buildContext
+// for black-box tests that need to drive the snapshot
+// pipeline directly (e.g. asserting invalidation behaviour
+// after a world-state mutation).
+func (g *GM) BuildContext() (systemMsg, worldMsg string, err error) {
+	return g.buildContext()
+}
+
+// RunConversation is the exported counterpart of
+// runConversation for tests that need to drive the
+// tool-call loop without going through Reply. The
+// pre-existing Reply / EditAndRegenerate / RegenerateLast
+// wrappers in this file continue to call the private
+// version directly.
+func (g *GM) RunConversation(ctx context.Context, chatID string, cb Callbacks) (TokenUsage, error) {
+	return g.runConversation(ctx, chatID, cb)
+}
+
+// DispatchOneTool is the exported counterpart of
+// dispatchOneTool for tests that need to invoke a single
+// tool call without spinning up the full Reply loop.
+func (g *GM) DispatchOneTool(ctx context.Context, tc llm.ToolCall) (string, string) {
+	return g.dispatchOneTool(ctx, tc)
+}
+
+// GetConversation returns the conversation cache entry
+// for chatID, creating it lazily if absent. The returned
+// pointer is shared with the internal cache; tests that
+// mutate it should lock conversation.mu first.
+func (g *GM) GetConversation(chatID string) *Conversation {
+	return g.getConversation(chatID)
+}
+
+// LoadChronicle is the exported counterpart of
+// loadChronicle for tests that need to inspect the
+// raw period/day breakdown produced from the on-disk
+// chronicle.yaml.
+func (g *GM) LoadChronicle(world string) ([]domain.ChroniclePeriod, []domain.ChronicleDay) {
+	return g.loadChronicle(world)
+}
+
+// LoadWorldStage is the exported counterpart of
+// loadWorldStage for tests that need to render the
+// stage block in isolation (without the surrounding
+// world-state user message).
+func (g *GM) LoadWorldStage(world, characterSlug string) string {
+	return g.loadWorldStage(world, characterSlug)
+}
+
+// shouldUseInPlaceCompaction reports whether this GM
+// should prefer the in-place compaction path over the
+// legacy drop-only compaction. We use the new path when
+// the summarizer is wired AND the in-place prompt is
+// loaded (otherwise the call would no-op and we silently
+// lose the dropped turns' events).
+
+// EndOfDay is the closing-day hook. planning/0001
+// (state+stage merge): the on-disk state.yaml has
+// only the structured fields shown in
+// running/game-data/worlds/naruto/state.yaml (state.*
+// + stage.*). The pre-merge design stored a per-day
+// protocol narrative under "## Протокол прошедших
+// дней" in state.md, but state.yaml has no such
+// section — the protocol logic was leaga-sy and is
+// gone. EndOfDay now only runs the auto-maintenance
+// pass (NPC profiles, character memory) and applies
+// any pending stage transition.
+func (g *GM) EndOfDay(ctx context.Context, world string, day int) error {
+	if world == "" {
+		return nil
+	}
+	// Apply pending stage transition. The model calls
+	// update_stage during the day; the in-memory
+	// staging graph holds staging.next until end_day
+	// applies it. We do this BEFORE MaintainNPCs /
+	// MaintainCharacterMemory so the new stage is
+	// visible to the model on the next turn's
+	// WorldState rebuild. Failure here is non-fatal:
+	// the pending stage survives to the next end_day
+	// attempt.
+	if err := g.tools.ApplyPendingStage(world); err != nil {
+		g.log.Warn().Err(err).Str("world", world).Msg("end-of-day: apply_pending_stage failed; continuing")
+	} else {
+		g.invalidateWorldSnapshot("end_day_stage_transition")
+	}
+	// Auto-maintain NPC profiles that overflowed their
+	// personal_memory list during the day.
+	if touched, err := g.tools.MaintainNPCs(world); err != nil {
+		g.log.Warn().Err(err).Str("world", world).Msg("end-of-day: maintain_npc hook failed; continuing")
+	} else if len(touched) > 0 {
+		g.invalidateWorldSnapshot("end_day_maintain_npc")
+		g.log.Info().
+			Str("world", world).
+			Strs("touched", touched).
+			Int("day", day).
+			Msg("end-of-day: auto-maintained NPC profiles")
+	}
+	// Auto-maintain the ACTIVE character's memory.yaml.
+	if g.ss != nil {
+		if sc, err := g.ss.Start(); err == nil && sc.Character != "" {
+			if rewritten, err := g.tools.MaintainCharacterMemory(ctx, world, sc.Character); err != nil {
+				g.log.Warn().Err(err).
+					Str("world", world).
+					Str("character", sc.Character).
+					Msg("end-of-day: maintain_character_memory hook failed; continuing")
+			} else if rewritten {
+				g.invalidateWorldSnapshot("end_day_maintain_memory")
+				g.log.Info().
+					Str("world", world).
+					Str("character", sc.Character).
+					Int("day", day).
+					Msg("end-of-day: defragmented character memory")
+			}
+		}
+	}
+
+	g.log.Info().Str("world", world).Int("day", day).Msg("end-of-day: hooks completed")
+
+	return nil
+}
+
+func safeRead(fs *storage.FileStore, rel string) string {
+	s, _ := fs.ReadRaw(rel)
+
+	return s
+}
+
+// stateFile returns the canonical path to the active
+// world's state file (planning/0001: state.md →
+// state.yaml). Centralised so every call site in this
+// package goes through one helper instead of
+// concatenating "worlds/" + world + "/state.yaml" by
+// hand (drift-prone — the same mistake was the root
+// cause of the day=1 bug that leaked into
+// running/slow.log (the old readCurrentDay
+// path scanned state.md for "День N", a marker
+// that no longer exists in state.yaml).
+func stateFilePath(world string) string {
+	return "worlds/" + world + "/state.yaml"
+}
+
+// loadChronicle reads the world's chronicle YAML file
+// and projects it into the domain-level shape. Returns
+// (nil, nil) for a brand-new world — the renderer hides
+// both blocks, which is the right "no history yet" UX.
+//
+// Parse errors are logged and treated as "no chronicle"
+// (returning empty Periods/Days rather than nil — the
+// renderer treats both as "show no blocks", but a
+// non-nil Chronicle with empty slices lets the operator
+// see in slow.log that a parse failure happened).
+
+func (g *GM) getConversation(chatID string) *Conversation {
+	v, ok := Conversations.Load(chatID)
+	if ok {
+		if conv, ok := v.(*Conversation); ok {
+			return conv
+		}
+	}
+
+	c := &Conversation{}
+
+	actual, _ := Conversations.LoadOrStore(chatID, c)
+	if conv, ok := actual.(*Conversation); ok {
+		return conv
+	}
+
+	return c
+}
+
+// ResetConversation clears the per-chat history. Called when the
+// player switches worlds or starts a new session.
+
+// runConversation runs the compaction preflight and the tool-call
+// loop on the current conversation history. It is the shared engine
+// between Reply (which appends a user turn first), EditAndRegenerate
+// (which replaces the last user turn) and RegenerateLast (which
+// drops the trailing assistant turn). Callers are responsible for
+// mutating conv.messages before invoking this; the loop itself only
+// reads and appends.
+//
+// conversation dispatch is inherently complex; the per-mode branching is part of the contract, not accidental complexity.
+//
+//nolint:gocognit,gocyclo,cyclop,funlen,maintidx // conversation dispatch is complex by design.
+func (g *GM) runConversation(ctx context.Context, chatID string, cb Callbacks) (TokenUsage, error) {
 	var totals TokenUsage
-	if g.tracking == "" || g.tracking == "off" {
+	if g.Tracking == "" || g.Tracking == "off" {
 		totals.Source = "off"
 	}
 
@@ -454,19 +706,22 @@ func (g *GM) runConversation(ctx context.Context, chatID string, cb Callbacks) (
 	// sees them. Without a summarizer we just drop (the
 	// facts live in state.md/chronicle.yaml/SOUL.md anyway,
 	// and the operator sees a "🔄" notice all the same).
-	if g.compaction.ContextWindow > 0 { //nolint:nestif // compaction logic requires nesting
+	if g.Compaction.ContextWindow > 0 { //nolint:nestif // compaction logic requires nesting
 		ctxChars := len(g.staticPrompt)
-		if NeedsCompaction(history, ctxChars, g.compaction.ContextWindow, g.compaction.Threshold) {
-			dropCount := max(len(history)-g.compaction.KeepRecent, 0)
+		if NeedsCompaction(history, ctxChars, g.Compaction.ContextWindow, g.Compaction.Threshold) {
+			dropCount := max(len(history)-g.Compaction.KeepRecent, 0)
+
 			var droppedTurns []llm.Message
 			if dropCount > 0 {
 				droppedTurns = history[:dropCount]
 			}
-			kept, res := CompactConversations(history, g.compaction.KeepRecent)
+
+			kept, res := CompactConversations(history, g.Compaction.KeepRecent)
 			if res.DroppedTurns > 0 {
 				conv.mu.Lock()
 				conv.messages = kept
 				conv.mu.Unlock()
+
 				history = kept
 				now := time.Now().UTC()
 				// Best-effort summary. The summarizer may be
@@ -474,18 +729,19 @@ func (g *GM) runConversation(ctx context.Context, chatID string, cb Callbacks) (
 				// that case the role call is skipped and we
 				// still drop, just without a written fact
 				// log. The "🔄" notice still fires.
-				if g.summarizer != nil && g.summarizer.IsConfigured() && len(droppedTurns) > 0 {
-					sumRes, sumErr := g.summarizer.SummarizeOldTurns(ctx, droppedTurns)
+				if g.Summarizer != nil && g.Summarizer.IsConfigured() && len(droppedTurns) > 0 {
+					sumRes, sumErr := g.Summarizer.SummarizeOldTurns(ctx, droppedTurns)
 					if sumErr != nil {
 						g.log.Warn().Err(sumErr).Msg("summary failed; dropping turns without state.md append")
 					} else if sumRes.Text != "" {
-						if err := g.tools.AppendHistoryToState(currentWorldName(g.fs), sumRes.Text, now); err != nil {
+						if err := g.tools.AppendHistoryToState(currentWorldName(g.FS), sumRes.Text, now); err != nil {
 							g.log.Warn().Err(err).Msg("append history to state.md failed")
 						} else {
 							g.log.Info().Int("summary_chars", len(sumRes.Text)).Msg("summary appended to state.md")
 						}
 					}
 				}
+
 				if g.sysSt != nil {
 					_, _ = g.sysSt.AppendCompaction(NewCompactionEvent(
 						"narrative",
@@ -494,9 +750,11 @@ func (g *GM) runConversation(ctx context.Context, chatID string, cb Callbacks) (
 						now,
 					))
 				}
+
 				if cb.OnCompaction != nil {
 					cb.OnCompaction(res)
 				}
+
 				g.log.Info().
 					Int("before", res.BeforeTokens).
 					Int("after", res.AfterTokens).
@@ -518,15 +776,16 @@ func (g *GM) runConversation(ctx context.Context, chatID string, cb Callbacks) (
 	// (periods + days) via the next compression cycle,
 	// or in NPC personal_memory via the auto-maintain
 	// pass at end_day.
-	if g.compaction.ContextWindow > 0 && g.shouldUseInPlaceCompaction() {
+	if g.Compaction.ContextWindow > 0 && g.shouldUseInPlaceCompaction() {
 		ctxChars := len(g.staticPrompt)
-		if NeedsCompaction(history, ctxChars, g.compaction.ContextWindow, g.compaction.Threshold) {
-			keptMsgs, _ := CompactConversations(history, g.compaction.KeepRecent)
-			dropped := max(len(history)-g.compaction.KeepRecent, 0)
+		if NeedsCompaction(history, ctxChars, g.Compaction.ContextWindow, g.Compaction.Threshold) {
+			keptMsgs, _ := CompactConversations(history, g.Compaction.KeepRecent)
+			dropped := max(len(history)-g.Compaction.KeepRecent, 0)
 
 			conv.mu.Lock()
 			conv.messages = keptMsgs
 			conv.mu.Unlock()
+
 			history = keptMsgs
 
 			g.invalidateWorldState("compaction")
@@ -553,6 +812,7 @@ func (g *GM) runConversation(ctx context.Context, chatID string, cb Callbacks) (
 		if err != nil {
 			return totals, fmt.Errorf("gm: build context: %w", err)
 		}
+
 		messages := make([]llm.Message, 0, len(history)+2)
 		messages = append(messages, llm.Message{Role: "system", Content: systemMsg})
 		messages = append(messages, llm.Message{Role: "user", Content: worldMsg})
@@ -583,6 +843,7 @@ func (g *GM) runConversation(ctx context.Context, chatID string, cb Callbacks) (
 				"tool_names":       toolNames(g.toolSpecs),
 				"reasoning_effort": g.role.ReasoningEffort,
 			}
+
 			reqMsgs := make([]map[string]any, 0, len(messages))
 			for _, m := range messages {
 				entry := map[string]any{
@@ -592,6 +853,7 @@ func (g *GM) runConversation(ctx context.Context, chatID string, cb Callbacks) (
 				if m.Content != "" {
 					entry["content"] = m.Content
 				}
+
 				if len(m.ToolCalls) > 0 {
 					calls := make([]map[string]any, 0, len(m.ToolCalls))
 					for _, tc := range m.ToolCalls {
@@ -600,17 +862,21 @@ func (g *GM) runConversation(ctx context.Context, chatID string, cb Callbacks) (
 							"args": tc.Function.Arguments,
 						})
 					}
+
 					entry["tool_calls"] = calls
 				}
+
 				if m.Name != "" {
 					entry["name"] = m.Name
 				}
+
 				if m.ToolCallID != "" {
 					entry["tool_call_id"] = m.ToolCallID
 				}
 
 				reqMsgs = append(reqMsgs, entry)
 			}
+
 			reqFields["request_messages"] = reqMsgs
 			_ = g.slow.Write("llm.request", chatID, reqFields)
 		}
@@ -624,7 +890,8 @@ func (g *GM) runConversation(ctx context.Context, chatID string, cb Callbacks) (
 			roundCompChars int
 			rawTrace       []string
 		)
-		streamErr := g.llm.Stream(ctx, llm.ChatRequest{
+
+		streamErr := g.LLM.Stream(ctx, llm.ChatRequest{
 			Model:       g.role.Model,
 			Messages:    messages,
 			Tools:       g.toolSpecs,
@@ -638,11 +905,14 @@ func (g *GM) runConversation(ctx context.Context, chatID string, cb Callbacks) (
 			if len(ch.RawTrace) > 0 {
 				rawTrace = ch.RawTrace
 			}
+
 			if ch.Done {
 				return nil
 			}
+
 			if ch.Content != "" {
 				assistantBuf.WriteString(ch.Content)
+
 				roundCompChars += len(ch.Content)
 				if cb.OnDelta != nil {
 					if err := cb.OnDelta(ch.Content); err != nil {
@@ -650,16 +920,20 @@ func (g *GM) runConversation(ctx context.Context, chatID string, cb Callbacks) (
 					}
 				}
 			}
+
 			if len(ch.ToolCalls) > 0 {
 				toolCalls = mergeToolCalls(toolCalls, ch.ToolCalls)
 			}
+
 			if ch.Finish != "" {
 				finishReason = ch.Finish
 			}
+
 			if ch.Usage.TotalTokens > 0 || ch.Usage.PromptTokens > 0 {
 				usageFromAPI = ch.Usage
 				gotUsage = true
 			}
+
 			return nil
 		})
 		if streamErr != nil {
@@ -683,6 +957,7 @@ func (g *GM) runConversation(ctx context.Context, chatID string, cb Callbacks) (
 				for _, tc := range toolCalls {
 					tcNames = append(tcNames, tc.Function.Name)
 				}
+
 				respFields["tool_call_names"] = tcNames
 				// Log full tool call arguments when tool_calls
 				// were emitted — this is the only way to see
@@ -695,8 +970,10 @@ func (g *GM) runConversation(ctx context.Context, chatID string, cb Callbacks) (
 						"id":        tc.ID,
 					})
 				}
+
 				respFields["tool_call_details"] = tcDetails
 			}
+
 			if assistantBuf.Len() > 0 {
 				// Full content on every round — operators need it
 				// to diagnose format compliance issues and empty
@@ -705,14 +982,17 @@ func (g *GM) runConversation(ctx context.Context, chatID string, cb Callbacks) (
 				// using native tool calls.
 				respFields["content"] = assistantBuf.String()
 			}
+
 			if gotUsage {
 				respFields["usage_prompt_tokens"] = usageFromAPI.PromptTokens
 				respFields["usage_completion_tokens"] = usageFromAPI.CompletionTokens
 				respFields["usage_total_tokens"] = usageFromAPI.TotalTokens
 			}
+
 			if len(rawTrace) > 0 {
 				respFields["raw_trace"] = rawTrace
 			}
+
 			_ = g.slow.Write("llm.response", chatID, respFields)
 		}
 
@@ -724,6 +1004,7 @@ func (g *GM) runConversation(ctx context.Context, chatID string, cb Callbacks) (
 		if allToolCallsBroken(storedCalls) {
 			storedCalls = nil
 		}
+
 		conv.mu.Lock()
 		conv.messages = append(conv.messages, llm.Message{
 			Role:      "assistant",
@@ -746,20 +1027,22 @@ func (g *GM) runConversation(ctx context.Context, chatID string, cb Callbacks) (
 		// non-fatal; the user-visible narrative
 		// has already been streamed.
 		if len(toolCalls) == 0 {
-			cmds := extractContextCommands(assistantBuf.String())
-			g.executeExtractedCommands(ctx, chatID, currentWorldName(g.fs), cmds)
+			cmds := ExtractContextCommands(assistantBuf.String())
+			g.executeExtractedCommands(ctx, chatID, currentWorldName(g.FS), cmds)
 		}
 
 		// Accumulate per-round token accounting.
 		roundUsage := g.accountRound(messages, roundCompChars, assistantBuf.String(), gotUsage, usageFromAPI)
 		totals.PromptTokens += roundUsage.PromptTokens
 		totals.CompletionTokens += roundUsage.CompletionTokens
+
 		totals.TotalTokens += roundUsage.TotalTokens
 		if roundUsage.Source != "off" && totals.Source == "off" {
 			totals.Source = roundUsage.Source
 		} else if totals.Source == "" && roundUsage.Source != "" {
 			totals.Source = roundUsage.Source
 		}
+
 		if cb.OnTokens != nil {
 			cb.OnTokens(llm.Usage{
 				PromptTokens:     roundUsage.PromptTokens,
@@ -767,6 +1050,7 @@ func (g *GM) runConversation(ctx context.Context, chatID string, cb Callbacks) (
 				TotalTokens:      roundUsage.TotalTokens,
 			})
 		}
+
 		if g.slow != nil {
 			_ = g.slow.Write("llm.tokens", chatID, map[string]any{
 				"round":             round,
@@ -782,10 +1066,12 @@ func (g *GM) runConversation(ctx context.Context, chatID string, cb Callbacks) (
 			// whether the model returned empty content, the stream
 			// got cut off, or the provider sent a done frame only.
 			fullContent := assistantBuf.String()
+
 			preview := fullContent
 			if len(preview) > 500 {
 				preview = preview[:500] + "…"
 			}
+
 			fields := map[string]any{
 				"round":         round,
 				"finish":        finishReason,
@@ -811,6 +1097,7 @@ func (g *GM) runConversation(ctx context.Context, chatID string, cb Callbacks) (
 			if len(fullContent) > 0 {
 				fields["content_full"] = fullContent
 			}
+
 			fields["request_tools"] = formatToolsForLog(g.toolSpecs)
 			_ = g.slow.Write("llm.round", chatID, fields)
 		}
@@ -864,13 +1151,19 @@ func (g *GM) runConversation(ctx context.Context, chatID string, cb Callbacks) (
 						"all_broken":     allToolCallsBroken(storedCalls),
 					})
 				}
+
 				g.log.Error().
 					Int("round", round).
 					Str("finish", finishReason).
 					Int("raw_trace_count", len(rawTrace)).
 					Msg("llm returned empty content (no tools, no text) — hard error, no retry")
-				return totals, fmt.Errorf("model returned no tool_use and no content (round=%d, finish=%s, raw_events=%d)", round, finishReason, len(rawTrace))
+
+				return totals, fmt.Errorf(
+					"model returned no tool_use and no content (round=%d, finish=%s, raw_events=%d)",
+					round, finishReason, len(rawTrace),
+				)
 			}
+
 			return totals, nil
 		}
 
@@ -881,8 +1174,10 @@ func (g *GM) runConversation(ctx context.Context, chatID string, cb Callbacks) (
 			for _, tc := range toolCalls {
 				names = append(names, tc.Function.Name)
 			}
+
 			cb.OnStatus("tool_dispatch", map[string]any{"tools": names})
 		}
+
 		results := g.executeTools(ctx, toolCalls)
 		// Post-tool guard: if the model returned a narrative that
 		// mentions facts about the player (age, name, skills) or
@@ -892,7 +1187,7 @@ func (g *GM) runConversation(ctx context.Context, chatID string, cb Callbacks) (
 		// see the gap in slow.log, and inject a one-shot hint
 		// onto the next user turn via the conv history so the
 		// model gets a chance to self-correct.
-		g.missedToolGuard(ctx, chatID, toolCalls, assistantBuf.String(), currentWorldName(g.fs))
+		g.missedToolGuard(ctx, chatID, toolCalls, assistantBuf.String(), currentWorldName(g.FS))
 
 		// Stuck guard: when the model issues tool calls N rounds
 		// in a row without ever producing narrative content, it
@@ -904,21 +1199,26 @@ func (g *GM) runConversation(ctx context.Context, chatID string, cb Callbacks) (
 		} else {
 			consecutiveToolOnlyRounds = 0
 		}
+
 		const maxStuckToolRounds = 3
 		if consecutiveToolOnlyRounds >= maxStuckToolRounds {
 			g.log.Warn().
 				Int("round", round).
 				Int("consecutive", consecutiveToolOnlyRounds).
 				Msg("model issued tool calls without narrative for N rounds — injecting nudge")
+
 			if g.slow != nil {
 				_ = g.slow.Write("gm.stuck_nudge", chatID, map[string]any{
 					"round":       round,
 					"consecutive": consecutiveToolOnlyRounds,
 				})
 			}
+
 			nudge := llm.Message{
-				Role:    "user",
-				Content: "[система] Все инструменты выполнены. Теперь обязательно напиши нарративный ответ игроку в формате JSON (narration, context, future, validation). Не вызывай больше инструменты.",
+				Role: "user",
+				Content: "[система] Все инструменты выполнены. Теперь обязательно напиши " +
+					"нарративный ответ игроку в формате JSON (narration, context, future, validation). " +
+					"Не вызывай больше инструменты.",
 			}
 
 			conv.mu.Lock()
@@ -941,8 +1241,17 @@ func (g *GM) runConversation(ctx context.Context, chatID string, cb Callbacks) (
 		history = append(history, results...)
 		toolCalls = nil
 	}
+
 	return totals, fmt.Errorf("gm: tool loop exceeded %d rounds", maxToolRounds)
 }
+
+// missedToolGuard inspects the assistant turn + the tool calls
+// the model issued and warns (via slowlog) when the narrative
+// clearly called for update_character / create_npc but no
+// such call was made. The check is heuristic on purpose — it
+// errs on the side of "no warning" rather than spamming the
+// slowlog on every turn. Operators who want a tighter contract
+// can add a stricter checker here.
 
 // missedToolGuard inspects the assistant turn + the tool calls
 // the model issued and warns (via slowlog) when the narrative
@@ -955,10 +1264,12 @@ func (g *GM) missedToolGuard(_ context.Context, chatID string, calls []llm.ToolC
 	if world == "" {
 		return
 	}
+
 	called := make(map[string]bool, len(calls))
 	for _, tc := range calls {
 		called[tc.Function.Name] = true
 	}
+
 	lower := strings.ToLower(answer)
 	// Missing per-character file tools: the assistant
 	// turn mentions the player's name, age, or a
@@ -983,6 +1294,7 @@ func (g *GM) missedToolGuard(_ context.Context, chatID string, calls []llm.ToolC
 					Str("trigger", t).
 					Str("chat", chatID).
 					Msg("narrative mentions player facts but no per-character file tool was called")
+
 				if g.slow != nil {
 					_ = g.slow.Write("gm.missed_tool", chatID, map[string]any{
 						"tool":    "update_soul|update_skill|update_memory",
@@ -990,6 +1302,7 @@ func (g *GM) missedToolGuard(_ context.Context, chatID string, calls []llm.ToolC
 						"trigger": t,
 					})
 				}
+
 				return
 			}
 		}
@@ -1003,17 +1316,19 @@ func (g *GM) missedToolGuard(_ context.Context, chatID string, calls []llm.ToolC
 	if !called["create_npc"] {
 		for _, npc := range extractProperNamesFromDialogue(answer) {
 			rel := "worlds/" + world + "/characters/" + npc + ".md"
-			if !g.fs.Exists(rel) {
+			if !g.FS.Exists(rel) {
 				g.log.Warn().
 					Str("npc", npc).
 					Str("chat", chatID).
 					Msg("narrative introduces a new NPC without a profile; create_npc was not called")
+
 				if g.slow != nil {
 					_ = g.slow.Write("gm.missed_tool", chatID, map[string]any{
 						"tool": "create_npc",
 						"npc":  npc,
 					})
 				}
+
 				return
 			}
 		}
@@ -1028,7 +1343,9 @@ func (g *GM) missedToolGuard(_ context.Context, chatID string, calls []llm.ToolC
 // "— Хокаге-сама, я…").
 func extractProperNamesFromDialogue(answer string) []string {
 	var out []string
+
 	seen := make(map[string]bool)
+
 	for ln := range strings.SplitSeq(answer, "\n") {
 		t := strings.TrimSpace(ln)
 		if !strings.HasPrefix(t, "—") && !strings.HasPrefix(t, "-") {
@@ -1038,6 +1355,7 @@ func extractProperNamesFromDialogue(answer string) []string {
 		body := strings.TrimLeft(t, "—- ")
 		// Walk words; collect runs of capitalised tokens.
 		var current []string
+
 		for w := range strings.FieldsSeq(body) {
 			// Strip punctuation.
 			cleaned := strings.Trim(w, ",.;:!?\"'()«»…")
@@ -1054,9 +1372,11 @@ func extractProperNamesFromDialogue(answer string) []string {
 					seen[name] = true
 					out = append(out, name)
 				}
+
 				current = nil
 			}
 		}
+
 		if len(current) > 0 {
 			name := strings.Join(current, " ")
 			if !seen[name] {
@@ -1065,17 +1385,18 @@ func extractProperNamesFromDialogue(answer string) []string {
 			}
 		}
 	}
+
 	return out
 }
 
-// extractedCommand is one actionable directive recovered
+// ExtractedCommand is one actionable directive recovered
 // from the assistant turn. The GM runs these locally as
 // if the model had issued a real tool_call (which on
 // Ollama Cloud is silently ignored — see the rationale
 // in cmd/test-openapi/main.go). Commands are pure data;
 // the dispatcher below (executeExtractedCommands) knows
 // how to route them to the right usecase.Tool method.
-type extractedCommand struct {
+type ExtractedCommand struct {
 	// Kind is one of the wire-form canonical
 	// command names. After the h5 refactor the
 	// per-character dispatcher is split into
@@ -1093,13 +1414,13 @@ type extractedCommand struct {
 	Raw string
 }
 
-// extractContextCommands scans the assistant turn for
+// ExtractContextCommands scans the assistant turn for
 // bullet-style tool directives. The model is told in
 // prompts/narrative.md to write these as a fallback when
 // the provider does not honour tool_choice=required (which
 // is every Ollama Cloud model we have probed). Each line
 // that matches a known pattern becomes an
-// extractedCommand that the GM dispatches in the same
+// ExtractedCommand that the GM dispatches in the same
 // goroutine after streaming finishes.
 //
 // Both wire formats are supported:
@@ -1119,7 +1440,7 @@ type extractedCommand struct {
 // Unknown lines are silently dropped — the slowlog
 // `context.extracted` event records what we kept so the
 // operator can audit the gap.
-func extractContextCommands(answer string) []extractedCommand {
+func ExtractContextCommands(answer string) []ExtractedCommand {
 	body := answer
 	if structured.LooksLikeJSON(answer) {
 		n, err := structured.Parse(answer)
@@ -1135,7 +1456,9 @@ func extractContextCommands(answer string) []extractedCommand {
 	if block == "" {
 		return nil
 	}
-	var out []extractedCommand
+
+	var out []ExtractedCommand
+
 	for raw := range strings.SplitSeq(block, "\n") {
 		line := strings.TrimSpace(raw)
 		// Skip empty lines and lines that are clearly
@@ -1144,11 +1467,13 @@ func extractContextCommands(answer string) []extractedCommand {
 		if !looksLikeDirective(line) {
 			continue
 		}
+
 		if cmd, ok := parseDirectiveLine(line); ok {
 			cmd.Raw = line
 			out = append(out, cmd)
 		}
 	}
+
 	return out
 }
 
@@ -1163,8 +1488,10 @@ func extractContextBlock(body string) string {
 	if body == "" {
 		return ""
 	}
+
 	lower := strings.ToLower(body)
 	start := -1
+
 	for _, marker := range []string{
 		"**контекст и изменения**",
 		"**контекст**",
@@ -1172,9 +1499,11 @@ func extractContextBlock(body string) string {
 	} {
 		if idx := strings.Index(lower, marker); idx >= 0 {
 			start = idx + len(marker)
+
 			break
 		}
 	}
+
 	if start < 0 {
 		// JSON-mode fallback: if the body is one
 		// short paragraph with no header, treat the
@@ -1185,6 +1514,7 @@ func extractContextBlock(body string) string {
 		if len(body) <= 800 {
 			return body
 		}
+
 		return ""
 	}
 	// Find the end: next major header.
@@ -1197,9 +1527,11 @@ func extractContextBlock(body string) string {
 	} {
 		if idx := strings.Index(strings.ToLower(rest), end); idx >= 0 {
 			rest = rest[:idx]
+
 			break
 		}
 	}
+
 	return rest
 }
 
@@ -1221,7 +1553,9 @@ func looksLikeDirective(line string) bool {
 	default:
 		return false
 	}
+
 	lower := strings.ToLower(line)
+
 	prefixes := []string{
 		"update_npc", "update_state", "append_lore",
 		"create_npc",
@@ -1235,6 +1569,7 @@ func looksLikeDirective(line string) bool {
 			return true
 		}
 	}
+
 	return false
 }
 
@@ -1251,7 +1586,9 @@ func looksLikeDirective(line string) bool {
 // follow the canonical Russian vocabulary in
 // usecase/tools/files/npc.go (temperament, status,
 // abilities, etc.) and are matched case-insensitively.
-func parseDirectiveLine(line string) (extractedCommand, bool) { //nolint:funlen // directive parsing requires many statement branches
+//
+//nolint:funlen // directive parsing requires many statement branches
+func parseDirectiveLine(line string) (ExtractedCommand, bool) {
 	// Strip the leading bullet. TrimLeftFunc is the
 	// rune-safe counterpart to TrimLeft — needed
 	// because ⦁ / • are multi-byte UTF-8 codepoints
@@ -1262,6 +1599,7 @@ func parseDirectiveLine(line string) (extractedCommand, bool) { //nolint:funlen 
 		case '⦁', '•', '-', '*', '>', ' ', '\'':
 			return true
 		}
+
 		return false
 	})
 	lower := strings.ToLower(stripped)
@@ -1273,21 +1611,25 @@ func parseDirectiveLine(line string) (extractedCommand, bool) { //nolint:funlen 
 		// long form and recurse.
 		return parseDirectiveLine("⦁ update_npc: " + strings.TrimSpace(stripped[4:]))
 	}
+
 	if strings.HasPrefix(lower, "lore:") {
 		body := strings.TrimSpace(stripped[5:])
 		// Split on the first em-dash / dash / colon:
 		// "header — body" or "header: body".
 		header, bullet := splitHeaderBullet(body)
-		return extractedCommand{
+
+		return ExtractedCommand{
 			Kind: "append_lore",
 			Args: map[string]string{"header": header, "bullet": bullet},
 		}, true
 	}
+
 	if strings.HasPrefix(lower, "state:") {
 		body := strings.TrimSpace(stripped[6:])
 		// "state: moment=...; npcs=...; events=..."
-		args := parseSemicolonPairs(body)
-		return extractedCommand{
+		args := ParseSemicolonPairs(body)
+
+		return ExtractedCommand{
 			Kind: "update_state",
 			Args: args,
 		}, true
@@ -1317,12 +1659,14 @@ func parseDirectiveLine(line string) (extractedCommand, bool) { //nolint:funlen 
 			// "header — bullet".
 			args["header"], args["bullet"] = splitHeaderBullet(body)
 		}
-		return extractedCommand{Kind: "append_lore", Args: args}, true
+
+		return ExtractedCommand{Kind: "append_lore", Args: args}, true
 	case strings.HasPrefix(lower, "update_state:"):
 		body := strings.TrimSpace(stripped[len("update_state:"):])
-		return extractedCommand{
+
+		return ExtractedCommand{
 			Kind: "update_state",
-			Args: parseSemicolonPairs(body),
+			Args: ParseSemicolonPairs(body),
 		}, true
 	case strings.HasPrefix(lower, "update_soul:"):
 		// "section=Легенда для прикрытия, append=..." —
@@ -1330,68 +1674,77 @@ func parseDirectiveLine(line string) (extractedCommand, bool) { //nolint:funlen 
 		// the tool name, no `file=` discriminator
 		// anymore.
 		body := strings.TrimSpace(stripped[len("update_soul:"):])
-		return extractedCommand{
+
+		return ExtractedCommand{
 			Kind: "update_soul",
 			Args: parseCommaPairs(body),
 		}, true
 	case strings.HasPrefix(lower, "update_skill:"):
 		body := strings.TrimSpace(stripped[len("update_skill:"):])
-		return extractedCommand{
+
+		return ExtractedCommand{
 			Kind: "update_skill",
 			Args: parseCommaPairs(body),
 		}, true
 	case strings.HasPrefix(lower, "update_memory:"):
 		body := strings.TrimSpace(stripped[len("update_memory:"):])
-		return extractedCommand{
+
+		return ExtractedCommand{
 			Kind: "update_memory",
 			Args: parseCommaPairs(body),
 		}, true
 	case strings.HasPrefix(lower, "update_inventory:"):
 		// "name=Кунай, type=weapon, equip=true, description=..., special=..."
 		body := strings.TrimSpace(stripped[len("update_inventory:"):])
-		return extractedCommand{
+
+		return ExtractedCommand{
 			Kind: "update_inventory",
 			Args: parseCommaPairs(body),
 		}, true
 	case strings.HasPrefix(lower, "remove_inventory_item:"):
 		body := strings.TrimSpace(stripped[len("remove_inventory_item:"):])
-		return extractedCommand{
+
+		return ExtractedCommand{
 			Kind: "remove_inventory_item",
 			Args: parseCommaPairs(body),
 		}, true
 	case strings.HasPrefix(lower, "set_currency:"):
 		// "name=Рё, count=4200"
 		body := strings.TrimSpace(stripped[len("set_currency:"):])
-		return extractedCommand{
+
+		return ExtractedCommand{
 			Kind: "set_currency",
 			Args: parseCommaPairs(body),
 		}, true
 	case strings.HasPrefix(lower, "remove_currency:"):
 		body := strings.TrimSpace(stripped[len("remove_currency:"):])
-		return extractedCommand{
+
+		return ExtractedCommand{
 			Kind: "remove_currency",
 			Args: parseCommaPairs(body),
 		}, true
 	case strings.HasPrefix(lower, "create_npc:"):
 		body := strings.TrimSpace(stripped[len("create_npc:"):])
-		return extractedCommand{
+
+		return ExtractedCommand{
 			Kind: "create_npc",
-			Args: parseSemicolonPairs(body),
+			Args: ParseSemicolonPairs(body),
 		}, true
 	}
-	return extractedCommand{}, false
+
+	return ExtractedCommand{}, false
 }
 
 // parseUpdateNpcLine handles "Name — section: text" with
 // em-dash, comma, or "section=text" variants.
-func parseUpdateNpcLine(body string) (extractedCommand, bool) {
+func parseUpdateNpcLine(body string) (ExtractedCommand, bool) {
 	body = strings.TrimSpace(body)
 	if body == "" {
-		return extractedCommand{}, false
+		return ExtractedCommand{}, false
 	}
 	// Long form: "Name, section=..., append=..."
 	if strings.Contains(body, "=") { //nolint:nestif // dispatch logic requires nesting
-		args := parseSemicolonPairs(body)
+		args := ParseSemicolonPairs(body)
 		if name, ok := args["npc"]; ok {
 			args["npc"] = strings.TrimSpace(name)
 		} else {
@@ -1405,21 +1758,23 @@ func parseUpdateNpcLine(body string) (extractedCommand, bool) {
 				args["npc"] = body
 			}
 		}
-		return extractedCommand{Kind: "update_npc", Args: args}, true
+
+		return ExtractedCommand{Kind: "update_npc", Args: args}, true
 	}
 	// Short form: "Name — section: text" or
 	// "Name — section: text — extra".
 	name, rest, ok := splitOnEmDash(body)
 	if !ok {
 		// "Name" alone is not actionable.
-		return extractedCommand{}, false
+		return ExtractedCommand{}, false
 	}
+
 	section, text, ok := splitOnColon(rest)
 	if !ok {
 		// "Name — section" without ": text". Treat
 		// the rest as section, no text — caller
 		// will reject empty append.
-		return extractedCommand{
+		return ExtractedCommand{
 			Kind: "update_npc",
 			Args: map[string]string{
 				"npc":     strings.TrimSpace(name),
@@ -1428,7 +1783,8 @@ func parseUpdateNpcLine(body string) (extractedCommand, bool) {
 			},
 		}, true
 	}
-	return extractedCommand{
+
+	return ExtractedCommand{
 		Kind: "update_npc",
 		Args: map[string]string{
 			"npc":     strings.TrimSpace(name),
@@ -1447,9 +1803,11 @@ func splitHeaderBullet(s string) (string, string) {
 			if r == ':' && i == 0 {
 				continue
 			}
+
 			return strings.TrimSpace(s[:i]), strings.TrimSpace(s[i+1:])
 		}
 	}
+
 	return "", strings.TrimSpace(s)
 }
 
@@ -1465,10 +1823,12 @@ func splitOnEmDash(s string) (string, string, bool) {
 		if r == '—' {
 			return s[:i], s[i+len("—"):], true
 		}
+
 		if r == ',' {
 			return s[:i], s[i+1:], true
 		}
 	}
+
 	return "", "", false
 }
 
@@ -1480,13 +1840,14 @@ func splitOnColon(s string) (string, string, bool) {
 			return s[:i], s[i+1:], true
 		}
 	}
+
 	return "", "", false
 }
 
-// parseSemicolonPairs reads "k1=v1; k2=v2" into a map.
+// ParseSemicolonPairs reads "k1=v1; k2=v2" into a map.
 // Keys are lower-cased and trimmed. Empty entries are
 // dropped. Quoted values have the quotes stripped.
-// parseSemicolonPairs splits `s` on ";" and
+// ParseSemicolonPairs splits `s` on ";" and
 // interprets each chunk as a `key=value` pair. Chunks
 // without an "=" are treated as a continuation of
 // the previous pair's value (joined with the same
@@ -1495,15 +1856,15 @@ func splitOnColon(s string) (string, string, bool) {
 // the value without breaking the split. Keys are
 // lower-cased; surrounding quotes are stripped from
 // values.
-func parseSemicolonPairs(s string) map[string]string {
+func ParseSemicolonPairs(s string) map[string]string {
 	return parseKeyValuePairs(s, ";")
 }
 
 // parseCommaPairs is the comma-separated sibling of
-// parseSemicolonPairs. Used for append_lore where the
+// ParseSemicolonPairs. Used for append_lore where the
 // model writes "header=X, bullet=Y" rather than the
 // semicolon form. Same continuation rule as
-// parseSemicolonPairs: chunks without "=" join the
+// ParseSemicolonPairs: chunks without "=" join the
 // previous value with the same separator, so a
 // comma inside the value (e.g.
 // "append=рамен, суши") is preserved verbatim.
@@ -1520,12 +1881,15 @@ func parseCommaPairs(s string) map[string]string {
 // silently dropped. Empty chunks are skipped.
 func parseKeyValuePairs(s, sep string) map[string]string {
 	out := map[string]string{}
+
 	var lastKey string
+
 	for part := range strings.SplitSeq(s, sep) {
 		part = strings.TrimSpace(part)
 		if part == "" {
 			continue
 		}
+
 		key, val, hasEq := strings.Cut(part, "=")
 		if !hasEq {
 			// Bare chunk — append to previous value
@@ -1535,10 +1899,12 @@ func parseKeyValuePairs(s, sep string) map[string]string {
 			if lastKey == "" {
 				continue
 			}
+
 			out[lastKey] = out[lastKey] + sep + " " + key
 
 			continue
 		}
+
 		key = strings.ToLower(strings.TrimSpace(key))
 		val = strings.TrimSpace(val)
 		val = strings.Trim(val, "\"'«»")
@@ -1546,9 +1912,11 @@ func parseKeyValuePairs(s, sep string) map[string]string {
 		if key == "" {
 			continue
 		}
+
 		out[key] = val
 		lastKey = key
 	}
+
 	return out
 }
 
@@ -1558,14 +1926,27 @@ func parseKeyValuePairs(s, sep string) map[string]string {
 // prevent the user-visible narrative from being delivered.
 // The dispatch mirrors gm.dispatchOneTool but is data-
 // driven (no llm.ToolCall envelope). //nolint:funlen // complex function; splitting would harm readability.
-func (g *GM) executeExtractedCommands(ctx context.Context, chatID, world string, cmds []extractedCommand) { //nolint:funlen // complex function; splitting would harm readability.
+
+// executeExtractedCommands runs every directive the parser
+// recovered. Errors are logged at warn level but do not
+// abort the turn — a malformed directive should not
+// prevent the user-visible narrative from being delivered.
+// The dispatch mirrors gm.dispatchOneTool but is data-
+// driven (no llm.ToolCall envelope).
+//
+//nolint:funlen // complex function; splitting would harm readability.
+//nolint:funlen // complex function; splitting would harm readability.
+func (g *GM) executeExtractedCommands(ctx context.Context, chatID, world string, cmds []ExtractedCommand) {
 	if len(cmds) == 0 {
 		return
 	}
+
 	if g.tools == nil {
 		g.log.Warn().Int("n", len(cmds)).Msg("context.extracted: no tools wired; skipping")
+
 		return
 	}
+
 	var (
 		executed int
 		failed   int
@@ -1573,6 +1954,7 @@ func (g *GM) executeExtractedCommands(ctx context.Context, chatID, world string,
 	)
 	for _, c := range cmds {
 		byKind[c.Kind]++
+
 		var err error
 
 		switch c.Kind {
@@ -1605,6 +1987,7 @@ func (g *GM) executeExtractedCommands(ctx context.Context, chatID, world string,
 
 			continue
 		}
+
 		if err != nil {
 			g.log.Warn().Err(err).Str("kind", c.Kind).Str("raw", c.Raw).Msg("context.extracted: dispatch failed")
 
@@ -1613,6 +1996,7 @@ func (g *GM) executeExtractedCommands(ctx context.Context, chatID, world string,
 			executed++
 		}
 	}
+
 	if g.slow != nil {
 		_ = g.slow.Write("context.extracted", chatID, map[string]any{
 			"total":    len(cmds),
@@ -1621,6 +2005,7 @@ func (g *GM) executeExtractedCommands(ctx context.Context, chatID, world string,
 			"by_kind":  byKind,
 		})
 	}
+
 	g.log.Info().
 		Int("total", len(cmds)).
 		Int("executed", executed).
@@ -1632,7 +2017,11 @@ func (g *GM) executeExtractedCommands(ctx context.Context, chatID, world string,
 // dispatchUpdateNpcDirective runs UpdateNPC from an
 // extracted directive. The args map is what
 // parseDirectiveLine / parseUpdateNpcLine produced.
-func (g *GM) dispatchUpdateNpcDirective(_ context.Context, world string, c extractedCommand) error {
+
+// dispatchUpdateNpcDirective runs UpdateNPC from an
+// extracted directive. The args map is what
+// parseDirectiveLine / parseUpdateNpcLine produced.
+func (g *GM) dispatchUpdateNpcDirective(_ context.Context, world string, c ExtractedCommand) error {
 	name := strings.TrimSpace(c.Args["npc"])
 	section := strings.TrimSpace(c.Args["section"])
 	appendText := c.Args["append"]
@@ -1640,43 +2029,70 @@ func (g *GM) dispatchUpdateNpcDirective(_ context.Context, world string, c extra
 	if name == "" {
 		return errors.New("update_npc: npc name required")
 	}
+
 	if section == "" {
 		return errors.New("update_npc: section required")
 	}
+
 	if strings.TrimSpace(appendText) == "" {
 		return errors.New("update_npc: append text required (no empty updates)")
 	}
-	return g.tools.UpdateNPC(world, name, section, appendText)
+
+	if err := g.tools.UpdateNPC(world, name, section, appendText); err != nil {
+		return fmt.Errorf("dispatchUpdateNPC: %w", err)
+	}
+
+	return nil
 }
 
 // dispatchUpdateStateDirective runs UpdateState from a
 // directive. The "npcs" and "events" args are comma-
 // separated; "moment" and "in_flight" are scalars.
-func (g *GM) dispatchUpdateStateDirective(_ context.Context, world string, c extractedCommand) error {
+
+// dispatchUpdateStateDirective runs UpdateState from a
+// directive. The "npcs" and "events" args are comma-
+// separated; "moment" and "in_flight" are scalars.
+func (g *GM) dispatchUpdateStateDirective(_ context.Context, world string, c ExtractedCommand) error {
 	moment := strings.TrimSpace(c.Args["moment"])
 	if moment == "" {
 		return errors.New("update_state: moment required")
 	}
-	inFlight := parseBoolArg(c.Args["in_flight"])
-	npcs := splitCSV(c.Args["npcs"])
-	events := splitCSV(c.Args["events"])
+
+	inFlight := ParseBoolArg(c.Args["in_flight"])
+	npcs := SplitCSV(c.Args["npcs"])
+	events := SplitCSV(c.Args["events"])
 	day := g.snapshotDay(world)
-	return g.tools.UpdateState(StateSnapshot{
+
+	if err := g.tools.UpdateState(StateSnapshot{
 		Day: day, InFlight: inFlight, Moment: moment, NPCs: npcs,
 		AppendEvents: events,
-	})
+	}); err != nil {
+		return fmt.Errorf("dispatchUpdateState: %w", err)
+	}
+
+	return nil
 }
 
 // dispatchAppendLoreDirective writes one deviation
 // entry to lore.md. The header is a short title (e.g.
 // "День 5"), the bullet is the new fact.
-func (g *GM) dispatchAppendLoreDirective(_ context.Context, world string, c extractedCommand) error {
+
+// dispatchAppendLoreDirective writes one deviation
+// entry to lore.md. The header is a short title (e.g.
+// "День 5"), the bullet is the new fact.
+func (g *GM) dispatchAppendLoreDirective(_ context.Context, world string, c ExtractedCommand) error {
 	header := strings.TrimSpace(c.Args["header"])
+
 	bullet := strings.TrimSpace(c.Args["bullet"])
 	if header == "" || bullet == "" {
 		return errors.New("append_lore: header and bullet required")
 	}
-	return g.tools.AppendLore(world, header, bullet)
+
+	if err := g.tools.AppendLore(world, header, bullet); err != nil {
+		return fmt.Errorf("dispatchAppendLore: %w", err)
+	}
+
+	return nil
 }
 
 // dispatchUpdateSoulDirective routes a
@@ -1684,63 +2100,92 @@ func (g *GM) dispatchAppendLoreDirective(_ context.Context, world string, c extr
 // to the same AppendSoul path that the native
 // tool call uses. The arg map is what
 // parseDirectiveLine produced.
-func (g *GM) dispatchUpdateSoulDirective(_ context.Context, c extractedCommand) error {
+
+// dispatchUpdateSoulDirective routes a
+// КОНТЕКСТ-блок "update_soul: section=X, append=Y"
+// to the same AppendSoul path that the native
+// tool call uses. The arg map is what
+// parseDirectiveLine produced.
+func (g *GM) dispatchUpdateSoulDirective(_ context.Context, c ExtractedCommand) error {
 	section := strings.TrimSpace(c.Args["section"])
 	appendText := c.Args["append"]
+
 	if section == "" {
 		return errors.New("update_soul: section required")
 	}
+
 	if strings.TrimSpace(appendText) == "" {
 		return errors.New("update_soul: append text required (no empty updates)")
 	}
+
 	sc, err := g.ss.Start()
 	if err != nil {
 		return err
 	}
+
 	_, err = g.tools.AppendSoul(sc.Character, section, appendText)
-	return err
+	if err != nil {
+		return fmt.Errorf("dispatchAppendSoul: %w", err)
+	}
+
+	return nil
 }
 
 // dispatchUpdateSkillDirective is the strict-enum
 // sibling of dispatchUpdateSoulDirective. The
 // charprofile layer rejects unknown section
 // names; the error surfaces here verbatim.
-func (g *GM) dispatchUpdateSkillDirective(_ context.Context, c extractedCommand) error {
+func (g *GM) dispatchUpdateSkillDirective(_ context.Context, c ExtractedCommand) error {
 	section := strings.TrimSpace(c.Args["section"])
 	appendText := c.Args["append"]
+
 	if section == "" {
 		return errors.New("update_skill: section required")
 	}
+
 	if strings.TrimSpace(appendText) == "" {
 		return errors.New("update_skill: append text required (no empty updates)")
 	}
+
 	sc, err := g.ss.Start()
 	if err != nil {
 		return err
 	}
+
 	_, err = g.tools.AppendSkill(sc.Character, section, appendText)
-	return err
+	if err != nil {
+		return fmt.Errorf("dispatchAppendSkill: %w", err)
+	}
+
+	return nil
 }
 
 // dispatchUpdateMemoryDirective is the third
 // per-file Append* dispatcher. Memory.yaml is
 // the strictest enum (4 names).
-func (g *GM) dispatchUpdateMemoryDirective(_ context.Context, c extractedCommand) error {
+func (g *GM) dispatchUpdateMemoryDirective(_ context.Context, c ExtractedCommand) error {
 	section := strings.TrimSpace(c.Args["section"])
 	appendText := c.Args["append"]
 
 	if section == "" {
 		return errors.New("update_memory: section required")
 	}
+
 	if strings.TrimSpace(appendText) == "" {
 		return errors.New("update_memory: append text required (no empty updates)")
 	}
+
 	sc, err := g.ss.Start()
 	if err != nil {
 		return err
 	}
+
 	_, err = g.tools.AppendMemorySection(sc.Character, section, appendText)
-	return err
+	if err != nil {
+		return fmt.Errorf("dispatchAppendMemorySection: %w", err)
+	}
+
+	return nil
 }
 
 // dispatchUpdateInventoryDirective is the
@@ -1749,65 +2194,91 @@ func (g *GM) dispatchUpdateMemoryDirective(_ context.Context, c extractedCommand
 // the args and forwards. equip is optional —
 // false is the safe default for "I just picked
 // this up, not wearing it yet".
-func (g *GM) dispatchUpdateInventoryDirective(_ context.Context, c extractedCommand) error {
+func (g *GM) dispatchUpdateInventoryDirective(_ context.Context, c ExtractedCommand) error {
 	name := strings.TrimSpace(c.Args["name"])
 	typ := strings.TrimSpace(c.Args["type"])
 
 	if name == "" {
 		return errors.New("update_inventory: name required")
 	}
+
 	if typ == "" {
 		return errors.New("update_inventory: type required")
 	}
+
 	sc, err := g.ss.Start()
 	if err != nil {
 		return err
 	}
+
 	_, err = g.tools.AppendInventoryItem(sc.Character, charprofile.Item{
 		Name:        name,
 		Description: c.Args["description"],
-		Equip:       parseBoolArg(c.Args["equip"]),
+		Equip:       ParseBoolArg(c.Args["equip"]),
 		Special:     c.Args["special"],
 	})
-	return err
+	if err != nil {
+		return fmt.Errorf("dispatchAppendInventoryItem: %w", err)
+	}
+
+	return nil
 }
 
-func (g *GM) dispatchRemoveInventoryItemDirective(_ context.Context, c extractedCommand) error {
+func (g *GM) dispatchRemoveInventoryItemDirective(_ context.Context, c ExtractedCommand) error {
 	name := strings.TrimSpace(c.Args["name"])
 	if name == "" {
 		return errors.New("remove_inventory_item: name required")
 	}
+
 	sc, err := g.ss.Start()
 	if err != nil {
 		return err
 	}
-	return g.tools.RemoveInventoryItem(sc.Character, name)
+
+	if err := g.tools.RemoveInventoryItem(sc.Character, name); err != nil {
+		return fmt.Errorf("dispatchRemoveInventoryItem: %w", err)
+	}
+
+	return nil
 }
 
-func (g *GM) dispatchSetCurrencyDirective(_ context.Context, c extractedCommand) error {
+func (g *GM) dispatchSetCurrencyDirective(_ context.Context, c ExtractedCommand) error {
 	name := strings.TrimSpace(c.Args["name"])
 	if name == "" {
 		return errors.New("set_currency: name required")
 	}
+
 	count := toInt(c.Args["count"])
+
 	sc, err := g.ss.Start()
 	if err != nil {
 		return err
 	}
+
 	_, err = g.tools.SetCurrency(sc.Character, name, count)
-	return err
+	if err != nil {
+		return fmt.Errorf("dispatchSetCurrency: %w", err)
+	}
+
+	return nil
 }
 
-func (g *GM) dispatchRemoveCurrencyDirective(_ context.Context, c extractedCommand) error {
+func (g *GM) dispatchRemoveCurrencyDirective(_ context.Context, c ExtractedCommand) error {
 	name := strings.TrimSpace(c.Args["name"])
 	if name == "" {
 		return errors.New("remove_currency: name required")
 	}
+
 	sc, err := g.ss.Start()
 	if err != nil {
 		return err
 	}
-	return g.tools.RemoveCurrency(sc.Character, name)
+
+	if err := g.tools.RemoveCurrency(sc.Character, name); err != nil {
+		return fmt.Errorf("dispatchRemoveCurrency: %w", err)
+	}
+
+	return nil
 }
 
 // dispatchCreateNpcDirective is a best-effort fallback
@@ -1817,7 +2288,15 @@ func (g *GM) dispatchRemoveCurrencyDirective(_ context.Context, c extractedComma
 // temperament=Z"); richer payloads (relations,
 // nicknames, abilities) are dropped with a warning
 // because the real tool path is the rich version.
-func (g *GM) dispatchCreateNpcDirective(_ context.Context, world string, c extractedCommand) error {
+
+// dispatchCreateNpcDirective is a best-effort fallback
+// for when the model wrote create_npc as text but did
+// not call it as a tool. We only handle the most
+// common shape ("display_name=X; file_slug=Y;
+// temperament=Z"); richer payloads (relations,
+// nicknames, abilities) are dropped with a warning
+// because the real tool path is the rich version.
+func (g *GM) dispatchCreateNpcDirective(_ context.Context, world string, c ExtractedCommand) error {
 	spec := NPCProfile{
 		DisplayName: strings.TrimSpace(c.Args["display_name"]),
 		File:        strings.TrimSpace(c.Args["file_slug"]),
@@ -1828,35 +2307,44 @@ func (g *GM) dispatchCreateNpcDirective(_ context.Context, world string, c extra
 	if spec.DisplayName == "" || spec.File == "" {
 		return errors.New("create_npc: display_name and file_slug required")
 	}
-	return g.tools.Create(world, spec)
+
+	if err := g.tools.Create(world, spec); err != nil {
+		return fmt.Errorf("dispatchCreate: %w", err)
+	}
+
+	return nil
 }
 
-// parseBoolArg accepts "true" / "yes" / "1" / "on" as
+// ParseBoolArg accepts "true" / "yes" / "1" / "on" as
 // truthy; everything else is false.
-func parseBoolArg(s string) bool {
+func ParseBoolArg(s string) bool {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "true", "yes", "1", "on":
 		return true
 	}
+
 	return false
 }
 
-// splitCSV splits on comma OR semicolon, trims, drops
+// SplitCSV splits on comma OR semicolon, trims, drops
 // empties.
-func splitCSV(s string) []string {
+func SplitCSV(s string) []string {
 	if s == "" {
 		return nil
 	}
+
 	parts := strings.Split(s, ",")
 	if len(parts) == 1 {
 		parts = strings.Split(s, ";")
 	}
+
 	out := make([]string, 0, len(parts))
 	for _, p := range parts {
 		if p = strings.TrimSpace(p); p != "" {
 			out = append(out, p)
 		}
 	}
+
 	return out
 }
 
@@ -1865,13 +2353,20 @@ func splitCSV(s string) []string {
 // When tracking is "estimate" we always estimate regardless of
 // what the provider reported. When tracking is "usage" we trust
 // the provider; if it returned nothing, we estimate and warn.
+
+// accountRound converts the per-round counters into a TokenUsage.
+// When tracking is "off" the result is zero and source stays "off".
+// When tracking is "estimate" we always estimate regardless of
+// what the provider reported. When tracking is "usage" we trust
+// the provider; if it returned nothing, we estimate and warn.
 func (g *GM) accountRound(messages []llm.Message, _ int, compText string, gotUsage bool, usage llm.Usage) TokenUsage {
-	switch g.tracking {
+	switch g.Tracking {
 	case "", "off":
 		return TokenUsage{Source: "off"}
 	case "estimate":
 		prompt := llm.EstimateMessages(messages)
 		completion := llm.EstimateTokens(compText)
+
 		return TokenUsage{
 			PromptTokens:     prompt,
 			CompletionTokens: completion,
@@ -1887,9 +2382,12 @@ func (g *GM) accountRound(messages []llm.Message, _ int, compText string, gotUsa
 				Source:           "usage",
 			}
 		}
+
 		g.log.Warn().Msg("token_tracking=usage but provider returned no usage block — falling back to estimate")
+
 		prompt := llm.EstimateMessages(messages)
 		completion := llm.EstimateTokens(compText)
+
 		return TokenUsage{
 			PromptTokens:     prompt,
 			CompletionTokens: completion,
@@ -1897,6 +2395,7 @@ func (g *GM) accountRound(messages []llm.Message, _ int, compText string, gotUsa
 			Source:           "estimate",
 		}
 	}
+
 	return TokenUsage{Source: "off"}
 }
 
@@ -1908,6 +2407,7 @@ func promptCharSize(msgs []llm.Message) int {
 			n += len(tc.Function.Name) + len(tc.Function.Arguments)
 		}
 	}
+
 	return n
 }
 
@@ -1927,33 +2427,63 @@ func promptCharSize(msgs []llm.Message) int {
 // on Anthropic.
 //
 // Snapshotting: the two blocks are cached separately
-// (g.systemSnapshot, g.worldSnapshot) but share the same
+// (g.SystemSnapshot, g.WorldSnapshot) but share the same
 // sceneKey (world|character|day|in_flight). If any of those
 // change, both are rebuilt. invalidateWorldState() drops both,
-// forcing a rebuild on the next call (used by end_day, end_scene, //nolint:funlen // complex function; splitting would harm readability.
+// forcing a rebuild on the next call (used by end_day, end_scene,
 // leave_world, /reload, and compaction).
-func (g *GM) buildContext() (systemMsg, worldMsg string, err error) { //nolint:funlen // complex function; splitting would harm readability.
-	if !g.fs.Exists(storage.InfoFile) {
+
+// buildContext loads the current game-data and produces BOTH
+// the system prompt (rules + character) and the world-state
+// user message (world + NPCs) for the next turn.
+//
+// disableThinking forwards g.role.DisableThinking into
+// BuildSystemPrompt so a /no_think sentinel is prepended when the
+// role is configured to skip chain-of-thought.
+//
+// The system prompt is rules + character (stable for the
+// whole conversation); the world-state user message is
+// everything world-scoped (changes on end_day / leave /
+// reload / compaction). They are sent as two separate
+// messages with the world-state one holding the cache-pointe
+// on Anthropic.
+//
+// Snapshotting: the two blocks are cached separately
+// (g.SystemSnapshot, g.WorldSnapshot) but share the same
+// sceneKey (world|character|day|in_flight). If any of those
+// change, both are rebuilt. invalidateWorldState() drops both,
+// forcing a rebuild on the next call (used by end_day, end_scene,
+// leave_world, /reload, and compaction).
+
+//nolint:funlen // buildContext handles two distinct snapshot blocks; helper extraction would scatter the cache contract.
+func (g *GM) buildContext() (systemMsg, worldMsg string, err error) {
+	if !g.FS.Exists(storage.InfoFile) {
 		// No game state yet — the snapshot is meaningless,
 		// just render empty blocks. We still cache them
 		// so repeat calls don't redo the lookup.
-		g.contextMu.Lock()
-		defer g.contextMu.Unlock()
-		if g.systemSnapshot == "" {
-			g.systemSnapshot = domain.BuildSystemPrompt(g.staticPrompt, domain.CharacterContext{}, g.role.DisableThinking)
+		g.ContextMu.Lock()
+		defer g.ContextMu.Unlock()
+
+		if g.SystemSnapshot == "" {
+			g.SystemSnapshot = domain.BuildSystemPrompt(g.staticPrompt, domain.CharacterContext{}, g.role.DisableThinking)
+
 			ws, werr := domain.BuildWorldStateMessage(domain.WorldContext{}, domain.CharacterContext{})
 			if werr != nil {
 				return "", "", fmt.Errorf("ensure_snapshots: BuildWorldStateMessage failed: %w", werr)
 			}
-			g.worldSnapshot = ws
-			g.contextSceneKey = ""
+
+			g.WorldSnapshot = ws
+			g.ContextSceneKey = ""
 		}
-		return g.systemSnapshot, g.worldSnapshot, nil
+
+		return g.SystemSnapshot, g.WorldSnapshot, nil
 	}
+
 	sc, err := g.ss.Start()
 	if err != nil {
 		return "", "", err
 	}
+
 	sceneKey := sc.World + "|" + sc.Character + "|"
 	// Day and InFlight live in state.yaml, not in
 	// SessionContext. We parse the current state file
@@ -1963,7 +2493,7 @@ func (g *GM) buildContext() (systemMsg, worldMsg string, err error) { //nolint:f
 	// (update_state, snapshotDay, end_day) goes through
 	// the in-memory copy. The disk read only happens on
 	// a fresh buildContext.
-	if stateBody, _ := g.fs.ReadRaw(stateFilePath(sc.World)); stateBody != "" {
+	if stateBody, _ := g.FS.ReadRaw(stateFilePath(sc.World)); stateBody != "" {
 		snap := files.ParseStateYAMLFull(stateBody)
 		snap.World = sc.World
 		g.stateSnapshot = &snap
@@ -1973,25 +2503,26 @@ func (g *GM) buildContext() (systemMsg, worldMsg string, err error) { //nolint:f
 		sceneKey += "0|false"
 	}
 
-	g.contextMu.Lock()
-	if g.systemSnapshot != "" && g.worldSnapshot != "" && g.contextSceneKey == sceneKey {
-		sys := g.systemSnapshot
-		ws := g.worldSnapshot
-		g.contextMu.Unlock()
+	g.ContextMu.Lock()
+	if g.SystemSnapshot != "" && g.WorldSnapshot != "" && g.ContextSceneKey == sceneKey {
+		sys := g.SystemSnapshot
+		ws := g.WorldSnapshot
+		g.ContextMu.Unlock()
 		_ = g.slow.Write("context.snapshot.hit", "", map[string]any{
 			"scene_key":   sceneKey,
 			"system":      len(sys),
 			"world_state": len(ws),
 		})
+
 		return sys, ws, nil
 	}
-	g.contextMu.Unlock()
+	g.ContextMu.Unlock()
 
 	charCtx := domain.CharacterContext{
 		Character:       sc.Character,
-		CharacterSOUL:   safeRead(g.fs, "characters/"+sc.Character+"/SOUL.yaml"),
-		CharacterSKILL:  safeRead(g.fs, "characters/"+sc.Character+"/skill.yaml"),
-		CharacterMemory: safeRead(g.fs, "characters/"+sc.Character+"/memory.yaml"),
+		CharacterSOUL:   safeRead(g.FS, "characters/"+sc.Character+"/SOUL.yaml"),
+		CharacterSKILL:  safeRead(g.FS, "characters/"+sc.Character+"/skill.yaml"),
+		CharacterMemory: safeRead(g.FS, "characters/"+sc.Character+"/memory.yaml"),
 		// CharacterSections is intentionally empty
 		// in the YAML era: the section list is
 		// already in the file (the data: array).
@@ -2004,31 +2535,33 @@ func (g *GM) buildContext() (systemMsg, worldMsg string, err error) { //nolint:f
 	chron := &domain.Chronicle{Periods: periods, Days: days}
 	worldCtx := domain.WorldContext{
 		World:      sc.World,
-		WorldState: safeRead(g.fs, stateFilePath(sc.World)),
-		WorldCanon: safeRead(g.fs, "worlds/"+sc.World+"/canon.md"),
-		WorldLore:  safeRead(g.fs, "worlds/"+sc.World+"/lore.md"),
-		WorldPlan:  safeRead(g.fs, "worlds/"+sc.World+"/plan.md"),
+		WorldState: safeRead(g.FS, stateFilePath(sc.World)),
+		WorldCanon: safeRead(g.FS, "worlds/"+sc.World+"/canon.md"),
+		WorldLore:  safeRead(g.FS, "worlds/"+sc.World+"/lore.md"),
+		WorldPlan:  safeRead(g.FS, "worlds/"+sc.World+"/plan.md"),
 		Chronicle:  chron,
 		WorldStage: g.loadWorldStage(sc.World, sc.Character),
 		NPCs:       g.loadActiveNPCs(sc.World, sc.State),
 	}
 	builtSystem := domain.BuildSystemPrompt(g.staticPrompt, charCtx, g.role.DisableThinking)
+
 	builtWorld, err := domain.BuildWorldStateMessage(worldCtx, charCtx)
 	if err != nil {
 		return "", "", fmt.Errorf("wrap: %w", err)
 	}
 
-	g.contextMu.Lock()
-	g.systemSnapshot = builtSystem
-	g.worldSnapshot = builtWorld
-	g.contextSceneKey = sceneKey
+	g.ContextMu.Lock()
+	g.SystemSnapshot = builtSystem
+	g.WorldSnapshot = builtWorld
+	g.ContextSceneKey = sceneKey
 	g.contextBuiltAt = time.Now()
-	g.contextMu.Unlock()
+	g.ContextMu.Unlock()
 	_ = g.slow.Write("context.snapshot.miss", "", map[string]any{
 		"scene_key":   sceneKey,
 		"system":      len(builtSystem),
 		"world_state": len(builtWorld),
 	})
+
 	return builtSystem, builtWorld, nil
 }
 
@@ -2042,12 +2575,23 @@ func (g *GM) buildContext() (systemMsg, worldMsg string, err error) { //nolint:f
 //   - compaction (after appending "## Хроника текущего дня")
 //
 // Thread-safe.
+
+// invalidateWorldState drops the cached system prompt and
+// WorldState user message, forcing the next buildContext to
+// re-read from disk. Called on:
+//   - end_day (ArchiveChronicleDay hook) after appending the protocol
+//   - end_scene
+//   - leave_world (world switch)
+//   - /reload (operator override)
+//   - compaction (after appending "## Хроника текущего дня")
+//
+// Thread-safe.
 func (g *GM) invalidateWorldState(reason string) {
-	g.contextMu.Lock()
-	g.systemSnapshot = ""
-	g.worldSnapshot = ""
-	g.contextSceneKey = ""
-	g.contextMu.Unlock()
+	g.ContextMu.Lock()
+	g.SystemSnapshot = ""
+	g.WorldSnapshot = ""
+	g.ContextSceneKey = ""
+	g.ContextMu.Unlock()
 	_ = g.slow.Write("context.snapshot.invalidate", "", map[string]any{"reason": reason})
 }
 
@@ -2060,26 +2604,33 @@ func (g *GM) invalidateWorldState(reason string) {
 // The full invalidateWorldState is the right call when
 // the system prompt itself may have changed (character
 // swap, narrative.md edit) — here, neither has.
+
+// invalidateWorldSnapshot drops ONLY the WorldState user
+// message (the rules+character system block stays
+// cached). Used by paths that mutate only world-scoped
+// data (e.g. the per-NPC auto-maintain at end_day) so
+// the next turn rebuilds user[0] with the new world
+// body without paying the system-prompt cache miss.
+// The full invalidateWorldState is the right call when
+// the system prompt itself may have changed (character
+// swap, narrative.md edit) — here, neither has.
 func (g *GM) invalidateWorldSnapshot(reason string) {
-	g.contextMu.Lock()
-	g.worldSnapshot = ""
+	g.ContextMu.Lock()
+	g.WorldSnapshot = ""
 	// Scene key is also dropped so buildContext rebuilds
 	// both blocks in lock-step on the next call (this
 	// keeps the cache contract uniform — the system
 	// block is re-rendered but its content is the same
 	// as before, so any external cache key check is a
 	// no-op for Anthropic / OpenAI).
-	g.contextSceneKey = ""
-	g.contextMu.Unlock()
+	g.ContextSceneKey = ""
+	g.ContextMu.Unlock()
 	_ = g.slow.Write("context.world_snapshot.invalidate", "", map[string]any{"reason": reason})
 }
 
 // InvalidateWorldState is the public version of
 // invalidateWorldState for callers outside this package
 // (dispatcher /reload, world.Leave hook, etc.).
-func (g *GM) InvalidateWorldState(reason string) {
-	g.invalidateWorldState(reason)
-}
 
 // shouldUseInPlaceCompaction reports whether this GM
 // should prefer the in-place compaction path over the
@@ -2088,12 +2639,14 @@ func (g *GM) InvalidateWorldState(reason string) {
 // loaded (otherwise the call would no-op and we silently
 // lose the dropped turns' events).
 func (g *GM) shouldUseInPlaceCompaction() bool {
-	if g.summarizer == nil || !g.summarizer.IsConfigured() {
+	if g.Summarizer == nil || !g.Summarizer.IsConfigured() {
 		return false
 	}
-	if g.summarizer.compactionInPlacePrompt == "" {
+
+	if g.Summarizer.compactionInPlacePrompt == "" {
 		return false
 	}
+
 	return true
 }
 
@@ -2108,75 +2661,6 @@ func (g *GM) shouldUseInPlaceCompaction() bool {
 // gone. EndOfDay now only runs the auto-maintenance
 // pass (NPC profiles, character memory) and applies
 // any pending stage transition.
-func (g *GM) EndOfDay(ctx context.Context, world string, day int) error {
-	if world == "" {
-		return nil
-	}
-	// Apply pending stage transition. The model calls
-	// update_stage during the day; the in-memory
-	// staging graph holds staging.next until end_day
-	// applies it. We do this BEFORE MaintainNPCs /
-	// MaintainCharacterMemory so the new stage is
-	// visible to the model on the next turn's
-	// WorldState rebuild. Failure here is non-fatal:
-	// the pending stage survives to the next end_day
-	// attempt.
-	if err := g.tools.ApplyPendingStage(world); err != nil {
-		g.log.Warn().Err(err).Str("world", world).Msg("end-of-day: apply_pending_stage failed; continuing")
-	} else {
-		g.invalidateWorldSnapshot("end_day_stage_transition")
-	}
-	// Auto-maintain NPC profiles that overflowed their
-	// personal_memory list during the day.
-	if touched, err := g.tools.MaintainNPCs(world); err != nil {
-		g.log.Warn().Err(err).Str("world", world).Msg("end-of-day: maintain_npc hook failed; continuing")
-	} else if len(touched) > 0 {
-		g.invalidateWorldSnapshot("end_day_maintain_npc")
-		g.log.Info().
-			Str("world", world).
-			Strs("touched", touched).
-			Int("day", day).
-			Msg("end-of-day: auto-maintained NPC profiles")
-	}
-	// Auto-maintain the ACTIVE character's memory.yaml.
-	if g.ss != nil {
-		if sc, err := g.ss.Start(); err == nil && sc.Character != "" {
-			if rewritten, err := g.tools.MaintainCharacterMemory(ctx, world, sc.Character); err != nil {
-				g.log.Warn().Err(err).Str("world", world).Str("character", sc.Character).Msg("end-of-day: maintain_character_memory hook failed; continuing")
-			} else if rewritten {
-				g.invalidateWorldSnapshot("end_day_maintain_memory")
-				g.log.Info().
-					Str("world", world).
-					Str("character", sc.Character).
-					Int("day", day).
-					Msg("end-of-day: defragmented character memory")
-			}
-		}
-	}
-
-	g.log.Info().Str("world", world).Int("day", day).Msg("end-of-day: hooks completed")
-
-	return nil
-}
-
-func safeRead(fs *storage.FileStore, rel string) string {
-	s, _ := fs.ReadRaw(rel)
-	return s
-}
-
-// stateFile returns the canonical path to the active
-// world's state file (planning/0001: state.md →
-// state.yaml). Centralised so every call site in this
-// package goes through one helper instead of
-// concatenating "worlds/" + world + "/state.yaml" by
-// hand (drift-prone — the same mistake was the root
-// cause of the day=1 bug that leaked into
-// running/slow.log (the old readCurrentDay
-// path scanned state.md for "День N", a marker
-// that no longer exists in state.yaml).
-func stateFilePath(world string) string {
-	return "worlds/" + world + "/state.yaml"
-}
 
 // loadChronicle reads the world's chronicle YAML file
 // and projects it into the domain-level shape. Returns
@@ -2189,18 +2673,22 @@ func stateFilePath(world string) string {
 // non-nil Chronicle with empty slices lets the operator
 // see in slow.log that a parse failure happened).
 func (g *GM) loadChronicle(world string) ([]domain.ChroniclePeriod, []domain.ChronicleDay) {
-	if g.fs == nil || world == "" {
+	if g.FS == nil || world == "" {
 		return nil, nil
 	}
-	body, err := g.fs.ReadRaw(g.fs.WorldChronicle(world))
+
+	body, err := g.FS.ReadRaw(g.FS.WorldChronicle(world))
 	if err != nil || strings.TrimSpace(body) == "" {
 		return nil, nil
 	}
+
 	c, err := chronicle.Load(body)
 	if err != nil {
 		g.log.Warn().Err(err).Str("world", world).Msg("load_chronicle parse failed; rendering empty")
+
 		return nil, nil
 	}
+
 	periods := make([]domain.ChroniclePeriod, 0, len(c.Periods))
 	for _, p := range c.Periods {
 		periods = append(periods, domain.ChroniclePeriod{
@@ -2209,6 +2697,7 @@ func (g *GM) loadChronicle(world string) ([]domain.ChroniclePeriod, []domain.Chr
 			Memory: p.Memory,
 		})
 	}
+
 	days := make([]domain.ChronicleDay, 0, len(c.Days))
 	for _, e := range c.SortedDays() {
 		days = append(days, domain.ChronicleDay{
@@ -2216,8 +2705,18 @@ func (g *GM) loadChronicle(world string) ([]domain.ChroniclePeriod, []domain.Chr
 			Text:   e.Text,
 		})
 	}
+
 	return periods, days
 }
+
+// stageRuntime reads the runtime slice of the stage
+// graph from state.yaml (planning/0001: stage.md was
+// merged into state.yaml). Cheap — falls back to the
+// in-memory snapshot if buildContext has loaded one
+// this Reply, otherwise reads state.yaml directly.
+// staging.Load uses this to seed the in-memory graph
+// from the same source of truth that the on-disk
+// snapshot shows.
 
 // stageRuntime reads the runtime slice of the stage
 // graph from state.yaml (planning/0001: stage.md was
@@ -2236,7 +2735,7 @@ func (g *GM) stageRuntime(world string) staging.StageRuntime {
 		}
 	}
 
-	if body, _ := g.fs.ReadRaw(stateFilePath(world)); body != "" {
+	if body, _ := g.FS.ReadRaw(stateFilePath(world)); body != "" {
 		snap := files.ParseStateYAMLFull(body)
 
 		return staging.StageRuntime{
@@ -2256,20 +2755,25 @@ func (g *GM) stageRuntime(world string) staging.StageRuntime {
 // The character's display name is read from SOUL.yaml when available
 // so the `$(name)` placeholder in stage descriptions expands to the
 // human name rather than the directory slug. Fallback to the slug.
+//
+//nolint:nestif // stage loading has nested optional branches; flattening hurts the contract.
 func (g *GM) loadWorldStage(world, characterSlug string) string {
 	runtime := g.stageRuntime(world)
 
-	s, err := staging.Load(g.fs, world, runtime)
+	s, err := staging.Load(g.FS, world, runtime)
 	if err != nil {
 		g.log.Warn().Err(err).Str("world", world).Msg("load_world_stage failed; rendering without stage")
+
 		return ""
 	}
+
 	if !s.Enabled {
 		return ""
 	}
+
 	displayName := characterSlug
 	if characterSlug != "" {
-		if body, _ := g.fs.ReadRaw("characters/" + characterSlug + "/SOUL.yaml"); body != "" {
+		if body, _ := g.FS.ReadRaw("characters/" + characterSlug + "/SOUL.yaml"); body != "" {
 			var soul struct {
 				Name string `yaml:"name"`
 			}
@@ -2280,8 +2784,35 @@ func (g *GM) loadWorldStage(world, characterSlug string) string {
 			}
 		}
 	}
+
 	return s.Render(displayName)
 }
+
+// loadActiveNPCs reads the world state, parses the
+// active NPC roster, and loads each profile at an LOD
+// that depends on the cast size.
+//
+// Roster resolution: the canonical modern format
+// (BuildStateMarkdown) emits "NPC: <comma list>" on a
+// single line. The legacy format emitted
+// "Активные NPC прямо сейчас: <list>". We accept
+// either, preferring the modern parser (state.go's
+// ParseStateMD handles both) so a hand-edited state.md
+// or a pre-migration world keeps working.
+//
+// LOD policy (the cache budget is the constraint):
+//
+//	≤ 4 NPCs   → all Full (BuildMarkdown)
+//	5 – 9      → first 4 Full, rest Compact
+//	≥ 10      → first 3 Full, next 5 Compact, rest OneLine
+//
+// The tiers are chosen so the worst-case world block
+// stays under roughly 7k tokens even with 20 active
+// NPCs (3 Full ~ 4.5k + 5 Compact ~ 1.5k + 12 OneLine
+// ~ 1k). The model always sees the names; only the
+// depth of detail per NPC varies. The operator can
+// still call search_npc for a deeper view of any
+// background NPC.
 
 // loadActiveNPCs reads the world state, parses the
 // active NPC roster, and loads each profile at an LOD
@@ -2318,12 +2849,15 @@ func (g *GM) loadActiveNPCs(world, state string) []domain.NPCSnapshot {
 	// Fallback: legacy "Активные NPC прямо сейчас:"
 	// line, used by hand-edited or pre-migration files.
 	marker := "Активные NPC прямо сейчас:"
+
 	_, rest, found := strings.Cut(state, marker)
 	if !found {
 		return nil
 	}
+
 	line, _, _ := strings.Cut(rest, "\n")
 	names := strings.Split(line, ",")
+
 	return g.loadRosterAtLOD(world, names)
 }
 
@@ -2332,22 +2866,33 @@ func (g *GM) loadActiveNPCs(world, state string) []domain.NPCSnapshot {
 // LOD. Pure helper — split out so the modern and
 // legacy roster parsers share the same downstream
 // pagination.
+
+// loadRosterAtLOD walks a roster (already split into
+// names) and renders each NPC at the policy-determined
+// LOD. Pure helper — split out so the modern and
+// legacy roster parsers share the same downstream
+// pagination.
 func (g *GM) loadRosterAtLOD(world string, names []string) []domain.NPCSnapshot {
 	var out []domain.NPCSnapshot
+
 	for i, raw := range names {
 		name := strings.TrimSpace(raw)
 		if name == "" {
 			continue
 		}
+
 		lod := lodForIndex(i)
+
 		body, err := g.tools.LoadLOD(world, name, lod)
 		if err != nil {
 			g.log.Warn().Err(err).Str("npc", name).Str("lod", lodName(lod)).Msg("skip npc load")
+
 			continue
 		}
 
 		out = append(out, domain.NPCSnapshot{DisplayName: name, Profile: body})
 	}
+
 	return out
 }
 
@@ -2383,6 +2928,9 @@ func lodName(lod tools.NPCLOD) string {
 
 // executeTools dispatches every requested tool call and returns the
 // tool-role messages ready to be appended to the conversation.
+
+// executeTools dispatches every requested tool call and returns the
+// tool-role messages ready to be appended to the conversation.
 func (g *GM) executeTools(ctx context.Context, calls []llm.ToolCall) []llm.Message {
 	out := make([]llm.Message, 0, len(calls))
 	for _, tc := range calls {
@@ -2393,6 +2941,7 @@ func (g *GM) executeTools(ctx context.Context, calls []llm.ToolCall) []llm.Messa
 			ToolCallID: tc.ID,
 			Content:    result,
 		})
+
 		if errText != "" {
 			// The errText alone ("npc profile not
 			// found; call create_npc first") does not
@@ -2409,33 +2958,41 @@ func (g *GM) executeTools(ctx context.Context, calls []llm.ToolCall) []llm.Messa
 			// previous log line already covers it.
 			args := map[string]any{}
 			_ = json.Unmarshal([]byte(tc.Function.Arguments), &args)
+
 			ev := g.log.Warn().
 				Str("tool", tc.Function.Name).
 				Str("err", errText)
 			if name, ok := args["npc"].(string); ok && name != "" {
 				ev = ev.Str("npc", name)
 			}
+
 			if name, ok := args["display_name"].(string); ok && name != "" {
 				ev = ev.Str("display_name", name)
 			}
+
 			if name, ok := args["file"].(string); ok && name != "" {
 				ev = ev.Str("file", name)
 			}
+
 			if section, ok := args["section"].(string); ok && section != "" {
 				ev = ev.Str("section", section)
 			}
+
 			ev.Msg("tool error")
 		}
 	}
+
 	return out
 }
 
 // dispatchOneTool is the tool-to-usecase bridge. The argument JSON
-// is decoded into the matching usecase type and the result is //nolint:funlen // complex function; splitting would harm readability.
+// is decoded into the matching usecase type and the result is
 // rendered as a short JSON-ish text the model can read.
 //
-//nolint:funlen // complex function; splitting would harm readability.
-func (g *GM) dispatchOneTool(ctx context.Context, tc llm.ToolCall) (string, string) { //nolint:gocognit // tool dispatch is inherently complex //nolint:funlen // complex function; splitting would harm readability.
+// tool dispatch is inherently complex; per-tool branching is the contract, not accidental complexity.
+//
+//nolint:gocognit,gocyclo,cyclop,funlen,maintidx // conversation dispatch is complex by design.
+func (g *GM) dispatchOneTool(ctx context.Context, tc llm.ToolCall) (string, string) {
 	args := map[string]any{}
 	if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
 		return "", "invalid arguments: " + err.Error()
@@ -2444,21 +3001,28 @@ func (g *GM) dispatchOneTool(ctx context.Context, tc llm.ToolCall) (string, stri
 	switch tc.Function.Name {
 	case "end_day":
 		day := toInt(args["day"])
+
 		summary := toString(args["summary"])
 		if day == 0 || summary == "" {
 			return "", "end_day requires day and summary"
 		}
-		world := currentWorldName(g.fs)
+
+		world := currentWorldName(g.FS)
 		// BEFORE ArchiveChronicleDay updates state.md to day+1, produce
 		// the "## Протокол прошедших дней" entry from whatever
 		// context survived (Хроника if compaction ran, state.md
 		// body, and the chronicle.yaml summary).
 		if err := g.EndOfDay(ctx, world, day); err != nil {
-			g.log.Warn().Err(err).Str("world", world).Int("day", day).Msg("end_day: protocol append failed; continuing with archive")
+			g.log.Warn().Err(err).
+				Str("world", world).
+				Int("day", day).
+				Msg("end_day: protocol append failed; continuing with archive")
 		}
+
 		if err := g.tools.ArchiveChronicleDay(ctx, world, day, summary); err != nil {
 			return "", err.Error()
 		}
+
 		return okJSON("archived"), ""
 	case "end_scene":
 		// end_scene closes the current scene without
@@ -2480,7 +3044,8 @@ func (g *GM) dispatchOneTool(ctx context.Context, tc llm.ToolCall) (string, stri
 		if g.tools == nil {
 			return "", "end_scene: tool not wired"
 		}
-		world := currentWorldName(g.fs)
+
+		world := currentWorldName(g.FS)
 		// Resolve permanent_party. Two sources are
 		// accepted (in order of precedence):
 		//   1. explicit tool arg: permanent_party (comma-
@@ -2490,6 +3055,7 @@ func (g *GM) dispatchOneTool(ctx context.Context, tc llm.ToolCall) (string, stri
 		//      operator pin a default cast without the
 		//      model having to repeat it on every call.
 		var pp []string
+
 		if raw := toString(args["permanent_party"]); raw != "" {
 			for p := range strings.SplitSeq(raw, ",") {
 				if t := strings.TrimSpace(p); t != "" {
@@ -2502,6 +3068,7 @@ func (g *GM) dispatchOneTool(ctx context.Context, tc llm.ToolCall) (string, stri
 				_ = sc
 			}
 		}
+
 		res, err := g.tools.EndScene(world, pp)
 		if err != nil {
 			return "", err.Error()
@@ -2510,16 +3077,18 @@ func (g *GM) dispatchOneTool(ctx context.Context, tc llm.ToolCall) (string, stri
 		// turn rebuilds a clean dialogue. The chatID is
 		// not in scope here (dispatchOneTool is
 		// tool-call-level, not turn-level), so we reset
-		// ALL conversations. This is acceptable: end_scene
+		// ALL Conversations. This is acceptable: end_scene
 		// is a rare, player-driven event, and a stale
 		// conversation in a different chat is harmless.
-		conversations.Range(func(k, _ any) bool {
-			conversations.Delete(k)
+		Conversations.Range(func(k, _ any) bool {
+			Conversations.Delete(k)
+
 			return true
 		})
 		// Drop the world snapshot so the next turn
 		// rebuilds user[0] with the pruned roster.
 		g.invalidateWorldSnapshot("end_scene")
+
 		return okJSON(map[string]any{
 			"status":          "scene_closed",
 			"kept_npcs":       res.KeptNPCs,
@@ -2527,21 +3096,23 @@ func (g *GM) dispatchOneTool(ctx context.Context, tc llm.ToolCall) (string, stri
 			"hint":            "next turn rebuilds the scene around the kept roster",
 		}), ""
 	case "maintain_lore":
-		rewritten, err := g.tools.MaintainLore(ctx, currentWorldName(g.fs))
+		rewritten, err := g.tools.MaintainLore(ctx, currentWorldName(g.FS))
 		if err != nil {
 			return "", err.Error()
 		}
+
 		return okJSON(map[string]any{"compacted": rewritten}), ""
 	case "update_state":
 		moment := toString(args["moment"])
 		inFlight := toBool(args["in_flight"])
 		npcs := toStringSlice(args["npcs"])
 		events := toStringSlice(args["events"])
+
 		if moment == "" {
 			return "", "update_state requires moment"
 		}
 
-		day := g.snapshotDay(currentWorldName(g.fs))
+		day := g.snapshotDay(currentWorldName(g.FS))
 
 		if err := g.tools.UpdateState(StateSnapshot{
 			Day: day, InFlight: inFlight, Moment: moment, NPCs: npcs,
@@ -2583,9 +3154,10 @@ func (g *GM) dispatchOneTool(ctx context.Context, tc llm.ToolCall) (string, stri
 		}), ""
 	case "rotate_plan":
 		events := toStringSlice(args["events"])
-		if err := g.tools.RotatePlan(currentWorldName(g.fs), events); err != nil {
+		if err := g.tools.RotatePlan(currentWorldName(g.FS), events); err != nil {
 			return "", err.Error()
 		}
+
 		return okJSON("plan rotated"), ""
 	case "create_npc":
 		spec := NPCProfile{
@@ -2596,7 +3168,7 @@ func (g *GM) dispatchOneTool(ctx context.Context, tc llm.ToolCall) (string, stri
 			Abilities:   toStringSlice(args["abilities"]),
 			Nicknames:   toStringSlice(args["nicknames"]),
 		}
-		if err := g.tools.Create(currentWorldName(g.fs), spec); err != nil {
+		if err := g.tools.Create(currentWorldName(g.FS), spec); err != nil {
 			return "", err.Error()
 		}
 		// Short ToolResult. The newly created NPC's
@@ -2618,14 +3190,18 @@ func (g *GM) dispatchOneTool(ctx context.Context, tc llm.ToolCall) (string, stri
 	case "leave_world":
 		to := toString(args["to_world"])
 		skip := toString(args["skip_note"])
+
 		sc, err := g.ss.Start()
 		if err != nil {
 			return "", err.Error()
 		}
+
 		if _, err := g.tools.Leave(sc.World, to, skip, sc.Character); err != nil {
 			return "", err.Error()
 		}
+
 		g.ResetConversation(sc.Character)
+
 		return okJSON("world switched"), ""
 	case "update_soul":
 		// h5: 4 per-file Append* tools replace the legacy
@@ -2634,22 +3210,28 @@ func (g *GM) dispatchOneTool(ctx context.Context, tc llm.ToolCall) (string, stri
 		if g.tools == nil {
 			return "", "update_soul: tool not wired"
 		}
+
 		section := toString(args["section"])
 		appendText := toString(args["append"])
+
 		if section == "" {
 			return "", "update_soul: section required"
 		}
+
 		if strings.TrimSpace(appendText) == "" {
 			return "", "update_soul: append text required (no empty updates)"
 		}
+
 		sc, err := g.ss.Start()
 		if err != nil {
 			return "", err.Error()
 		}
+
 		_, err = g.tools.AppendSoul(sc.Character, section, appendText)
 		if err != nil {
 			return "", err.Error()
 		}
+
 		return okJSON(map[string]any{
 			"status":  "appended",
 			"file":    "SOUL.yaml",
@@ -2664,22 +3246,28 @@ func (g *GM) dispatchOneTool(ctx context.Context, tc llm.ToolCall) (string, stri
 		if g.tools == nil {
 			return "", "update_skill: tool not wired"
 		}
+
 		section := toString(args["section"])
 		appendText := toString(args["append"])
+
 		if section == "" {
 			return "", "update_skill: section required"
 		}
+
 		if strings.TrimSpace(appendText) == "" {
 			return "", "update_skill: append text required"
 		}
+
 		sc, err := g.ss.Start()
 		if err != nil {
 			return "", err.Error()
 		}
+
 		_, err = g.tools.AppendSkill(sc.Character, section, appendText)
 		if err != nil {
 			return "", err.Error()
 		}
+
 		return okJSON(map[string]any{
 			"status":  "appended",
 			"file":    "skill.yaml",
@@ -2692,23 +3280,28 @@ func (g *GM) dispatchOneTool(ctx context.Context, tc llm.ToolCall) (string, stri
 		if g.tools == nil {
 			return "", "update_memory: tool not wired"
 		}
+
 		section := toString(args["section"])
 		appendText := toString(args["append"])
 
 		if section == "" {
 			return "", "update_memory: section required"
 		}
+
 		if strings.TrimSpace(appendText) == "" {
 			return "", "update_memory: append text required"
 		}
+
 		sc, err := g.ss.Start()
 		if err != nil {
 			return "", err.Error()
 		}
+
 		_, err = g.tools.AppendMemorySection(sc.Character, section, appendText)
 		if err != nil {
 			return "", err.Error()
 		}
+
 		return okJSON(map[string]any{
 			"status":  "appended",
 			"file":    "memory.yaml",
@@ -2724,18 +3317,22 @@ func (g *GM) dispatchOneTool(ctx context.Context, tc llm.ToolCall) (string, stri
 		if g.tools == nil {
 			return "", "update_inventory: tool not wired"
 		}
+
 		name := strings.TrimSpace(toString(args["name"]))
 		if name == "" {
 			return "", "update_inventory: name required"
 		}
+
 		typ := toString(args["type"])
 		if typ == "" {
 			return "", "update_inventory: type required"
 		}
+
 		sc, err := g.ss.Start()
 		if err != nil {
 			return "", err.Error()
 		}
+
 		_, err = g.tools.AppendInventoryItem(sc.Character, charprofile.Item{
 			Name:        name,
 			Description: toString(args["description"]),
@@ -2745,6 +3342,7 @@ func (g *GM) dispatchOneTool(ctx context.Context, tc llm.ToolCall) (string, stri
 		if err != nil {
 			return "", err.Error()
 		}
+
 		return okJSON(map[string]any{
 			"status": "recorded",
 			"name":   name,
@@ -2755,17 +3353,21 @@ func (g *GM) dispatchOneTool(ctx context.Context, tc llm.ToolCall) (string, stri
 		if g.tools == nil {
 			return "", "remove_inventory_item: tool not wired"
 		}
+
 		name := strings.TrimSpace(toString(args["name"]))
 		if name == "" {
 			return "", "remove_inventory_item: name required"
 		}
+
 		sc, err := g.ss.Start()
 		if err != nil {
 			return "", err.Error()
 		}
+
 		if err := g.tools.RemoveInventoryItem(sc.Character, name); err != nil {
 			return "", err.Error()
 		}
+
 		return okJSON(map[string]any{
 			"status": "removed",
 			"name":   name,
@@ -2775,19 +3377,24 @@ func (g *GM) dispatchOneTool(ctx context.Context, tc llm.ToolCall) (string, stri
 		if g.tools == nil {
 			return "", "set_currency: tool not wired"
 		}
+
 		name := strings.TrimSpace(toString(args["name"]))
 		if name == "" {
 			return "", "set_currency: name required"
 		}
+
 		count := toInt(args["count"])
+
 		sc, err := g.ss.Start()
 		if err != nil {
 			return "", err.Error()
 		}
+
 		_, err = g.tools.SetCurrency(sc.Character, name, count)
 		if err != nil {
 			return "", err.Error()
 		}
+
 		return okJSON(map[string]any{
 			"status": "recorded",
 			"name":   name,
@@ -2798,17 +3405,21 @@ func (g *GM) dispatchOneTool(ctx context.Context, tc llm.ToolCall) (string, stri
 		if g.tools == nil {
 			return "", "remove_currency: tool not wired"
 		}
+
 		name := strings.TrimSpace(toString(args["name"]))
 		if name == "" {
 			return "", "remove_currency: name required"
 		}
+
 		sc, err := g.ss.Start()
 		if err != nil {
 			return "", err.Error()
 		}
+
 		if err := g.tools.RemoveCurrency(sc.Character, name); err != nil {
 			return "", err.Error()
 		}
+
 		return okJSON(map[string]any{
 			"status": "removed",
 			"name":   name,
@@ -2818,6 +3429,7 @@ func (g *GM) dispatchOneTool(ctx context.Context, tc llm.ToolCall) (string, stri
 		if g.tools == nil {
 			return "", "update_npc: tool not wired"
 		}
+
 		npcName := toString(args["npc"])
 		section := toString(args["section"])
 		appendText := toString(args["append"])
@@ -2825,13 +3437,16 @@ func (g *GM) dispatchOneTool(ctx context.Context, tc llm.ToolCall) (string, stri
 		if npcName == "" {
 			return "", "update_npc: npc name required"
 		}
+
 		if section == "" {
 			return "", "update_npc: section required"
 		}
+
 		if strings.TrimSpace(appendText) == "" {
 			return "", "update_npc: append text required (no empty updates)"
 		}
-		if err := g.tools.UpdateNPC(currentWorldName(g.fs), npcName, section, appendText); err != nil {
+
+		if err := g.tools.UpdateNPC(currentWorldName(g.FS), npcName, section, appendText); err != nil {
 			return "", err.Error()
 		}
 		// Short ToolResult. NPC profile updated on disk;
@@ -2851,25 +3466,32 @@ func (g *GM) dispatchOneTool(ctx context.Context, tc llm.ToolCall) (string, stri
 		if g.tools == nil {
 			return "", "search_npc: tool not wired"
 		}
+
 		query := strings.TrimSpace(toString(args["query"]))
 		if query == "" {
 			return "", "search_npc: query required"
 		}
-		if rate, ok := g.npcSearchRate[query]; ok && g.turnCounter-rate < g.rateWindow {
+
+		if rate, ok := g.npcSearchRate[query]; ok && g.TurnCounter-rate < g.RateWindow {
 			return "", "search_npc: rate-limited (same query recently)"
 		}
+
 		world := ""
-		if g.fs != nil {
-			world = currentWorldName(g.fs)
+		if g.FS != nil {
+			world = currentWorldName(g.FS)
 		}
+
 		res, err := g.tools.SearchNPC(world, query)
 		if err != nil {
 			return "", "search_npc: " + err.Error()
 		}
+
 		if res == nil {
 			return "", "search_npc: NPC not found"
 		}
-		g.npcSearchRate[query] = g.turnCounter
+
+		g.npcSearchRate[query] = g.TurnCounter
+
 		return okJSON(map[string]any{
 			"status":         "found",
 			"display_name":   res.DisplayName,
@@ -2881,6 +3503,7 @@ func (g *GM) dispatchOneTool(ctx context.Context, tc llm.ToolCall) (string, stri
 			"hint":           "if you need this NPC in the current scene, follow up with update_state",
 		}), ""
 	}
+
 	return "", "unknown tool: " + tc.Function.Name
 }
 
@@ -2902,11 +3525,13 @@ func allToolCallsBroken(calls []llm.ToolCall) bool {
 	if len(calls) == 0 {
 		return false
 	}
+
 	for _, tc := range calls {
 		if tc.Function.Name != "" {
 			return false
 		}
 	}
+
 	return true
 }
 
@@ -2919,20 +3544,46 @@ func mergeToolCalls(acc, incoming []llm.ToolCall) []llm.ToolCall {
 		if ic.ID != "" || ic.Function.Name != "" {
 			// Head: start a new tool call.
 			acc = append(acc, ic)
+
 			continue
 		}
 		// Tail: append arguments to the most recent head.
 		if len(acc) == 0 {
 			acc = append(acc, ic)
+
 			continue
 		}
+
 		acc[len(acc)-1].Function.Arguments += ic.Function.Arguments
 	}
+
 	return acc
 }
 
+// AllToolCallsBroken is the exported counterpart of
+// allToolCallsBroken for tests that need to assert
+// the "every stream chunk arrived headless" detection
+// in isolation from the full tool loop.
+func AllToolCallsBroken(calls []llm.ToolCall) bool {
+	return allToolCallsBroken(calls)
+}
+
+// MergeToolCalls is the exported counterpart of
+// mergeToolCalls for tests that need to drive the
+// stream-chunk stitching logic without an LLM stream.
+func MergeToolCalls(acc, incoming []llm.ToolCall) []llm.ToolCall {
+	return mergeToolCalls(acc, incoming)
+}
+
+// MaxToolRounds is the exported constant matching
+// maxToolRounds — the cap on the tool-call loop
+// before the GM returns a hard error to the model.
+const MaxToolRounds = maxToolRounds
+
 func okJSON(payload any) string {
-	b, _ := json.Marshal(map[string]any{"ok": true, "result": payload}) //nolint:errchkjson // fixed-shape helper payload; marshal cannot fail
+	body := map[string]any{"ok": true, "result": payload}
+	b, _ := json.Marshal(body) //nolint:errchkjson // fixed-shape helper payload; marshal cannot fail
+
 	return string(b)
 }
 
@@ -2944,23 +3595,28 @@ func toInt(v any) int {
 		return x
 	case string:
 		n, _ := strconv.Atoi(x)
+
 		return n
 	}
+
 	return 0
 }
 
 func toString(v any) string {
 	s, _ := v.(string)
+
 	return s
 }
 
 func toBool(v any) bool {
 	b, _ := v.(bool)
+
 	return b
 }
 
 func toStringSlice(v any) []string {
 	arr, _ := v.([]any)
+
 	out := make([]string, 0, len(arr))
 	for _, x := range arr {
 		s, ok := x.(string)
@@ -2970,6 +3626,7 @@ func toStringSlice(v any) []string {
 
 		out = append(out, s)
 	}
+
 	return out
 }
 
@@ -2978,12 +3635,35 @@ func currentWorldName(fs *storage.FileStore) string {
 	if raw == "" {
 		return ""
 	}
+
 	parsed, err := domain.ParseInfo(raw)
 	if err != nil {
 		return ""
 	}
+
 	return parsed.ActiveWorld
 }
+
+// snapshotDay returns the day counter from the
+// in-memory StateSnapshot. The snapshot is
+// guaranteed to be loaded by buildContext before
+// any tool call runs (a tool call without a
+// preceding Reply is a programming error), so
+// there is no disk read here — every read goes
+// through the in-memory copy. The day counter is
+// bumped in memory by ArchiveChronicleDay on
+// end_day; the next buildContext reloads the
+// fresh value from disk if it was missed.
+// snapshotDay returns the day counter from the
+// in-memory StateSnapshot. The snapshot is
+// guaranteed to be loaded by buildContext before
+// any tool call runs (a tool call without a
+// preceding Reply is a programming error), so
+// there is no disk read here — every read goes
+// through the in-memory copy. The day counter is
+// bumped in memory by ArchiveChronicleDay on
+// end_day; the next buildContext reloads the
+// fresh value from disk if it was missed.
 
 // snapshotDay returns the day counter from the
 // in-memory StateSnapshot. The snapshot is
@@ -3023,6 +3703,7 @@ func formatToolsForLog(specs []llm.ToolSchema) []map[string]any {
 			"name": s.Name,
 		})
 	}
+
 	return out
 }
 
@@ -3031,5 +3712,6 @@ func toolNames(specs []llm.ToolSchema) []string {
 	for _, s := range specs {
 		names = append(names, s.Name)
 	}
+
 	return names
 }

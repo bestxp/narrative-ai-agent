@@ -170,6 +170,8 @@ type CharacterSnapshot struct {
 // Methods that are pure plumbing (AppendEvent,
 // AppendHistoryToState) keep the same PascalCase convention
 // but have no LLM tool counterpart.
+//
+//nolint:interfacebloat // aggregate Tool surface maps each method to an LLM tool, a player command, or an internal hook.
 type Tool interface {
 	// --- state.md / plan.md / chronicle ---
 	UpdateState(snap StateSnapshot) error

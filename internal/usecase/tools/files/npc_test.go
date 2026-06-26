@@ -1,4 +1,4 @@
-package files
+package files_test
 
 import (
 	"testing"
@@ -7,6 +7,7 @@ import (
 	"github.com/bestxp/narrative-ai-agent/internal/repository/api"
 	"github.com/bestxp/narrative-ai-agent/internal/slowlog"
 	yamlfs "github.com/bestxp/narrative-ai-agent/internal/storage/fs"
+	"github.com/bestxp/narrative-ai-agent/internal/usecase/tools/files"
 	"github.com/bestxp/narrative-ai-agent/internal/worldregistry"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
@@ -15,14 +16,15 @@ import (
 // makeNPC constructs an NPC backed by a fresh
 // FileStore at the given temp dir. Used by tests
 // below — keeps the per-test setup short.
-func makeNPC(t *testing.T) (*NPC, *storage.FileStore) {
+func makeNPC(t *testing.T) (*files.NPC, *storage.FileStore) {
 	t.Helper()
 	fs, err := storage.NewFileStore(t.TempDir())
 	require.NoError(t, err)
 	require.NoError(t, fs.EnsureDir("worlds/naruto/characters"))
 	yamlStore, _ := yamlfs.New(fs.Root())
 	repos := api.NewYamlRepositories(yamlStore)
-	return newNPC(zerolog.Nop(), slowlog.Discard(), repos, fs), fs
+
+	return files.NewNPC(zerolog.Nop(), slowlog.Discard(), repos, fs), fs
 }
 
 // TestNPC_LookupViaRegistry confirms the
@@ -41,7 +43,7 @@ func TestNPC_LookupViaRegistry(t *testing.T) {
 	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/characters.yaml",
 		"npcs:\n  - slug: hinata\n    display_name: Хината Хьюга\n    nicknames: [Хината]\n"))
 
-	slug, err := n.resolveSlug("naruto", "Хината")
+	slug, err := n.ResolveSlug("naruto", "Хината")
 	require.NoError(t, err)
 	require.Equal(t, "hinata", slug)
 }
@@ -54,6 +56,7 @@ func TestNPC_LookupViaRegistry(t *testing.T) {
 // is the model→file one).
 func TestNPC_LookupSubstring(t *testing.T) {
 	t.Parallel()
+
 	reg := worldregistry.Registry{}
 	require.NoError(t, reg.Add(worldregistry.Entry{
 		Slug: "hinata", DisplayName: "Хината Хьюга",
@@ -69,6 +72,7 @@ func TestNPC_LookupSubstring(t *testing.T) {
 // the unambiguous name and retry.
 func TestNPC_LookupAmbiguousRefuses(t *testing.T) {
 	t.Parallel()
+
 	reg := worldregistry.Registry{}
 	require.NoError(t, reg.Add(worldregistry.Entry{Slug: "naruto_uzumaki", DisplayName: "Наруто"}))
 	require.NoError(t, reg.Add(worldregistry.Entry{Slug: "naruto_clone", DisplayName: "Наруто-клона"}))
@@ -78,14 +82,14 @@ func TestNPC_LookupAmbiguousRefuses(t *testing.T) {
 
 // TestNPC_NotFoundReturnsErrNPCNotFound covers the
 // "model wrote a name the registry does not know"
-// path. resolveSlug returns ErrNPCNotFound; the GM
+// path. ResolveSlug returns ErrNPCNotFound; the GM
 // is expected to translate that into a
 // "create_npc first" hint to the model.
 func TestNPC_NotFoundReturnsErrNPCNotFound(t *testing.T) {
 	t.Parallel()
 	n, _ := makeNPC(t)
-	_, err := n.resolveSlug("naruto", "Совершенно Незнакомый NPC")
-	require.ErrorIs(t, err, ErrNPCNotFound)
+	_, err := n.ResolveSlug("naruto", "Совершенно Незнакомый NPC")
+	require.ErrorIs(t, err, files.ErrNPCNotFound)
 }
 
 // TestNPC_UpdateNPC_Slowlog verifies that a successful
@@ -110,7 +114,7 @@ func TestNPC_UpdateNPC_Slowlog(t *testing.T) {
 	// the slow.Write call below reaches the logger.
 	yamlStore, _ := yamlfs.New(fs.Root())
 	repos := api.NewYamlRepositories(yamlStore)
-	n := newNPC(zerolog.Nop(), logger, repos, fs)
+	n := files.NewNPC(zerolog.Nop(), logger, repos, fs)
 
 	require.NoError(t, n.UpdateNPC("naruto", "Инари", "Личная память/факты", "Встретил ГГ у моста"))
 

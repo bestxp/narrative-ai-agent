@@ -17,9 +17,11 @@ func NewResponseFormat(wordLimit int, language string) *ResponseFormat {
 	if wordLimit == 0 {
 		wordLimit = 350
 	}
+
 	if language == "" {
 		language = "ru"
 	}
+
 	return &ResponseFormat{WordLimit: wordLimit, Language: language}
 }
 
@@ -51,11 +53,13 @@ func (r *ResponseFormat) Validate(body string) Validation {
 	if v.WordCount > r.WordLimit {
 		v.OverLimit = true
 	}
+
 	v.HasDialogue = containsBlock(body, "**диалоги и действия**")
 	v.HasContextBlock = containsBlock(body, "**КОНТЕКСТ И ИЗМЕНЕНИЯ**")
 	v.HasFutureBlock = containsBlock(body, "**БУДУЩЕЕ**")
 	v.HasValidationBlk = containsBlock(body, "**ВАЛИДАЦИЯ ПРАВИЛ**")
 	v.ForbiddenForms = scanForbiddenForms(body)
+
 	return v
 }
 
@@ -86,12 +90,15 @@ var forbiddenForms = []string{
 
 func scanForbiddenForms(body string) []string {
 	low := strings.ToLower(body)
+
 	var hits []string
+
 	for _, f := range forbiddenForms {
 		if strings.Contains(low, f) {
 			hits = append(hits, f)
 		}
 	}
+
 	return hits
 }
 
@@ -105,6 +112,7 @@ func wordCount(s string) int {
 	// Words from remaining text: split on whitespace.
 	remaining := cjkRe.ReplaceAllString(s, " ")
 	parts := strings.Fields(remaining)
+
 	return len(parts) + len(cjk)
 }
 

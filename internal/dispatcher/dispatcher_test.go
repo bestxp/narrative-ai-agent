@@ -1,4 +1,4 @@
-package dispatcher
+package dispatcher_test
 
 import (
 	"context"
@@ -9,6 +9,7 @@ import (
 
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
 	"github.com/bestxp/narrative-ai-agent/internal/config"
+	"github.com/bestxp/narrative-ai-agent/internal/dispatcher"
 	"github.com/bestxp/narrative-ai-agent/internal/messaging"
 	"github.com/bestxp/narrative-ai-agent/internal/repository/api"
 	"github.com/bestxp/narrative-ai-agent/internal/slowlog"
@@ -21,10 +22,13 @@ import (
 
 func initRepo(t *testing.T) string {
 	t.Helper()
+
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not installed")
 	}
+
 	dir := t.TempDir()
+
 	cmds := [][]string{
 		{"init", "--initial-branch=master"},
 		{"config", "user.name", "Test"},
@@ -36,6 +40,7 @@ func initRepo(t *testing.T) string {
 		out, err := cmd.CombinedOutput()
 		require.NoError(t, err, "%v: %s", c, out)
 	}
+
 	return dir
 }
 
@@ -55,7 +60,7 @@ func newCfg(_ *testing.T, workdir string) *config.Config {
 	}
 }
 
-func setup(t *testing.T) (*Dispatcher, *storage.FileStore) {
+func setup(t *testing.T) (*dispatcher.Dispatcher, *storage.FileStore) {
 	t.Helper()
 	workdir := initRepo(t)
 	dataDir := filepath.Join(workdir, "game-data")
@@ -66,7 +71,8 @@ func setup(t *testing.T) (*Dispatcher, *storage.FileStore) {
 	yamlStore, _ := yamlfs.New(fs.Root())
 	repos := api.NewYamlRepositories(yamlStore)
 	tools := usecase.NewFileToolset(fs, repos, zerolog.Nop(), slowlog.Discard(), nil, nil, nil, nil)
-	d := New(newCfg(t, workdir), fs, nil, tools, slowlog.Discard(), zerolog.Nop())
+	d := dispatcher.New(newCfg(t, workdir), fs, nil, tools, slowlog.Discard(), zerolog.Nop())
+
 	return d, fs
 }
 
@@ -75,6 +81,7 @@ func TestDispatcher_CommandsHasAllEntries(t *testing.T) {
 	d, _ := setup(t)
 	cmds := d.Commands()
 	assert.GreaterOrEqual(t, len(cmds), 8, "expected at least 8 commands")
+
 	names := make(map[string]bool, len(cmds))
 	for _, c := range cmds {
 		assert.NotEmpty(t, c.Command)
@@ -82,6 +89,7 @@ func TestDispatcher_CommandsHasAllEntries(t *testing.T) {
 		assert.False(t, names[c.Command], "duplicate command name: %s", c.Command)
 		names[c.Command] = true
 	}
+
 	for _, want := range []string{"start", "status", "me", "launch", "endday", "save", "help"} {
 		assert.True(t, names[want], "missing %q in Commands()", want)
 	}
@@ -109,6 +117,7 @@ func TestDispatcher_EndDay(t *testing.T) {
 	rep, err := d.Handle(context.Background(), messaging.IncomingMessage{Command: "endday", Args: []string{"5", "бой"}})
 	require.NoError(t, err)
 	assert.Contains(t, rep, "День 5")
+
 	mem, _ := fs.ReadRaw("worlds/naruto/chronicle.yaml")
 	assert.Contains(t, mem, "бой")
 }
@@ -124,6 +133,7 @@ func TestDispatcher_LeaveAndReturn(t *testing.T) {
 
 	_, err = d.Handle(context.Background(), messaging.IncomingMessage{Command: "return", Args: []string{"naruto", "3"}})
 	require.NoError(t, err)
+
 	state, _ := fs.ReadRaw("worlds/naruto/state.yaml")
 	assert.Contains(t, state, "day: 3")
 }

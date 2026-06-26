@@ -1,20 +1,23 @@
-package domain
+package domain_test
 
 import (
 	"strings"
 	"testing"
 
+	"github.com/bestxp/narrative-ai-agent/internal/domain"
 	"github.com/stretchr/testify/assert"
 )
 
 func TestStripRulesBlock_NoBlock(t *testing.T) {
 	t.Parallel()
+
 	in := "**диалоги**\nПривет.\n\n**КОНТЕКСТ И ИЗМЕНЕНИЯ**\nstate: момент обновлён."
-	assert.Equal(t, in, StripRulesBlock(in))
+	assert.Equal(t, in, domain.StripRulesBlock(in))
 }
 
 func TestStripRulesBlock_RemovesTrailingBlock(t *testing.T) {
 	t.Parallel()
+
 	in := strings.Join([]string{
 		"**диалоги и действия**",
 		"Аньбу чуть наклонила голову.",
@@ -27,7 +30,7 @@ func TestStripRulesBlock_RemovesTrailingBlock(t *testing.T) {
 		"- Управлял персонажем игрока: нет",
 		"- NPC знал только то, что должен: да",
 	}, "\n")
-	out := StripRulesBlock(in)
+	out := domain.StripRulesBlock(in)
 	assert.NotContains(t, out, "ВАЛИДАЦИЯ ПРАВИЛ")
 	assert.NotContains(t, out, "Лимит слов")
 	assert.Contains(t, out, "**диалоги и действия**")
@@ -36,15 +39,16 @@ func TestStripRulesBlock_RemovesTrailingBlock(t *testing.T) {
 
 func TestStripRulesBlock_CollapsesTrailingBlankLines(t *testing.T) {
 	t.Parallel()
+
 	in := "**диалоги**\nx\n\n**КОНТЕКСТ**\ny\n\n\n\n**ВАЛИДАЦИЯ ПРАВИЛ**\n- a\n- b\n"
-	out := StripRulesBlock(in)
+	out := domain.StripRulesBlock(in)
 	assert.False(t, strings.HasSuffix(out, "\n\n\n"), "trailing blank lines should be collapsed: %q", out)
 	assert.NotContains(t, out, "ВАЛИДАЦИЯ ПРАВИЛ")
 }
 
 func TestStripRulesBlock_EmptyInput(t *testing.T) {
 	t.Parallel()
-	assert.Empty(t, StripRulesBlock(""))
+	assert.Empty(t, domain.StripRulesBlock(""))
 }
 
 func TestStripRulesBlock_NotAnchoredInsideText(t *testing.T) {
@@ -53,14 +57,15 @@ func TestStripRulesBlock_NotAnchoredInsideText(t *testing.T) {
 	// line must not be stripped — the regex is line-anchored and
 	// requires the header to be on its own line.
 	in := "**диалоги**\n— сказал ВАЛИДАЦИЯ ПРАВИЛ и ушёл.\n\n**КОНТЕКСТ**\nok\n"
-	out := StripRulesBlock(in)
+	out := domain.StripRulesBlock(in)
 	assert.Contains(t, out, "ВАЛИДАЦИЯ ПРАВИЛ и ушёл")
 }
 
 func TestStripRulesBlock_OnlyRulesBlock(t *testing.T) {
 	t.Parallel()
+
 	in := "**ВАЛИДАЦИЯ ПРАВИЛ**\n- Лимит слов: 50 / 350\n"
-	out := StripRulesBlock(in)
+	out := domain.StripRulesBlock(in)
 	assert.Empty(t, out)
 }
 
@@ -69,6 +74,6 @@ func TestStripRulesBlock_NoTrailingNewline(t *testing.T) {
 	// Some LLM outputs omit the final newline. The strip must
 	// still work and not leave a stray newline behind.
 	in := "**диалоги**\nx\n\n**КОНТЕКСТ**\ny\n**ВАЛИДАЦИЯ ПРАВИЛ**\n- a"
-	out := StripRulesBlock(in)
+	out := domain.StripRulesBlock(in)
 	assert.Equal(t, "**диалоги**\nx\n\n**КОНТЕКСТ**\ny", out)
 }

@@ -24,6 +24,7 @@ func renderStateBody(s domain.StateSnapshot) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("render_state_body: %w", err)
 	}
+
 	return body, nil
 }
 
@@ -34,7 +35,7 @@ func renderStateBody(s domain.StateSnapshot) (string, error) {
 // and no domain code touches the storage layer
 // directly.
 type State struct {
-	repos *api.Repositories
+	Repos *api.Repositories
 	log   zerolog.Logger
 	// slow is the audit log; nil-safe (Write checks nil).
 	slow *slowlog.Logger
@@ -53,9 +54,9 @@ type State struct {
 	worldStateInvalidate func(reason string)
 }
 
-func newState(log zerolog.Logger, slow *slowlog.Logger, repos *api.Repositories) *State {
+func NewState(log zerolog.Logger, slow *slowlog.Logger, repos *api.Repositories) *State {
 	return &State{
-		repos: repos,
+		Repos: repos,
 		log:   log.With().Str("component", "state").Logger(),
 		slow:  slow,
 	}
@@ -87,18 +88,23 @@ const NPCCompactLineThreshold = 40
 // is a delta, not a replacement.
 //
 // All I/O goes through repos.WorldState (Load + Save).
+// UpdateState applies multiple world-state fields (events, NPCs, plan, etc.) in one call; one-line extraction hurts readability.
+//
+//nolint:funlen // summarizer dispatch is intentionally straight-line; helper extraction would just shuffle the same lines
 func (s *State) UpdateState(snap tools.StateSnapshot) error {
 	if snap.World == "" {
 		// Resolve active world from the registry when the
 		// caller didn't specify one.
-		if info, err := s.repos.Info.Load(); err == nil {
+		if info, err := s.Repos.Info.Load(); err == nil {
 			snap.World = info.ActiveWorld
 		}
+
 		if snap.World == "" {
 			return errors.New("update_state: no active world")
 		}
 	}
-	existing, err := s.repos.WorldState.Load(snap.World)
+
+	existing, err := s.Repos.WorldState.Load(snap.World)
 	if err != nil {
 		return fmt.Errorf("update_state: WorldState.Load failed: %w", err)
 	}
@@ -109,10 +115,12 @@ func (s *State) UpdateState(snap tools.StateSnapshot) error {
 	existing.Day = snap.Day
 	existing.InFlight = snap.InFlight
 	existing.Location = snap.Location
+
 	existing.Moment = snap.Moment
 	if snap.NPCs != nil {
 		existing.NPCs = snap.NPCs
 	}
+
 	if len(snap.AppendEvents) > 0 {
 		// Dedupe by case-insensitive, whitespace-trimmed
 		// key. Without this, the chronology grows by N
@@ -122,33 +130,41 @@ func (s *State) UpdateState(snap tools.StateSnapshot) error {
 		for _, e := range existing.Events {
 			seen[normaliseEventKey(e)] = struct{}{}
 		}
+
 		for _, e := range snap.AppendEvents {
 			key := normaliseEventKey(e)
 			if key == "" {
 				continue
 			}
+
 			if _, dup := seen[key]; dup {
 				s.log.Debug().Str("event", e).Msg("update_state: duplicate event dropped")
+
 				continue
 			}
+
 			seen[key] = struct{}{}
 
 			existing.Events = append(existing.Events, e)
 		}
 	}
+
 	body, err := renderStateBody(existing)
 	if err != nil {
 		return err
 	}
+
 	s.log.Info().
 		Int("day", snap.Day).
 		Bool("in_flight", snap.InFlight).
 		Int("npcs", len(snap.NPCs)).
 		Int("events", len(existing.Events)).
 		Msg("update_state")
-	if err := s.repos.WorldState.Save(snap.World, existing); err != nil {
+
+	if err := s.Repos.WorldState.Save(snap.World, existing); err != nil {
 		return fmt.Errorf("update_state: WorldState.Save failed: %w", err)
 	}
+
 	if s.slow != nil {
 		_ = s.slow.Write("tool.update_state", "", map[string]any{
 			"day":          snap.Day,
@@ -162,6 +178,7 @@ func (s *State) UpdateState(snap tools.StateSnapshot) error {
 			"bytes":        len(body),
 		})
 	}
+
 	return nil
 }
 
@@ -172,15 +189,19 @@ func diffStrings(a, b []string) []string {
 	for _, s := range b {
 		bs[strings.TrimSpace(s)] = struct{}{}
 	}
+
 	var out []string
+
 	for _, s := range a {
 		if _, ok := bs[strings.TrimSpace(s)]; !ok {
 			out = append(out, strings.TrimSpace(s))
 		}
 	}
+
 	if out == nil {
 		return []string{}
 	}
+
 	return out
 }
 
@@ -228,7 +249,7 @@ func ParseStateYAML(body string) int {
 // fs.FileStore at hand) use to peek at the day
 // counter without spinning up a full repository
 // stack. For everything else, prefer
-// `s.repos.WorldState.Load(world)`.
+// `s.Repos.WorldState.Load(world)`.
 func ParseStateYAMLFull(body string) domain.StateSnapshot {
 	out := domain.StateSnapshot{}
 	if strings.TrimSpace(body) == "" {
@@ -256,6 +277,7 @@ func ParseStateYAMLFull(body string) domain.StateSnapshot {
 	if err := gyaml.Unmarshal([]byte(body), &doc); err != nil {
 		return out
 	}
+
 	out.World = doc.State.World
 	out.Day = doc.State.Day
 	out.InFlight = doc.State.InFlight
@@ -270,14 +292,16 @@ func ParseStateYAMLFull(body string) domain.StateSnapshot {
 		TimelineIndex: doc.Stage.TimelineIndex,
 		Next:          doc.Stage.Next,
 	}
+
 	return out
 }
 
 // RotatePlan replaces plan.md content via repos.Plan.
 func (s *State) RotatePlan(world string, events []string) error {
-	if err := s.repos.Plan.ReplaceEvents(context.Background(), world, events); err != nil {
+	if err := s.Repos.Plan.ReplaceEvents(context.Background(), world, events); err != nil {
 		return fmt.Errorf("rotate_plan: ReplaceEvents failed: %w", err)
 	}
+
 	return nil
 }
 
@@ -296,18 +320,24 @@ func (e *PlanRangeError) Error() string {
 func (s *State) ArchiveChronicleDay(ctx context.Context, world string, day int, summary string) error {
 	if strings.TrimSpace(summary) == "" {
 		s.log.Debug().Int("day", day).Msg("archive_chronicle_day: empty summary, skipping")
+
 		return nil
 	}
-	c, err := s.repos.Chronicle.Load(world)
+
+	c, err := s.Repos.Chronicle.Load(world)
 	if err != nil {
 		return fmt.Errorf("archive_chronicle_day: Chronicle.Load failed: %w", err)
 	}
+
 	if !c.AppendDay(day, summary) {
 		s.log.Debug().Int("day", day).Msg("archive_chronicle_day: duplicate day, skipping")
+
 		return nil
 	}
+
 	s.log.Info().Str("world", world).Int("day", day).Msg("archive_chronicle_day")
-	if err := s.repos.Chronicle.Save(world, c); err != nil {
+
+	if err := s.Repos.Chronicle.Save(world, c); err != nil {
 		return fmt.Errorf("archive_chronicle_day: Chronicle.Save failed: %w", err)
 	}
 	// Always run the compression hook. The hook
@@ -329,31 +359,40 @@ func (s *State) ArchiveChronicleDay(ctx context.Context, world string, day int, 
 	// Bump state.md to the next day. The day counter
 	// advances, inFlight=true, events cleared.
 	if world != "" {
-		st, err := s.repos.WorldState.Load(world)
+		st, err := s.Repos.WorldState.Load(world)
 		if err != nil {
 			return fmt.Errorf("archive_chronicle_day: WorldState.Load failed: %w", err)
 		}
+
 		st.Day = day + 1
 		st.InFlight = true
+
 		st.Events = nil
-		if err := s.repos.WorldState.Save(world, st); err != nil {
+		if err := s.Repos.WorldState.Save(world, st); err != nil {
 			return fmt.Errorf("archive_chronicle_day: WorldState.Save failed: %w", err)
 		}
 	}
+
 	if s.worldStateInvalidate != nil {
 		s.worldStateInvalidate("end_day")
 	}
+
 	return nil
 }
 
 // AppendEvent is a one-line wrapper that the dispatcher /
 // GM can call instead of going through UpdateState.
 func (s *State) AppendEvent(text string) error {
-	info, err := s.repos.Info.Load()
+	info, err := s.Repos.Info.Load()
 	if err != nil || info.ActiveWorld == "" {
 		return errors.New("state: no active world")
 	}
-	return s.repos.WorldState.AppendEvent(info.ActiveWorld, text)
+
+	if err := s.Repos.WorldState.AppendEvent(info.ActiveWorld, text); err != nil {
+		return fmt.Errorf("state.AppendEvent: %w", err)
+	}
+
+	return nil
 }
 
 // AppendHistoryToState appends a compaction summary as
@@ -362,18 +401,23 @@ func (s *State) AppendHistoryToState(world, summary string, at time.Time) error 
 	if strings.TrimSpace(summary) == "" {
 		return nil
 	}
+
 	if world == "" {
 		return errors.New("state: world is empty")
 	}
-	st, err := s.repos.WorldState.Load(world)
+
+	st, err := s.Repos.WorldState.Load(world)
 	if err != nil {
 		return fmt.Errorf("append_history_to_state: WorldState.Load failed: %w", err)
 	}
+
 	header := "[history сжато " + at.UTC().Format("2006-01-02 15:04") + " UTC]"
+
 	st.Events = append(st.Events, header+"\n"+summary)
-	if err := s.repos.WorldState.Save(world, st); err != nil {
+	if err := s.Repos.WorldState.Save(world, st); err != nil {
 		return fmt.Errorf("append_history_to_state: WorldState.Save failed: %w", err)
 	}
+
 	return nil
 }
 
@@ -391,28 +435,36 @@ func (s *State) EndScene(world string, permanentParty []string) (*EndSceneResult
 	if world == "" {
 		return nil, errors.New("end_scene: world is empty")
 	}
-	exists, err := s.repos.WorldState.Load(world)
+
+	exists, err := s.Repos.WorldState.Load(world)
 	if err != nil {
 		return nil, fmt.Errorf("end_scene: WorldState.Load failed: %w", err)
 	}
+
 	if permanentParty == nil {
 		return &EndSceneResult{KeptNPCs: exists.NPCs, PrunedNPCsLen: 0}, nil
 	}
+
 	keep := make(map[string]struct{}, len(permanentParty))
 	for _, n := range permanentParty {
 		keep[strings.ToLower(strings.TrimSpace(n))] = struct{}{}
 	}
+
 	var newRoster []string
+
 	for _, n := range exists.NPCs {
 		if _, ok := keep[strings.ToLower(strings.TrimSpace(n))]; ok {
 			newRoster = append(newRoster, n)
 		}
 	}
+
 	pruned := len(exists.NPCs) - len(newRoster)
+
 	exists.NPCs = newRoster
-	if err := s.repos.WorldState.Save(world, exists); err != nil {
+	if err := s.Repos.WorldState.Save(world, exists); err != nil {
 		return nil, fmt.Errorf("end_scene: WorldState.Save failed: %w", err)
 	}
+
 	return &EndSceneResult{KeptNPCs: newRoster, PrunedNPCsLen: pruned}, nil
 }
 

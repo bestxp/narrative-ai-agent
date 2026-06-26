@@ -1,15 +1,17 @@
-package prompts
+package prompts_test
 
 import (
 	"testing"
 
+	"github.com/bestxp/narrative-ai-agent/internal/prompts"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func TestList_ContainsExpectedFiles(t *testing.T) {
 	t.Parallel()
-	list := List()
+
+	list := prompts.List()
 	assert.Contains(t, list, "narrative.md.tmpl", "narrative.md.tmpl must be embedded")
 	assert.Contains(t, list, "summary.md.tmpl", "summary.md.tmpl must be embedded")
 	assert.Contains(t, list, "world_state.md.tmpl", "world_state.md.tmpl must be embedded")
@@ -21,9 +23,10 @@ func TestList_ContainsExpectedFiles(t *testing.T) {
 // is caught here.
 func TestRender_PlainTemplateRoundTrip(t *testing.T) {
 	t.Parallel()
-	ResetTemplateCache()
-	rendered, err := Render("summary.md.tmpl", PromptData{
-		Narrative: NarrativeData{WordLimit: 200},
+	prompts.ResetTemplateCache()
+
+	rendered, err := prompts.Render("summary.md.tmpl", prompts.PromptData{
+		Narrative: prompts.NarrativeData{WordLimit: 200},
 	})
 	require.NoError(t, err)
 	assert.NotEmpty(t, rendered)
@@ -35,9 +38,10 @@ func TestRender_PlainTemplateRoundTrip(t *testing.T) {
 // rendered body.
 func TestRender_SubstitutesConfig(t *testing.T) {
 	t.Parallel()
-	ResetTemplateCache()
-	data := PromptData{Narrative: NarrativeData{WordLimit: 250}}
-	rendered, err := Render("narrative.md.tmpl", data)
+	prompts.ResetTemplateCache()
+
+	data := prompts.PromptData{Narrative: prompts.NarrativeData{WordLimit: 250}}
+	rendered, err := prompts.Render("narrative.md.tmpl", data)
 	require.NoError(t, err)
 	assert.Contains(t, rendered, "≤ 250 слов")
 	assert.Contains(t, rendered, "Лимит слов: 250")
@@ -51,7 +55,8 @@ func TestRender_SubstitutesConfig(t *testing.T) {
 // fail loudly at startup, not silently render as "".
 func TestRender_MissingTemplate(t *testing.T) {
 	t.Parallel()
-	_, err := Render("does-not-exist.md.tmpl", PromptData{})
+
+	_, err := prompts.Render("does-not-exist.md.tmpl", prompts.PromptData{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "template not found")
 }
@@ -61,7 +66,8 @@ func TestRender_MissingTemplate(t *testing.T) {
 // error, not a runtime one.
 func TestRender_RejectsNonTemplate(t *testing.T) {
 	t.Parallel()
-	_, err := Render("narrative.md", PromptData{})
+
+	_, err := prompts.Render("narrative.md", prompts.PromptData{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), ".tmpl")
 }
@@ -73,10 +79,11 @@ func TestRender_RejectsNonTemplate(t *testing.T) {
 // reflects the new WordLimit.
 func TestRender_CachesParsedTemplate(t *testing.T) {
 	t.Parallel()
-	ResetTemplateCache()
-	_, err := Render("narrative.md.tmpl", PromptData{Narrative: NarrativeData{WordLimit: 200}})
+	prompts.ResetTemplateCache()
+
+	_, err := prompts.Render("narrative.md.tmpl", prompts.PromptData{Narrative: prompts.NarrativeData{WordLimit: 200}})
 	require.NoError(t, err)
-	second, err := Render("narrative.md.tmpl", PromptData{Narrative: NarrativeData{WordLimit: 999}})
+	second, err := prompts.Render("narrative.md.tmpl", prompts.PromptData{Narrative: prompts.NarrativeData{WordLimit: 999}})
 	require.NoError(t, err)
 	// The second render substitutes WordLimit=999 in
 	// the same markers; "999" must appear in the output
@@ -92,11 +99,12 @@ func TestRender_CachesParsedTemplate(t *testing.T) {
 // here we just assert the values flow through.
 func TestNewPromptData_DefaultsFilled(t *testing.T) {
 	t.Parallel()
-	snap := NarrativeConfigSnapshot{WordLimit: 250}
-	d := NewPromptData(snap, CharacterData{}, WorldData{})
-	assert.Equal(t, DefaultNPCPersonalMemoryLimit, d.Compaction.NPCPersonalMemoryLimit)
-	assert.Equal(t, DefaultNPCPersonalMemoryTarget, d.Compaction.NPCPersonalMemoryTarget)
-	assert.Equal(t, DefaultMemoryTargetBytes, d.Compaction.MemoryTargetBytes)
+
+	snap := prompts.NarrativeConfigSnapshot{WordLimit: 250}
+	d := prompts.NewPromptData(snap, prompts.CharacterData{}, prompts.WorldData{})
+	assert.Equal(t, prompts.DefaultNPCPersonalMemoryLimit, d.Compaction.NPCPersonalMemoryLimit)
+	assert.Equal(t, prompts.DefaultNPCPersonalMemoryTarget, d.Compaction.NPCPersonalMemoryTarget)
+	assert.Equal(t, prompts.DefaultMemoryTargetBytes, d.Compaction.MemoryTargetBytes)
 	assert.Equal(t, 250, d.Narrative.WordLimit)
 }
 
@@ -106,8 +114,9 @@ func TestNewPromptData_DefaultsFilled(t *testing.T) {
 // round-trip StateSnapshot values.
 func TestNewStateData(t *testing.T) {
 	t.Parallel()
-	d := NewStateData("naruto", 5, true, "день", "Коноха", "Аньбу толкает", "",
-		StageStateData{Current: "wave_mission", TimelineIndex: 1},
+
+	d := prompts.NewStateData("naruto", 5, true, "день", "Коноха", "Аньбу толкает", "",
+		prompts.StageStateData{Current: "wave_mission", TimelineIndex: 1},
 		[]string{"anbu_dog", "anbu_cat"},
 		[]string{"Ход 1: ...", "Ход 2: ..."})
 	assert.Equal(t, "naruto", d.World)

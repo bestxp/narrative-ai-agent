@@ -29,7 +29,7 @@ import (
 // data" branches and lets us evolve the YAML shape
 // freely.
 type Character struct {
-	repos *api.Repositories
+	Repos *api.Repositories
 	log   zerolog.Logger
 	slow  *slowlog.Logger
 	// world returns the active world name. The
@@ -38,14 +38,13 @@ type Character struct {
 	world func() string
 }
 
-// SetWorldResolver wires a custom active-world
-// resolver. Tests use this to inject a fixture
-// without going through the registry.
-func (c *Character) SetWorldResolver(fn func() string) { c.world = fn }
-
-func newCharacter(repos *api.Repositories, log zerolog.Logger, slow *slowlog.Logger) *Character {
+// NewCharacter constructs a Character tool backed by the
+// supplied repositories. The active world is resolved on
+// demand through repos.Info.Load(); tests can override
+// the resolver via SetWorldResolver.
+func NewCharacter(repos *api.Repositories, log zerolog.Logger, slow *slowlog.Logger) *Character {
 	return &Character{
-		repos: repos,
+		Repos: repos,
 		log:   log.With().Str("component", "character").Logger(),
 		slow:  slow,
 		world: func() string {
@@ -58,6 +57,11 @@ func newCharacter(repos *api.Repositories, log zerolog.Logger, slow *slowlog.Log
 		},
 	}
 }
+
+// SetWorldResolver wires a custom active-world
+// resolver. Tests use this to inject a fixture
+// without going through the registry.
+func (c *Character) SetWorldResolver(fn func() string) { c.world = fn }
 
 // Public errors. Callers can errors.Is against
 // them without importing this package's internals.
@@ -82,16 +86,20 @@ func (c *Character) AppendSoul(character, section, value string) (bool, error) {
 	if character == "" {
 		return false, ErrNoActiveCharacter
 	}
+
 	if strings.TrimSpace(section) == "" {
 		return false, ErrEmptySection
 	}
+
 	if strings.TrimSpace(value) == "" {
 		return false, ErrEmptyAppend
 	}
-	ok, err := c.repos.Soul.AppendSection(character, section, value)
+
+	ok, err := c.Repos.Soul.AppendSection(character, section, value)
 	if err != nil {
 		return false, fmt.Errorf("wrap: %w", err)
 	}
+
 	if ok {
 		c.logEvent(character, "SOUL.yaml")
 	}
@@ -107,19 +115,24 @@ func (c *Character) AppendSkill(character, section, value string) (bool, error) 
 	if character == "" {
 		return false, ErrNoActiveCharacter
 	}
+
 	if strings.TrimSpace(section) == "" {
 		return false, ErrEmptySection
 	}
+
 	if strings.TrimSpace(value) == "" {
 		return false, ErrEmptyAppend
 	}
+
 	if !enumContains(section, charprofile.SkillFixedSections) {
 		return false, charprofile.ErrSectionNotFound
 	}
-	ok, err := c.repos.Skill.AppendSection(character, section, value)
+
+	ok, err := c.Repos.Skill.AppendSection(character, section, value)
 	if err != nil {
 		return false, fmt.Errorf("wrap: %w", err)
 	}
+
 	if ok {
 		c.logEvent(character, "skill.yaml")
 	}
@@ -133,19 +146,24 @@ func (c *Character) AppendMemorySection(character, section, value string) (bool,
 	if character == "" {
 		return false, ErrNoActiveCharacter
 	}
+
 	if strings.TrimSpace(section) == "" {
 		return false, ErrEmptySection
 	}
+
 	if strings.TrimSpace(value) == "" {
 		return false, ErrEmptyAppend
 	}
+
 	if !enumContains(section, charprofile.MemoryFixedSections) {
 		return false, charprofile.ErrSectionNotFound
 	}
-	ok, err := c.repos.Memory.AppendSection(character, section, value)
+
+	ok, err := c.Repos.Memory.AppendSection(character, section, value)
 	if err != nil {
 		return false, fmt.Errorf("wrap: %w", err)
 	}
+
 	if ok {
 		c.logEvent(character, "memory.yaml")
 	}
@@ -159,13 +177,16 @@ func (c *Character) AppendInventoryItem(character string, item charprofile.Item)
 	if character == "" {
 		return false, ErrNoActiveCharacter
 	}
+
 	if strings.TrimSpace(item.Name) == "" {
 		return false, ErrEmptySection
 	}
-	ok, err := c.repos.Inventory.AppendItem(character, item)
+
+	ok, err := c.Repos.Inventory.AppendItem(character, item)
 	if err != nil {
 		return false, fmt.Errorf("append_inventory_item: AppendItem failed: %w", err)
 	}
+
 	if ok {
 		c.logEvent(character, "inventory.yaml")
 	}
@@ -178,11 +199,12 @@ func (c *Character) RemoveInventoryItem(character, name string) error {
 	if character == "" {
 		return ErrNoActiveCharacter
 	}
+
 	if strings.TrimSpace(name) == "" {
 		return ErrEmptySection
 	}
 
-	if err := c.repos.Inventory.RemoveItem(character, name); err != nil {
+	if err := c.Repos.Inventory.RemoveItem(character, name); err != nil {
 		return fmt.Errorf("remove_inventory_item: %w", err)
 	}
 
@@ -195,16 +217,20 @@ func (c *Character) SetCurrency(character, name string, count int) (bool, error)
 	if character == "" {
 		return false, ErrNoActiveCharacter
 	}
+
 	if strings.TrimSpace(name) == "" {
 		return false, ErrEmptySection
 	}
-	ok, err := c.repos.Inventory.SetCurrency(character, name, count)
+
+	ok, err := c.Repos.Inventory.SetCurrency(character, name, count)
 	if err != nil {
 		return false, fmt.Errorf("set_currency: SetCurrency failed: %w", err)
 	}
+
 	if ok {
 		c.logEvent(character, "inventory.yaml")
 	}
+
 	return ok, nil
 }
 
@@ -213,10 +239,16 @@ func (c *Character) RemoveCurrency(character, name string) error {
 	if character == "" {
 		return ErrNoActiveCharacter
 	}
+
 	if strings.TrimSpace(name) == "" {
 		return ErrEmptySection
 	}
-	return c.repos.Inventory.RemoveCurrency(character, name)
+
+	if err := c.Repos.Inventory.RemoveCurrency(character, name); err != nil {
+		return fmt.Errorf("character.RemoveCurrency: %w", err)
+	}
+
+	return nil
 }
 
 // Append is the legacy single-method dispatch kept
@@ -227,12 +259,15 @@ func (c *Character) Append(character, file, section, value string) error {
 	switch strings.ToLower(file) {
 	case "soul":
 		_, err := c.AppendSoul(character, section, value)
+
 		return err
 	case "skill":
 		_, err := c.AppendSkill(character, section, value)
+
 		return err
 	case "memory":
 		_, err := c.AppendMemorySection(character, section, value)
+
 		return err
 	default:
 		return ErrUnknownCharacterFile
@@ -255,6 +290,7 @@ func (c *Character) Read(activeChar, activeWorld string) (*tools.CharacterSnapsh
 	if activeChar == "" {
 		return nil, ErrNoActiveCharacter
 	}
+
 	snap := &tools.CharacterSnapshot{
 		Character: activeChar,
 		World:     activeWorld,
@@ -263,34 +299,39 @@ func (c *Character) Read(activeChar, activeWorld string) (*tools.CharacterSnapsh
 	// raw YAML body. The repository does not expose
 	// raw access for inventory (it returns a typed
 	// Inventory), so we round-trip through it.
-	if s, err := c.repos.Soul.Load(activeChar); err == nil {
+	if s, err := c.Repos.Soul.Load(activeChar); err == nil {
 		if body, err := s.Save(); err == nil {
 			snap.SOUL = body
 		}
 	}
-	if s, err := c.repos.Skill.Load(activeChar); err == nil {
+
+	if s, err := c.Repos.Skill.Load(activeChar); err == nil {
 		if body, err := s.Save(); err == nil {
 			snap.SKILL = body
 		}
 	}
-	if m, err := c.repos.Memory.Load(activeChar); err == nil {
+
+	if m, err := c.Repos.Memory.Load(activeChar); err == nil {
 		if body, err := m.Save(); err == nil {
 			snap.Memory = body
 		}
 	}
-	if inv, err := c.repos.Inventory.Load(activeChar); err == nil {
+
+	if inv, err := c.Repos.Inventory.Load(activeChar); err == nil {
 		if body, err := inv.Save(); err == nil {
 			snap.Inventory = body
 		}
 	}
+
 	if activeWorld != "" {
-		if s, err := c.repos.WorldState.Load(activeWorld); err == nil {
+		if s, err := c.Repos.WorldState.Load(activeWorld); err == nil {
 			snap.Day = s.Day
 			if body, rerr := renderStateBody(s); rerr == nil {
 				snap.State = body
 			}
 		}
 	}
+
 	return snap, nil
 }
 
@@ -301,13 +342,16 @@ func FormatSnapshot(s *tools.CharacterSnapshot, maxPerSection int) string {
 	if s == nil {
 		return "Нет активного персонажа. Запустите /launch."
 	}
+
 	var b strings.Builder
 	fmt.Fprintf(&b, "**Персонаж: %s**\n", s.Character)
+
 	if s.World != "" {
 		fmt.Fprintf(&b, "**Мир: %s** (день %d)\n\n", s.World, s.Day)
 	} else {
 		b.WriteString("**Мир: —**\n\n")
 	}
+
 	for _, sec := range []struct {
 		title string
 		body  string
@@ -320,12 +364,15 @@ func FormatSnapshot(s *tools.CharacterSnapshot, maxPerSection int) string {
 	} {
 		if sec.body == "" {
 			fmt.Fprintf(&b, "## %s\n_(пусто)_\n\n", sec.title)
+
 			continue
 		}
+
 		fmt.Fprintf(&b, "## %s\n", sec.title)
 		b.WriteString(truncateForMe(sec.body, maxPerSection))
 		b.WriteString("\n\n")
 	}
+
 	return strings.TrimSpace(b.String())
 }
 
@@ -333,10 +380,12 @@ func truncateForMe(s string, maxLines int) string {
 	if maxLines <= 0 {
 		return s
 	}
+
 	lines := strings.Split(s, "\n")
 	if len(lines) <= maxLines {
 		return s
 	}
+
 	return strings.Join(lines[:maxLines], "\n") + fmt.Sprintf("\n[…+%d строк обрезано…]", len(lines)-maxLines)
 }
 
@@ -350,13 +399,17 @@ func extractDayNumber(s string) (int, bool) {
 	if len(m) < 2 {
 		return 0, false
 	}
+
 	n := 0
+
 	for _, r := range m[1] {
 		if r < '0' || r > '9' {
 			return 0, false
 		}
+
 		n = n*10 + int(r-'0')
 	}
+
 	return n, true
 }
 
@@ -383,6 +436,7 @@ func (c *Character) logEvent(character, fileLabel string) {
 		Str("character", character).
 		Str("file", fileLabel).
 		Msg("character_update")
+
 	if c.slow != nil {
 		_ = c.slow.Write("character.update", "", map[string]any{
 			"character": character,

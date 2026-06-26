@@ -1,14 +1,15 @@
-package yaml
+package yaml_test
 
 import (
 	"testing"
 
 	"github.com/bestxp/narrative-ai-agent/internal/npcprofile"
+	"github.com/bestxp/narrative-ai-agent/internal/repository/yaml"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func (e *testEnv) newNPCProfileRepo() *NPCProfileYaml { return NewNPCProfileYaml(e.store) }
+func (e *testEnv) newNPCProfileRepo() *yaml.NPCProfileYaml { return yaml.NewNPCProfileYaml(e.store) }
 
 func TestNPCProfileYaml_RoundTrip(t *testing.T) {
 	t.Parallel()
@@ -43,6 +44,7 @@ func TestNPCProfileYaml_UpdateSection(t *testing.T) {
 	ok, err := env.newNPCProfileRepo().UpdateSection("naruto", "kakashi", "abilities", "Шаринган")
 	require.NoError(t, err)
 	assert.True(t, ok)
+
 	out, _ := env.newNPCProfileRepo().Load("naruto", "kakashi")
 	assert.Equal(t, []string{"Шаринган"}, out.Abilities)
 }

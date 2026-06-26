@@ -145,6 +145,7 @@ func Load(body string) (Profile, error) {
 	if strings.TrimSpace(body) == "" {
 		return Profile{}, ErrNotFound
 	}
+
 	if err := yaml.Unmarshal([]byte(body), &p); err != nil {
 		return Profile{}, fmt.Errorf("npcprofile: yaml.Unmarshal: %w", err)
 	}
@@ -158,7 +159,7 @@ func Load(body string) (Profile, error) {
 // struct field order, but we add a top-level comment
 // so an operator opening the file knows what they are
 // looking at.
-func (p Profile) Save() (string, error) {
+func (p *Profile) Save() (string, error) {
 	out, err := yaml.Marshal(p)
 	if err != nil {
 		return "", fmt.Errorf("npcprofile: yaml.Marshal: %w", err)
@@ -194,7 +195,7 @@ func (p Profile) Save() (string, error) {
 // thin wrapper that projects the typed Profile into
 // the data-bag and delegates rendering. The template
 // owns the format; Go owns the data.
-func (p Profile) BuildMarkdown() (string, error) {
+func (p *Profile) BuildMarkdown() (string, error) {
 	rows := make([]prompts.NPCRelationRow, 0, len(p.RelationsNPCs))
 	for _, r := range p.RelationsNPCs {
 		rows = append(rows, prompts.NPCRelationRow{
@@ -202,6 +203,7 @@ func (p Profile) BuildMarkdown() (string, error) {
 			Note:   strings.TrimSpace(r.Note),
 		})
 	}
+
 	data := prompts.NewNPCProfileDataFromFields(
 		strings.TrimSpace(p.DisplayName),
 		strings.TrimSpace(p.Temperament),
@@ -242,31 +244,38 @@ func (p Profile) BuildMarkdown() (string, error) {
 // markdown (## for the header, prose for the body),
 // consistent with the LOD 0 renderer's block
 // layout.
-func (p Profile) BuildCompact() string {
+func (p *Profile) BuildCompact() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "## %s\n", strings.TrimSpace(p.DisplayName))
+
 	if s := strings.TrimSpace(p.Temperament); s != "" {
 		fmt.Fprintf(&b, "Темперамент: %s\n", s)
 	}
+
 	if s := strings.TrimSpace(p.RelationsGG); s != "" {
 		fmt.Fprintf(&b, "К ГГ: %s\n", s)
 	}
+
 	if s := strings.TrimSpace(p.CurrentStatus); s != "" {
 		fmt.Fprintf(&b, "Текущий статус: %s\n", s)
 	}
+
 	if len(p.RelationsNPCs) > 0 {
 		// Compact: just the target, no per-target note.
 		// The full relations list is in the YAML.
 		var rels []string
+
 		for _, r := range p.RelationsNPCs {
 			if t := strings.TrimSpace(r.Target); t != "" {
 				rels = append(rels, t)
 			}
 		}
+
 		if len(rels) > 0 {
 			fmt.Fprintf(&b, "Связи: %s\n", strings.Join(rels, ", "))
 		}
 	}
+
 	if s := strings.TrimSpace(p.LastUpdate); s != "" {
 		fmt.Fprintf(&b, "Свежее: %s\n", s)
 	}
@@ -286,15 +295,18 @@ func (p Profile) BuildCompact() string {
 // a single line with newlines between the three
 // short fields so the markdown render is still
 // scannable when the LLM reads user[0] back.
-func (p Profile) BuildOneLine() string {
+func (p *Profile) BuildOneLine() string {
 	var b strings.Builder
+
 	name := strings.TrimSpace(p.DisplayName)
 	if name != "" {
 		b.WriteString(name)
 	}
+
 	if s := strings.TrimSpace(p.Temperament); s != "" {
 		fmt.Fprintf(&b, "\n%s.", truncateRune(s, 120))
 	}
+
 	if s := strings.TrimSpace(p.CurrentStatus); s != "" {
 		fmt.Fprintf(&b, "\nСейчас: %s", truncateRune(s, 120))
 	}
@@ -310,6 +322,7 @@ func truncateRune(s string, maxRunes int) string {
 	if maxRunes <= 0 {
 		return ""
 	}
+
 	runes := []rune(s)
 	if len(runes) <= maxRunes {
 		return s
@@ -380,17 +393,26 @@ func MatchSection(name string) SectionKind {
 	switch trimmed {
 	case "темперамент", "temperament", "temper":
 		return SectionTemperament
-	case "отношения с гг", "relations_gg", "relations gg", "relationsgg", "gg", "отношения с главным", "к гг":
+	case "отношения с гг", "relations_gg", "relations gg",
+		"relationsgg", "gg", "отношения с главным", "к гг":
 		return SectionRelationsGG
-	case "отношения с другими npc", "отношения с npc", "relations_npcs", "npc relations", "npc_relations", "отношения", "к другим npc":
+	case "отношения с другими npc",
+		"отношения с npc",
+		"relations_npcs",
+		"npc relations",
+		"npc_relations",
+		"отношения",
+		"к другим npc":
 		return SectionRelationsNPCs
 	case "способности", "abilities", "умения", "навыки", "skills":
 		return SectionAbilities
-	case "личная память", "личная память/факты", "память", "факты", "personal memory", "personal_memory", "memory":
+	case "личная память", "личная память/факты", "память", "факты",
+		"personal memory", "personal_memory", "memory":
 		return SectionPersonalMemory
 	case "текущий статус", "статус", "current status", "current_status", "status":
 		return SectionCurrentStatus
-	case "критические знания", "знания", "секреты", "critical knowledge", "critical_knowledge", "secrets":
+	case "критические знания", "знания", "секреты",
+		"critical knowledge", "critical_knowledge", "secrets":
 		return SectionCriticalKnowledge
 	case "никнеймы", "nicknames", "клички", "nickname", "прозвища":
 		return SectionNicknames
@@ -435,7 +457,14 @@ func MatchSection(name string) SectionKind {
 // added or replaced). False means the section was a
 // no-op (empty text, or exact-byte duplicate of an
 // existing item).
-func (p *Profile) UpdateSection(kind SectionKind, text string) bool { //nolint:funlen // complex function; splitting would harm readability.
+//
+// UpdateSection is a straight switch across 14 section kinds;
+// cyclomatic complexity scales with the enum, not with branching logic
+//
+// cyclomatic complexity scales with the enum, not with branching logic.
+//
+//nolint:cyclop,funlen // Profile.UpdateSection branches per section kind;
+func (p *Profile) UpdateSection(kind SectionKind, text string) bool {
 	text = strings.TrimSpace(text)
 
 	switch kind {
@@ -443,6 +472,7 @@ func (p *Profile) UpdateSection(kind SectionKind, text string) bool { //nolint:f
 		if text == "" || p.Temperament == text {
 			return false
 		}
+
 		p.Temperament = text
 
 		return true
@@ -450,6 +480,7 @@ func (p *Profile) UpdateSection(kind SectionKind, text string) bool { //nolint:f
 		if text == "" || p.RelationsGG == text {
 			return false
 		}
+
 		p.RelationsGG = text
 
 		return true
@@ -457,6 +488,7 @@ func (p *Profile) UpdateSection(kind SectionKind, text string) bool { //nolint:f
 		if text == "" || p.CurrentStatus == text {
 			return false
 		}
+
 		p.CurrentStatus = text
 
 		return true
@@ -464,6 +496,7 @@ func (p *Profile) UpdateSection(kind SectionKind, text string) bool { //nolint:f
 		if text == "" || p.LastUpdate == text {
 			return false
 		}
+
 		p.LastUpdate = text
 
 		return true
@@ -483,6 +516,7 @@ func (p *Profile) UpdateSection(kind SectionKind, text string) bool { //nolint:f
 				return false
 			}
 		}
+
 		p.PersonalMemory = append(p.PersonalMemory, text)
 
 		return true
@@ -501,39 +535,11 @@ func (p *Profile) UpdateSection(kind SectionKind, text string) bool { //nolint:f
 	return false
 }
 
-// updateRelation parses "Target: note" from text and
-// either inserts a new Relation or replaces the note
-// on an existing one (same Target).
-func (p *Profile) updateRelation(text string) bool {
-	if text == "" {
-		return false
-	}
-	target, note := splitRelationText(text)
-	if target == "" {
-		return false
-	}
-	targetKey := strings.ToLower(strings.TrimSpace(target))
-	for i := range p.RelationsNPCs {
-		existing := strings.ToLower(strings.TrimSpace(p.RelationsNPCs[i].Target))
-		if existing == targetKey {
-			if p.RelationsNPCs[i].Note == note {
-				return false
-			}
-			p.RelationsNPCs[i].Note = note
-
-			return true
-		}
-	}
-
-	p.RelationsNPCs = append(p.RelationsNPCs, Relation{Target: target, Note: note})
-
-	return true
-}
-
 // joinNonEmpty joins a slice of lines with single
 // spaces, dropping any empty / whitespace-only entries.
 func joinNonEmpty(lines []string) string {
 	var parts []string
+
 	for _, ln := range lines {
 		if t := strings.TrimSpace(ln); t != "" {
 			parts = append(parts, t)
@@ -564,9 +570,11 @@ func appendUnique(field *[]string, text string) bool {
 	if text == "" {
 		return false
 	}
+
 	if slices.Contains(*field, text) {
 		return false
 	}
+
 	*field = append(*field, text)
 
 	return true
@@ -605,15 +613,28 @@ func appendUnique(field *[]string, text string) bool {
 //
 // Anything not matching a known section header is
 // dropped (we return nil for the section list — the
-// operator is responsible for the diff). //nolint:funlen // complex function; splitting would harm readability.
-func MigrateFromMarkdown(body, fileSlug string) (Profile, error) { //nolint:funlen // complex function; splitting would harm readability.
+// operator is responsible for the diff).
+//
+// MigrateFromMarkdown walks line-by-line through a legacy markdown profile;
+// one pass per line is clearer than per-section helpers that would each
+// re-implement the same header/body split
+//
+// per-section helpers that would each re-implement the header/body split.
+//
+//nolint:gocognit,cyclop,funlen // MigrateFromMarkdown walks line-by-line; one pass per line is clearer than
+func MigrateFromMarkdown(body, fileSlug string) (Profile, error) {
 	p := Profile{FileSlug: fileSlug}
 	if strings.TrimSpace(body) == "" {
 		return p, ErrNotFound
 	}
+
 	lines := strings.Split(body, "\n")
-	var current SectionKind
-	var pending []string
+
+	var (
+		current SectionKind
+		pending []string
+	)
+
 	flush := func() {
 		if current == SectionUnknown || len(pending) == 0 {
 			return
@@ -638,8 +659,10 @@ func MigrateFromMarkdown(body, fileSlug string) (Profile, error) { //nolint:funl
 				p.UpdateSection(current, text)
 			}
 		}
+
 		pending = nil
 	}
+
 	for _, raw := range lines {
 		t := strings.TrimSpace(raw)
 		switch {
@@ -649,9 +672,11 @@ func MigrateFromMarkdown(body, fileSlug string) (Profile, error) { //nolint:funl
 			sawSection = true
 
 			flush()
+
 			current = MatchSection(t[3:])
 		case t == "":
 			flush()
+
 			current = SectionUnknown
 		default:
 			item := strings.TrimPrefix(t, "- ")
@@ -661,12 +686,15 @@ func MigrateFromMarkdown(body, fileSlug string) (Profile, error) { //nolint:funl
 			if idx := strings.Index(t, ". "); idx > 0 {
 				prefix := t[:idx]
 				isDigits := true
+
 				for _, r := range prefix {
 					if r < '0' || r > '9' {
 						isDigits = false
+
 						break
 					}
 				}
+
 				if isDigits {
 					item = strings.TrimSpace(t[idx+2:])
 				}
@@ -691,6 +719,7 @@ func MigrateFromMarkdown(body, fileSlug string) (Profile, error) { //nolint:funl
 			p.Temperament = body
 		}
 	}
+
 	if p.DisplayName == "" {
 		p.DisplayName = fileSlug
 	}
@@ -707,36 +736,77 @@ var sawSection bool //nolint:gochecknoglobals // parser output latch shared by t
 // has data, alphabetically sorted. Used by the
 // operator-facing diagnostic (e.g. /inspect) and the
 // summarizer to know which sections are populated.
-func (p Profile) SortedKeys() []string {
+func (p *Profile) SortedKeys() []string {
 	var keys []string
 	if p.Temperament != "" {
 		keys = append(keys, SectionTemperament.CanonicalSectionName())
 	}
+
 	if p.RelationsGG != "" {
 		keys = append(keys, SectionRelationsGG.CanonicalSectionName())
 	}
+
 	if len(p.RelationsNPCs) > 0 {
 		keys = append(keys, SectionRelationsNPCs.CanonicalSectionName())
 	}
+
 	if len(p.Abilities) > 0 {
 		keys = append(keys, SectionAbilities.CanonicalSectionName())
 	}
+
 	if len(p.PersonalMemory) > 0 {
 		keys = append(keys, SectionPersonalMemory.CanonicalSectionName())
 	}
+
 	if p.CurrentStatus != "" {
 		keys = append(keys, SectionCurrentStatus.CanonicalSectionName())
 	}
+
 	if len(p.CriticalKnowledge) > 0 {
 		keys = append(keys, SectionCriticalKnowledge.CanonicalSectionName())
 	}
+
 	if len(p.Nicknames) > 0 {
 		keys = append(keys, SectionNicknames.CanonicalSectionName())
 	}
+
 	if p.LastUpdate != "" {
 		keys = append(keys, SectionLastUpdate.CanonicalSectionName())
 	}
+
 	sort.Strings(keys)
 
 	return keys
+}
+
+// updateRelation parses "Target: note" from text and
+// either inserts a new Relation or replaces the note
+// on an existing one (same Target).
+func (p *Profile) updateRelation(text string) bool {
+	if text == "" {
+		return false
+	}
+
+	target, note := splitRelationText(text)
+	if target == "" {
+		return false
+	}
+
+	targetKey := strings.ToLower(strings.TrimSpace(target))
+	for i := range p.RelationsNPCs {
+		existing := strings.ToLower(strings.TrimSpace(p.RelationsNPCs[i].Target))
+		if existing == targetKey {
+			if p.RelationsNPCs[i].Note == note {
+				return false
+			}
+
+			p.RelationsNPCs[i].Note = note
+
+			return true
+		}
+	}
+
+	p.RelationsNPCs = append(p.RelationsNPCs, Relation{Target: target, Note: note})
+
+	return true
 }

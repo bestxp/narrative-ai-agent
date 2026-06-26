@@ -42,12 +42,14 @@ func (r *NPCProfileYaml) ListSlugs(world string) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list_slugs: ListChildren failed: %w", err)
 	}
+
 	out := make([]string, 0, len(entries))
 	for _, name := range entries {
 		if slug, ok := strings.CutSuffix(name, ".yaml"); ok {
 			out = append(out, slug)
 		}
 	}
+
 	return out, nil
 }
 
@@ -60,13 +62,16 @@ func (r *NPCProfileYaml) Load(world, slug string) (npcprofile.Profile, error) {
 	if err != nil {
 		return npcprofile.Profile{}, fmt.Errorf("npc_load: Read failed: %w", err)
 	}
+
 	if strings.TrimSpace(string(body)) == "" {
 		return npcprofile.Profile{}, npcprofile.ErrNotFound
 	}
+
 	p, err := npcprofile.Load(string(body))
 	if err != nil {
 		return npcprofile.Profile{}, fmt.Errorf("load: Load failed: %w", err)
 	}
+
 	return p, nil
 }
 
@@ -76,7 +81,12 @@ func (r *NPCProfileYaml) Save(world, slug string, p npcprofile.Profile) error {
 	if err != nil {
 		return fmt.Errorf("save: Save failed: %w", err)
 	}
-	return r.store.Write(npcProfileKey(world, slug), []byte(body))
+
+	if err := r.store.Write(npcProfileKey(world, slug), []byte(body)); err != nil {
+		return fmt.Errorf("save: write: %w", err)
+	}
+
+	return nil
 }
 
 // UpdateSection mutates the named section in place
@@ -92,15 +102,19 @@ func (r *NPCProfileYaml) UpdateSection(world, slug, section, appendText string) 
 	if err != nil {
 		return false, err
 	}
+
 	kind := npcprofile.MatchSection(section)
 	if kind == npcprofile.SectionUnknown {
 		return false, nil
 	}
+
 	if !p.UpdateSection(kind, appendText) {
 		return false, nil
 	}
+
 	if err := r.Save(world, slug, p); err != nil {
 		return false, err
 	}
+
 	return true, nil
 }

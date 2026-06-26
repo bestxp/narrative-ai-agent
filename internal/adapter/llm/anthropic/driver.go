@@ -86,6 +86,7 @@ func NewWithSlowlog(role llm.RoleConfig, log zerolog.Logger, slow *slowlog.Logge
 	return newWithSlowlog(role, log, slow)
 }
 
+//nolint:funlen // Anthropic tool-schema parsing is intrinsically multi-stage; refactoring hurts readability more than it helps.
 func newWithSlowlog(role llm.RoleConfig, log zerolog.Logger, slow *slowlog.Logger) *Driver {
 	log = log.With().Str("component", "llm.anthropic").Str("model", role.Model).Logger()
 	d := &Driver{
@@ -115,6 +116,7 @@ func newWithSlowlog(role llm.RoleConfig, log zerolog.Logger, slow *slowlog.Logge
 	} else {
 		clientOpts = append(clientOpts, option.WithAPIKey(role.APIKey))
 	}
+
 	d.client = anthropic.NewClient(clientOpts...)
 
 	for _, t := range domain.ProdTools() {
@@ -147,6 +149,7 @@ func newWithSlowlog(role llm.RoleConfig, log zerolog.Logger, slow *slowlog.Logge
 					required = append(required, s)
 				}
 			}
+
 			inputSchema.Required = required
 		}
 		// Pass through additionalProperties (bool) and any
@@ -158,6 +161,7 @@ func newWithSlowlog(role llm.RoleConfig, log zerolog.Logger, slow *slowlog.Logge
 		if ap, ok := schema["additionalProperties"]; ok {
 			extra["additionalProperties"] = ap
 		}
+
 		if len(extra) > 0 {
 			inputSchema.ExtraFields = extra
 		}
@@ -200,6 +204,7 @@ func (d *Driver) Stream(ctx context.Context, req llm.ChatRequest, onChunk func(l
 	if timeout <= 0 {
 		timeout = d.role.RequestTimeoutSeconds
 	}
+
 	if timeout > 0 {
 		var cancel context.CancelFunc
 
@@ -260,8 +265,10 @@ func (d *Driver) emitBlocks(_ context.Context, resp *anthropic.Message, rawTrace
 		// (openrouter convention).
 		if tu.Name == "" && len(tu.Input) == 0 {
 			d.logThinking(tu.ID, string(tu.Input))
+
 			continue
 		}
+
 		tools = append(tools, llm.ToolCall{
 			ID:   tu.ID,
 			Type: "function",
@@ -289,6 +296,7 @@ func (d *Driver) emitBlocks(_ context.Context, resp *anthropic.Message, rawTrace
 
 		text.WriteString(tb.Text)
 	}
+
 	if text.Len() > 0 {
 		if err := onChunk(llm.Chunk{Content: text.String(), Finish: finish, RawTrace: rawTrace}); err != nil {
 			return err
@@ -317,8 +325,13 @@ func (d *Driver) emitBlocks(_ context.Context, resp *anthropic.Message, rawTrace
 
 // buildRequest translates ChatRequest into anthropic.MessageNewParams.
 // Wire surface: 8 prod tools, tool_choice=auto, strict=true.
-func (d *Driver) buildRequest(req llm.ChatRequest) (anthropic.MessageNewParams, error) { //nolint:funlen // complex function; splitting would harm readability.
+//
+//nolint:funlen // complex function; splitting would harm readability.
+func (d *Driver) buildRequest(
+	req llm.ChatRequest,
+) (anthropic.MessageNewParams, error) {
 	messages := make([]anthropic.MessageParam, 0, len(req.Messages))
+
 	var systemBlocks []anthropic.TextBlockParam
 
 	for _, m := range req.Messages {
@@ -347,11 +360,13 @@ func (d *Driver) buildRequest(req llm.ChatRequest) (anthropic.MessageNewParams, 
 					},
 				})
 			}
+
 			if len(blocks) == 0 {
 				blocks = append(blocks, anthropic.ContentBlockParamUnion{
 					OfText: &anthropic.TextBlockParam{Text: ""},
 				})
 			}
+
 			messages = append(messages, anthropic.MessageParam{
 				Role:    anthropic.MessageParamRoleAssistant,
 				Content: blocks,
@@ -445,10 +460,13 @@ func appendCacheControlToFirstUserBlock(content []anthropic.ContentBlockParamUni
 		b := &content[i]
 		if b.OfText != nil {
 			b.OfText.CacheControl = anthropic.NewCacheControlEphemeralParam()
+
 			return content
 		}
+
 		if b.OfToolResult != nil {
 			b.OfToolResult.CacheControl = anthropic.NewCacheControlEphemeralParam()
+
 			return content
 		}
 	}
@@ -463,6 +481,7 @@ func (d *Driver) logThinking(id, raw string) {
 	if d.slow == nil {
 		return
 	}
+
 	_ = d.slow.Write("anthropic.thinking", "", map[string]any{
 		"id":        id,
 		"raw_chars": len(raw),

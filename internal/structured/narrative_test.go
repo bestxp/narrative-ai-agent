@@ -1,9 +1,10 @@
-package structured
+package structured_test
 
 import (
 	"strings"
 	"testing"
 
+	"github.com/bestxp/narrative-ai-agent/internal/structured"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -17,7 +18,8 @@ const fullJSON = `{
 
 func TestParse_OK(t *testing.T) {
 	t.Parallel()
-	n, err := Parse(fullJSON)
+
+	n, err := structured.Parse(fullJSON)
 	require.NoError(t, err)
 	assert.Equal(t, "Хината вздрогнула, отступила. Уши — алые.", n.Narration)
 	assert.Equal(t, "state.md обновлён; update_npc: Хината — статус: смущена", n.Context)
@@ -27,36 +29,41 @@ func TestParse_OK(t *testing.T) {
 
 func TestParse_StripsFence(t *testing.T) {
 	t.Parallel()
+
 	fenced := "```json\n" + fullJSON + "\n```"
-	n, err := Parse(fenced)
+	n, err := structured.Parse(fenced)
 	require.NoError(t, err)
 	assert.Equal(t, "Хината вздрогнула, отступила. Уши — алые.", n.Narration)
 }
 
 func TestParse_StripsFenceNoLang(t *testing.T) {
 	t.Parallel()
+
 	fenced := "```\n" + fullJSON + "\n```"
-	n, err := Parse(fenced)
+	n, err := structured.Parse(fenced)
 	require.NoError(t, err)
 	assert.Equal(t, "Хината вздрогнула, отступила. Уши — алые.", n.Narration)
 }
 
 func TestParse_NotJSON(t *testing.T) {
 	t.Parallel()
-	_, err := Parse("**диалоги и действия**\n— Хината вздрогнула...")
-	assert.ErrorIs(t, err, ErrNotJSON)
+
+	_, err := structured.Parse("**диалоги и действия**\n— Хината вздрогнула...")
+	assert.ErrorIs(t, err, structured.ErrNotJSON)
 }
 
 func TestParse_Empty(t *testing.T) {
 	t.Parallel()
-	_, err := Parse("")
-	assert.ErrorIs(t, err, ErrNotJSON)
+
+	_, err := structured.Parse("")
+	assert.ErrorIs(t, err, structured.ErrNotJSON)
 }
 
 func TestParse_Whitespace(t *testing.T) {
 	t.Parallel()
-	_, err := Parse("   \n\t  ")
-	assert.ErrorIs(t, err, ErrNotJSON)
+
+	_, err := structured.Parse("   \n\t  ")
+	assert.ErrorIs(t, err, structured.ErrNotJSON)
 }
 
 func TestParse_InvalidJSON(t *testing.T) {
@@ -67,9 +74,9 @@ func TestParse_InvalidJSON(t *testing.T) {
 	// and err == nil — that is acceptable.
 	// "invalid" without quotes is harder: jsonrepair returns
 	// error because it cannot guess the missing quotes.
-	_, err := Parse(`{"narration": "ok", invalid}`)
+	_, err := structured.Parse(`{"narration": "ok", invalid}`)
 	require.Error(t, err)
-	assert.NotErrorIs(t, err, ErrNotJSON)
+	assert.NotErrorIs(t, err, structured.ErrNotJSON)
 }
 
 func TestLooksLikeJSON(t *testing.T) {
@@ -90,7 +97,7 @@ func TestLooksLikeJSON(t *testing.T) {
 		{"Нужно записать это.\n```json\n{\"narration\":\"x\"}\n```", true},
 	}
 	for _, tc := range cases {
-		assert.Equal(t, tc.want, LooksLikeJSON(tc.in), "input=%q", tc.in)
+		assert.Equal(t, tc.want, structured.LooksLikeJSON(tc.in), "input=%q", tc.in)
 	}
 }
 
@@ -126,7 +133,8 @@ func TestMissingFields(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			n, err := Parse(tc.body)
+
+			n, err := structured.Parse(tc.body)
 			require.NoError(t, err)
 			assert.Equal(t, tc.missing, n.MissingFields())
 		})
@@ -135,8 +143,10 @@ func TestMissingFields(t *testing.T) {
 
 func TestRender_4Blocks(t *testing.T) {
 	t.Parallel()
-	n, err := Parse(fullJSON)
+
+	n, err := structured.Parse(fullJSON)
 	require.NoError(t, err)
+
 	out := n.Render()
 	// Must contain all 4 expected headers.
 	for _, h := range []string{
@@ -160,7 +170,8 @@ func TestRender_4Blocks(t *testing.T) {
 
 func TestRender_TrimsTrailingWhitespace(t *testing.T) {
 	t.Parallel()
-	n := &Narrative{
+
+	n := &structured.Narrative{
 		Narration:  "  сцена.  ",
 		Context:    "  без изменений.\n\n  ",
 		Future:     " обед  ",
@@ -182,8 +193,9 @@ func TestRender_TrimsTrailingWhitespace(t *testing.T) {
 
 func TestParse_DuplicateJSON(t *testing.T) {
 	t.Parallel()
+
 	duped := fullJSON + "\n``````json\n" + fullJSON
-	n, err := Parse(duped)
+	n, err := structured.Parse(duped)
 	require.NoError(t, err)
 	assert.Equal(t, "Хината вздрогнула, отступила. Уши — алые.", n.Narration)
 	assert.Equal(t, "state.md обновлён; update_npc: Хината — статус: смущена", n.Context)
@@ -191,24 +203,27 @@ func TestParse_DuplicateJSON(t *testing.T) {
 
 func TestParse_DuplicateRawJSON(t *testing.T) {
 	t.Parallel()
+
 	duped := fullJSON + "\n" + fullJSON
-	n, err := Parse(duped)
+	n, err := structured.Parse(duped)
 	require.NoError(t, err)
 	assert.Equal(t, "Хината вздрогнула, отступила. Уши — алые.", n.Narration)
 }
 
 func TestParse_PrefixTextBeforeJSON(t *testing.T) {
 	t.Parallel()
+
 	prefixed := "Нужно записать это как действие.\n" + fullJSON
-	n, err := Parse(prefixed)
+	n, err := structured.Parse(prefixed)
 	require.NoError(t, err)
 	assert.Equal(t, "Хината вздрогнула, отступила. Уши — алые.", n.Narration)
 }
 
 func TestParse_PrefixAndFencedDuplicate(t *testing.T) {
 	t.Parallel()
+
 	prefixed := "Нужно записать это.\n```json\n" + fullJSON + "\n```\n``````json\n" + fullJSON + "\n```"
-	n, err := Parse(prefixed)
+	n, err := structured.Parse(prefixed)
 	require.NoError(t, err)
 	assert.Equal(t, "Хината вздрогнула, отступила. Уши — алые.", n.Narration)
 }
@@ -222,7 +237,7 @@ func TestParse_InnerQuotes(t *testing.T) {
   "future": "y",
   "validation": "z"
 }`
-	n, err := Parse(broken)
+	n, err := structured.Parse(broken)
 	require.NoError(t, err)
 	assert.Equal(t, `Мизуки... "Другой способ"...`, n.Narration)
 }
@@ -236,20 +251,20 @@ func TestParse_InnerQuotesWithChevrons(t *testing.T) {
   "future": "y",
   "validation": "z"
 }`
-	n, err := Parse(broken)
+	n, err := structured.Parse(broken)
 	require.NoError(t, err)
 	assert.Equal(t, `Мизуки... «"Другой способ"...»`, n.Narration)
 }
 
 func TestSanitizeJSONQuotes(t *testing.T) {
 	t.Parallel()
-	assert.Equal(t, `"a"`, string(sanitizeJSONQuotes([]byte(`"a"`))))
-	assert.Equal(t, `"a\"b"`, string(sanitizeJSONQuotes([]byte(`"a"b"`))))
-	assert.Equal(t, `"a\"b\"c"`, string(sanitizeJSONQuotes([]byte(`"a"b"c"`))))
+	assert.Equal(t, `"a"`, string(structured.SanitizeJSONQuotes([]byte(`"a"`))))
+	assert.Equal(t, `"a\"b"`, string(structured.SanitizeJSONQuotes([]byte(`"a"b"`))))
+	assert.Equal(t, `"a\"b\"c"`, string(structured.SanitizeJSONQuotes([]byte(`"a"b"c"`))))
 	// valid JSON with structural neighbours — untouched
-	assert.Equal(t, `"a","b"`, string(sanitizeJSONQuotes([]byte(`"a","b"`))))
-	assert.Equal(t, `"a": "b\"c"`, string(sanitizeJSONQuotes([]byte(`"a": "b"c"`))))
+	assert.Equal(t, `"a","b"`, string(structured.SanitizeJSONQuotes([]byte(`"a","b"`))))
+	assert.Equal(t, `"a": "b\"c"`, string(structured.SanitizeJSONQuotes([]byte(`"a": "b"c"`))))
 	// real JSON object — structural quotes untouched
 	payload := `{"narration": "x", "context": "y"}`
-	assert.Equal(t, payload, string(sanitizeJSONQuotes([]byte(payload))))
+	assert.Equal(t, payload, string(structured.SanitizeJSONQuotes([]byte(payload))))
 }

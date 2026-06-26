@@ -35,11 +35,18 @@ func (r *InfoYaml) Load() (domain.Info, error) {
 	if err != nil {
 		return domain.Info{}, fmt.Errorf("info_load: Read failed: %w", err)
 	}
+
 	bodyStr := string(body)
 	if strings.TrimSpace(bodyStr) == "" {
 		return domain.Info{}, nil
 	}
-	return domain.ParseInfo(bodyStr)
+
+	info, err := domain.ParseInfo(bodyStr)
+	if err != nil {
+		return domain.Info{}, fmt.Errorf("info_load: parse: %w", err)
+	}
+
+	return info, nil
 }
 
 // Save persists info as YAML.
@@ -48,7 +55,12 @@ func (r *InfoYaml) Save(info domain.Info) error {
 	if err != nil {
 		return fmt.Errorf("save: MarshalInfo failed: %w", err)
 	}
-	return r.store.Write(infoYamlKey, []byte(body))
+
+	if err := r.store.Write(infoYamlKey, []byte(body)); err != nil {
+		return fmt.Errorf("save: write: %w", err)
+	}
+
+	return nil
 }
 
 // Compile-time guard: InfoYaml implements

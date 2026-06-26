@@ -21,6 +21,7 @@ func (a AuthConfig) IsAccepted(token string) bool {
 	if token == "" {
 		return false
 	}
+
 	if a.DevToken != "" && token == a.DevToken {
 		return true
 	}
@@ -41,6 +42,7 @@ func bearerFromRequest(r *http.Request) string {
 
 		return strings.TrimSpace(h)
 	}
+
 	if t := r.URL.Query().Get("token"); t != "" {
 		return t
 	}

@@ -36,6 +36,7 @@ func serveStatic(w http.ResponseWriter, r *http.Request) {
 	root, err := distRoot()
 	if err != nil {
 		http.Error(w, "static assets not embedded", http.StatusInternalServerError)
+
 		return
 	}
 	// Clean path and default to index.html.
@@ -46,6 +47,7 @@ func serveStatic(w http.ResponseWriter, r *http.Request) {
 	// Try the exact file first.
 	if _, err := fs.Stat(root, p); err == nil {
 		http.FileServer(http.FS(root)).ServeHTTP(w, r)
+
 		return
 	}
 	// SPA fallback: serve index.html for any non-asset path.

@@ -29,7 +29,12 @@ type Client struct {
 // New constructs a wschat Client. The dispatcher is used to drive
 // command / freeform / edit / resend flows. commands is the initial
 // command hint list (the dispatcher's Commands() output).
-func New(cfg config.WSChatConfig, disp *dispatcher.Dispatcher, commands []messaging.BotCommand, log zerolog.Logger) (*Client, error) {
+func New(
+	cfg config.WSChatConfig,
+	disp *dispatcher.Dispatcher,
+	commands []messaging.BotCommand,
+	log zerolog.Logger,
+) (*Client, error) {
 	auth := AuthConfig{DevToken: cfg.DevToken, AllowedTokens: cfg.AllowedTokens}
 	srv := NewServer(cfg.ListenAddr, cfg.ChatID, auth, disp, commands, log)
 	recvCh := make(chan messaging.IncomingMessage) // never written; see Recv.
@@ -61,6 +66,7 @@ func (c *Client) Health() messaging.HealthReport {
 // the message is dropped silently (dev: the tab is closed).
 func (c *Client) Send(_ context.Context, msg messaging.OutgoingMessage) error {
 	c.srv.sendMessage("assistant", msg.Text, "")
+
 	return nil
 }
 
@@ -69,7 +75,9 @@ func (c *Client) Send(_ context.Context, msg messaging.OutgoingMessage) error {
 // the session here just forwards Append/Final to the server's
 // sendDelta / sendMessage. replyToMessageID is ignored — the
 // browser UI threads by ordering, not by reply id.
-func (c *Client) StartStream(ctx context.Context, chatID string, replyToMessageID int) (messaging.StreamSession, error) {
+//
+//nolint:ireturn // interface contract for messaging.Client.StartStream.
+func (c *Client) StartStream(_ context.Context, _ string, _ int) (messaging.StreamSession, error) {
 	return &streamSession{srv: c.srv}, nil
 }
 
@@ -81,8 +89,9 @@ func (c *Client) IsAllowed(_ string) bool { return true }
 
 // SetCommands replaces the command hint list served by
 // /api/commands and pushed to the active session on demand.
-func (c *Client) SetCommands(ctx context.Context, cmds []messaging.BotCommand) error {
+func (c *Client) SetCommands(_ context.Context, cmds []messaging.BotCommand) error {
 	c.srv.SetCommands(cmds)
+
 	return nil
 }
 
@@ -102,19 +111,21 @@ type streamSession struct {
 	final bool
 }
 
-func (s *streamSession) Append(ctx context.Context, text string) error {
+func (s *streamSession) Append(_ context.Context, text string) error {
 	if s.final {
 		return nil
 	}
+
 	s.srv.sendDelta(text)
 
 	return nil
 }
 
-func (s *streamSession) Final(ctx context.Context, text string) error {
+func (s *streamSession) Final(_ context.Context, text string) error {
 	if s.final {
 		return nil
 	}
+
 	s.final = true
 	s.srv.sendMessage("assistant", text, "")
 

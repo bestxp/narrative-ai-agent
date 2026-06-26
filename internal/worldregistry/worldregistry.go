@@ -104,18 +104,23 @@ func Load(fs interface {
 	if world == "" {
 		return nil, errors.New("worldregistry: world is empty")
 	}
+
 	rel := "worlds/" + world + "/characters.yaml"
+
 	body, err := fs.ReadRaw(rel)
 	if err != nil {
 		return &Registry{}, ErrEmpty
 	}
+
 	if strings.TrimSpace(body) == "" {
 		return &Registry{}, ErrEmpty
 	}
+
 	var f registryFile
 	if uerr := yaml.Unmarshal([]byte(body), &f); uerr != nil {
 		return nil, fmt.Errorf("worldregistry: parse %s: %w", rel, uerr)
 	}
+
 	r := &Registry{entries: append([]Entry(nil), f.NPCs...)}
 	r.sort()
 
@@ -127,6 +132,7 @@ func Load(fs interface {
 func (r *Registry) Save() (string, error) {
 	r.sort()
 	f := registryFile{NPCs: append([]Entry(nil), r.entries...)}
+
 	out, err := yaml.Marshal(f)
 	if err != nil {
 		return "", fmt.Errorf("worldregistry: marshal: %w", err)
@@ -170,6 +176,7 @@ func (r *Registry) Lookup(name string) (Entry, bool) {
 			strings.EqualFold(strings.TrimSpace(e.DisplayName), want) {
 			return e, true
 		}
+
 		for _, n := range e.Nicknames {
 			if strings.EqualFold(strings.TrimSpace(n), want) {
 				return e, true
@@ -183,6 +190,7 @@ func (r *Registry) Lookup(name string) (Entry, bool) {
 	// substring of the query. The latter is the
 	// "Хината Хьюга" → "Хината" direction.
 	var hit Entry
+
 	ambiguous := false
 
 	for _, e := range r.entries {
@@ -194,6 +202,7 @@ func (r *Registry) Lookup(name string) (Entry, bool) {
 			}
 		}
 	}
+
 	if hit.Slug != "" && !ambiguous {
 		return hit, true
 	}
@@ -205,15 +214,18 @@ func (r *Registry) Lookup(name string) (Entry, bool) {
 // the slug is already taken.
 func (r *Registry) Add(e Entry) error {
 	e.Slug = strings.TrimSpace(e.Slug)
+
 	e.DisplayName = strings.TrimSpace(e.DisplayName)
 	if e.Slug == "" {
 		return errors.New("worldregistry: empty slug")
 	}
+
 	for _, ex := range r.entries {
 		if strings.EqualFold(ex.Slug, e.Slug) {
 			return fmt.Errorf("worldregistry: slug %q already in registry", e.Slug)
 		}
 	}
+
 	r.entries = append(r.entries, e)
 	r.sort()
 
@@ -247,14 +259,17 @@ func matchAnyField(e Entry, want string) bool {
 	if strings.Contains(strings.ToLower(e.DisplayName), want) {
 		return true
 	}
+
 	for _, n := range e.Nicknames {
 		if strings.Contains(strings.ToLower(n), want) {
 			return true
 		}
 	}
+
 	if e.DisplayName != "" && strings.Contains(want, strings.ToLower(e.DisplayName)) {
 		return true
 	}
+
 	for _, n := range e.Nicknames {
 		if n != "" && strings.Contains(want, strings.ToLower(n)) {
 			return true

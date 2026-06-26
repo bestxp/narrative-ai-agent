@@ -71,6 +71,7 @@ func MigrateFromMarkdown(kind string, body, fileSlug string) (any, error) {
 		} else {
 			s.Name = fileSlug
 		}
+
 		parseMarkdownSections(body, &s.Data, false)
 
 		return s, nil
@@ -107,6 +108,7 @@ func MigrateFromMarkdown(kind string, body, fileSlug string) (any, error) {
 // would ever call Append on.
 func parseMarkdownSections(body string, data *[]Section, strict bool) {
 	lines := strings.Split(body, "\n")
+
 	var current *Section
 
 	for _, raw := range lines {
@@ -122,6 +124,7 @@ func parseMarkdownSections(body string, data *[]Section, strict bool) {
 			name := strings.TrimSpace(t[3:])
 			if name == "" {
 				current = nil
+
 				continue
 			}
 			// Strict mode (Skill migration only)
@@ -132,13 +135,16 @@ func parseMarkdownSections(body string, data *[]Section, strict bool) {
 			// MigrateFromMarkdown.
 			if strict && !isCanonicalSection(name) {
 				current = nil
+
 				continue
 			}
+
 			idx := findSection(data, name)
 			if idx < 0 {
 				*data = append(*data, Section{Name: name})
 				idx = len(*data) - 1
 			}
+
 			current = &(*data)[idx]
 		case t == "":
 			// Blank line — keep current section
@@ -148,19 +154,23 @@ func parseMarkdownSections(body string, data *[]Section, strict bool) {
 			if current == nil {
 				continue
 			}
+
 			val := strings.TrimPrefix(t, "- ")
 			val = strings.TrimPrefix(val, "* ")
 			// Numbered list: "1. text" or
 			// "12. text". Drop the prefix
 			// only when it is digits + dot.
 			val = stripNumberedListPrefix(val)
+
 			val = strings.TrimSpace(val)
 			if val == "" {
 				continue
 			}
+
 			if containsString(current.Values, val) {
 				continue
 			}
+
 			current.Values = append(current.Values, val)
 		}
 	}
@@ -210,12 +220,14 @@ func stripNumberedListPrefix(s string) string {
 	if dot <= 0 {
 		return s
 	}
+
 	prefix := s[:dot]
 	for _, r := range prefix {
 		if r < '0' || r > '9' {
 			return s
 		}
 	}
+
 	rest := s[dot+1:]
 	rest = strings.TrimPrefix(rest, " ")
 

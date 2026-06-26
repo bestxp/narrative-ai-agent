@@ -83,6 +83,7 @@ func LoadInventory(body string) (Inventory, error) {
 	if strings.TrimSpace(body) == "" {
 		return inv, ErrNotFound
 	}
+
 	if err := yaml.Unmarshal([]byte(body), &inv); err != nil {
 		return inv, fmt.Errorf("charprofile: inventory: yaml.Unmarshal: %w", err)
 	}
@@ -91,7 +92,7 @@ func LoadInventory(body string) (Inventory, error) {
 }
 
 // Save serialises the inventory back to YAML.
-func (inv Inventory) Save() (string, error) {
+func (inv *Inventory) Save() (string, error) {
 	out, err := yaml.Marshal(inv)
 	if err != nil {
 		return "", fmt.Errorf("charprofile: inventory: yaml.Marshal: %w", err)
@@ -128,6 +129,7 @@ func (inv *Inventory) AppendItem(item Item) bool {
 			return changed
 		}
 	}
+
 	inv.Items = append(inv.Items, item)
 
 	return true
@@ -166,6 +168,7 @@ func (inv *Inventory) SetCurrency(name string, count int) bool {
 	if name == "" {
 		return false
 	}
+
 	if count < 0 {
 		count = 0
 	}
@@ -183,11 +186,13 @@ func (inv *Inventory) SetCurrency(name string, count int) bool {
 			if inv.Currency[i].Count == count {
 				return false
 			}
+
 			inv.Currency[i].Count = count
 
 			return true
 		}
 	}
+
 	inv.Currency = append(inv.Currency, Currency{Name: name, Count: count})
 
 	return true

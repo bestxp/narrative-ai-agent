@@ -80,11 +80,14 @@ func (s *wsSession) run(ctx context.Context, srv *Server) {
 
 			return
 		}
+
 		var f Frame
 		if err := json.Unmarshal(raw, &f); err != nil {
 			s.log.Warn().Err(err).Msg("ws bad frame")
+
 			continue
 		}
+
 		srv.handleClientFrame(ctx, s, f)
 	}
 }
@@ -123,8 +126,10 @@ func (s *wsSession) writePump(ctx context.Context) {
 			if !ok {
 				return
 			}
+
 			if err := s.conn.WriteJSON(f); err != nil {
 				s.log.Debug().Err(err).Msg("ws write failed")
+
 				return
 			}
 		case <-ticker.C:
@@ -143,9 +148,11 @@ func (s *wsSession) writePump(ctx context.Context) {
 func (s *wsSession) startTurn(id string) bool {
 	s.turnMtx.Lock()
 	defer s.turnMtx.Unlock()
+
 	if s.turnInFlight {
 		return false
 	}
+
 	s.turnInFlight = true
 	s.currentTurnID = id
 	s.bufMtx.Lock()
@@ -190,12 +197,15 @@ func (s *wsSession) recordTokens(prompt, completion, total int, source string) {
 	if prompt > s.tokens.PromptTokens {
 		s.tokens.PromptTokens = prompt
 	}
+
 	if completion > s.tokens.CompletionTokens {
 		s.tokens.CompletionTokens = completion
 	}
+
 	if total > s.tokens.TotalTokens {
 		s.tokens.TotalTokens = total
 	}
+
 	if source != "" {
 		s.tokens.Source = source
 	}
@@ -218,6 +228,7 @@ func (s *wsSession) accumulateDelta(delta string) {
 	s.bufMtx.Lock()
 	s.textSeen = true
 	s.buf.WriteString(delta)
+
 	if !s.jsonMode && structured.LooksLikeJSON(s.buf.String()) {
 		s.jsonMode = true
 	}
@@ -258,6 +269,7 @@ func (s *wsSession) finalText() string {
 	raw := s.buf.String()
 	jsonMode := s.jsonMode
 	s.bufMtx.Unlock()
+
 	raw = structured.StripThinkingTags(raw)
 	if jsonMode {
 		n, err := structured.Parse(raw)

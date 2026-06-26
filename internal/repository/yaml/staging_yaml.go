@@ -31,6 +31,7 @@ func (a *stagingAdapter) ReadRaw(rel string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("read_raw: Read failed: %w", err)
 	}
+
 	return string(body), nil
 }
 
@@ -42,12 +43,18 @@ func (a *stagingAdapter) WriteRawAtomic(rel, body string) error {
 	if strings.TrimSpace(body) == "" {
 		return nil
 	}
-	return a.store.Write(rel, []byte(body))
+
+	if err := a.store.Write(rel, []byte(body)); err != nil {
+		return fmt.Errorf("stagingAdapter.WriteRawAtomic: %w", err)
+	}
+
+	return nil
 }
 
 // Exists satisfies staging.FileStore.
 func (a *stagingAdapter) Exists(rel string) bool {
 	ok, _ := a.store.Exists(rel)
+
 	return ok
 }
 
@@ -96,10 +103,12 @@ func (r *StagingYaml) UpdateStage(world, nextID string, runtime staging.StageRun
 	if err != nil {
 		return false, err
 	}
+
 	before := s.Next
 	if err := s.UpdateStage(r.adapter, world, nextID); err != nil {
 		return false, fmt.Errorf("update_stage: Load failed: %w", err)
 	}
+
 	return s.Next != before, nil
 }
 
@@ -110,10 +119,12 @@ func (r *StagingYaml) AdvanceTimeline(world string, runtime staging.StageRuntime
 	if err != nil {
 		return false, err
 	}
+
 	before := s.TimelineIndex
 	if err := s.AdvanceTimeline(r.adapter, world); err != nil {
 		return false, fmt.Errorf("advance_timeline: Load failed: %w", err)
 	}
+
 	return s.TimelineIndex != before, nil
 }
 
@@ -125,9 +136,15 @@ func (r *StagingYaml) AdvanceTimeline(world string, runtime staging.StageRuntime
 func (r *StagingYaml) ApplyPendingStage(world string, runtime staging.StageRuntime) (staging.StageRuntime, error) {
 	s, err := r.Load(world, runtime)
 	if err != nil {
-		return staging.StageRuntime{}, err
+		return staging.StageRuntime{}, fmt.Errorf("staging.ApplyPendingStage: load: %w", err)
 	}
-	return s.ApplyPending(r.adapter, world)
+
+	res, err := s.ApplyPending(r.adapter, world)
+	if err != nil {
+		return staging.StageRuntime{}, fmt.Errorf("staging.ApplyPendingStage: apply: %w", err)
+	}
+
+	return res, nil
 }
 
 // Compile-time guard.

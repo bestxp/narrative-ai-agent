@@ -26,16 +26,16 @@ import (
 // that package for the lookup rules (exact / nickname /
 // unambiguous substring).
 type NPC struct {
-	repos *api.Repositories
-	fs    *storage.FileStore
+	Repos *api.Repositories
+	FS    *storage.FileStore
 	log   zerolog.Logger
 	slow  *slowlog.Logger
 }
 
-func newNPC(log zerolog.Logger, slow *slowlog.Logger, repos *api.Repositories, fs *storage.FileStore) *NPC {
+func NewNPC(log zerolog.Logger, slow *slowlog.Logger, repos *api.Repositories, fs *storage.FileStore) *NPC {
 	return &NPC{
-		repos: repos,
-		fs:    fs,
+		Repos: repos,
+		FS:    fs,
 		log:   log.With().Str("component", "npc").Logger(),
 		slow:  slow,
 	}
@@ -63,6 +63,7 @@ func sanitizeName(s string) string {
 	s = domain.Transliterate(s)
 	// Drop anything that's not [a-z0-9-].
 	var b strings.Builder
+
 	for _, r := range s {
 		switch {
 		case r >= 'a' && r <= 'z':
@@ -73,65 +74,37 @@ func sanitizeName(s string) string {
 			b.WriteRune(r)
 		}
 	}
+
 	out := b.String()
+
 	out = strings.Trim(out, "-")
 	if out == "" {
 		return "npc"
 	}
+
 	return out
-}
-
-// loadRegistry reads characters.yaml for world through the
-// worldregistry package. On any parse or read error it logs
-// and returns an empty registry — Load / UpdateNPC then
-// surface "npc not found" to the model, which is the
-// correct recovery path (model creates the NPC and retries).
-func (n *NPC) loadRegistry(world string) *worldregistry.Registry {
-	if n.fs == nil || world == "" {
-		return &worldregistry.Registry{}
-	}
-	r, err := worldregistry.Load(n.fs, world)
-	if err != nil {
-		n.log.Warn().Err(err).Str("world", world).Msg("npc: registry load failed; treating as empty")
-		return &worldregistry.Registry{}
-	}
-	return r
-}
-
-// saveRegistry persists the registry through the file
-// store. Save errors are logged; the caller may still
-// return success on the per-NPC file write so the rest
-// of create_npc proceeds (a stale roster is recoverable
-// on the next load).
-func (n *NPC) saveRegistry(world string, r *worldregistry.Registry) {
-	if n.fs == nil || world == "" {
-		return
-	}
-	body, err := r.Save()
-	if err != nil {
-		n.log.Warn().Err(err).Str("world", world).Msg("npc: registry marshal failed")
-		return
-	}
-	if err := n.fs.WriteRawAtomic("worlds/"+world+"/characters.yaml", body); err != nil {
-		n.log.Warn().Err(err).Str("world", world).Msg("npc: registry write failed")
-	}
 }
 
 // Create writes a new NPC profile to the world's
 // characters directory via repos.NPCProfile and adds
 // the entry to the YAML registry (characters.yaml).
 // Returns ErrNPCExists if the slug is already taken.
-func (n *NPC) Create(world string, p tools.NPCProfile) error { //nolint:funlen // complex function; splitting would harm readability.
+//
+// each step has its own error wrapping and is clearer inline than behind a helper that just rethrows
+//
+//nolint:gocognit,funlen // Create orchestrates 8 independent validation/marshal/persist steps;
+func (n *NPC) Create(world string, p tools.NPCProfile) error {
 	slug := sanitizeName(p.DisplayName)
 	if slug == "" {
 		return errors.New("npc create: empty display name")
 	}
 
 	// Check for existing file.
-	_, err := n.repos.NPCProfile.Load(world, slug)
+	_, err := n.Repos.NPCProfile.Load(world, slug)
 	if err == nil {
 		return ErrNPCExists
 	}
+
 	if !errors.Is(err, npcprofile.ErrNotFound) {
 		return fmt.Errorf("create_npc: NPCProfile.Load failed: %w", err)
 	}
@@ -154,6 +127,7 @@ func (n *NPC) Create(world string, p tools.NPCProfile) error { //nolint:funlen /
 			if line == "" {
 				continue
 			}
+
 			target, note := splitRelationText(line)
 			if target != "" {
 				profile.RelationsNPCs = append(profile.RelationsNPCs, npcprofile.Relation{
@@ -163,6 +137,7 @@ func (n *NPC) Create(world string, p tools.NPCProfile) error { //nolint:funlen /
 			}
 		}
 	}
+
 	if strings.TrimSpace(p.PersonalMemory) != "" {
 		for line := range strings.SplitSeq(p.PersonalMemory, "\n") {
 			if t := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "- ")); t != "" {
@@ -170,6 +145,7 @@ func (n *NPC) Create(world string, p tools.NPCProfile) error { //nolint:funlen /
 			}
 		}
 	}
+
 	if len(p.Abilities) > 0 {
 		for _, a := range p.Abilities {
 			if t := strings.TrimSpace(strings.TrimPrefix(a, "- ")); t != "" {
@@ -177,6 +153,7 @@ func (n *NPC) Create(world string, p tools.NPCProfile) error { //nolint:funlen /
 			}
 		}
 	}
+
 	if strings.TrimSpace(p.CriticalKnowledge) != "" {
 		for line := range strings.SplitSeq(p.CriticalKnowledge, "\n") {
 			if t := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "- ")); t != "" {
@@ -184,9 +161,10 @@ func (n *NPC) Create(world string, p tools.NPCProfile) error { //nolint:funlen /
 			}
 		}
 	}
+
 	profile.LastUpdate = strings.TrimSpace(p.LastUpdate)
 
-	if err := n.repos.NPCProfile.Save(world, slug, profile); err != nil {
+	if err := n.Repos.NPCProfile.Save(world, slug, profile); err != nil {
 		return fmt.Errorf("create_npc: NPCProfile.Save failed: %w", err)
 	}
 
@@ -208,6 +186,7 @@ func (n *NPC) Create(world string, p tools.NPCProfile) error { //nolint:funlen /
 		// shape, then proceed.
 		n.log.Debug().Err(err).Str("slug", slug).Msg("create_npc: registry.Add duplicate; refreshing")
 	}
+
 	n.saveRegistry(world, r)
 
 	n.log.Info().
@@ -215,6 +194,7 @@ func (n *NPC) Create(world string, p tools.NPCProfile) error { //nolint:funlen /
 		Str("npc", profile.DisplayName).
 		Str("slug", slug).
 		Msg("create_npc")
+
 	return nil
 }
 
@@ -235,16 +215,18 @@ func (n *NPC) Load(world, npc string) (string, error) {
 // nickname; the registry's Lookup handles the resolution
 // (exact match preferred, then unambiguous substring).
 func (n *NPC) LoadLOD(world, npc string, lod tools.NPCLOD) (string, error) {
-	slug, err := n.resolveSlug(world, npc)
+	slug, err := n.ResolveSlug(world, npc)
 	if err != nil {
 		return "", err
 	}
-	profile, err := n.repos.NPCProfile.Load(world, slug)
+
+	profile, err := n.Repos.NPCProfile.Load(world, slug)
 	if err != nil {
 		if errors.Is(err, npcprofile.ErrNotFound) {
 			return "", ErrNPCNotFound
 		}
-		return "", err
+
+		return "", fmt.Errorf("npc.LoadLOD: %w", err)
 	}
 
 	switch lod {
@@ -253,43 +235,51 @@ func (n *NPC) LoadLOD(world, npc string, lod tools.NPCLOD) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("load_lod: BuildMarkdown failed: %w", err)
 		}
+
 		return body, nil
 	case tools.LODCompact:
 		return profile.BuildCompact(), nil
 	case tools.LODOneLine:
 		return profile.BuildOneLine(), nil
 	}
+
 	body, err := profile.BuildMarkdown()
 	if err != nil {
 		return "", fmt.Errorf("load_lod: BuildMarkdown failed: %w", err)
 	}
+
 	return body, nil
 }
 
 // UpdateNPC appends fresh facts to an existing NPC
 // profile via repos.NPCProfile.UpdateSection.
 func (n *NPC) UpdateNPC(world, npc, section, appendText string) error {
-	slug, err := n.resolveSlug(world, npc)
+	slug, err := n.ResolveSlug(world, npc)
 	if err != nil {
-		return fmt.Errorf("update_npc: resolveSlug failed: %w", err)
+		return fmt.Errorf("update_npc: ResolveSlug failed: %w", err)
 	}
-	ok, err := n.repos.NPCProfile.UpdateSection(world, slug, section, appendText)
+
+	ok, err := n.Repos.NPCProfile.UpdateSection(world, slug, section, appendText)
 	if err != nil {
 		return fmt.Errorf("update_npc: UpdateSection failed: %w", err)
 	}
+
 	if !ok {
 		n.log.Debug().
 			Str("world", world).
 			Str("npc", npc).
 			Str("section", section).
 			Msg("update_npc: no change (dedup or unknown section)")
+
 		return nil
 	}
+
 	n.log.Info().
 		Str("world", world).
 		Str("npc", npc).
 		Str("section", section).
 		Msg("update_npc")
+
 	if n.slow != nil {
 		_ = n.slow.Write("tool.update_npc", "", map[string]any{
 			"world":   world,
@@ -297,6 +287,7 @@ func (n *NPC) UpdateNPC(world, npc, section, appendText string) error {
 			"section": section,
 		})
 	}
+
 	return nil
 }
 
@@ -315,15 +306,19 @@ func (n *NPC) Search(world, query string) (*SearchResult, error) {
 	defer func() {
 		_ = recover()
 	}()
+
 	r := n.loadRegistry(world)
+
 	entry, ok := r.Lookup(query)
 	if !ok {
 		return nil, ErrNPCNotFound
 	}
-	profile, err := n.repos.NPCProfile.Load(world, entry.Slug)
+
+	profile, err := n.Repos.NPCProfile.Load(world, entry.Slug)
 	if err != nil {
 		return nil, ErrNPCNotFound
 	}
+
 	return &SearchResult{
 		DisplayName:   entry.DisplayName,
 		Slug:          entry.Slug,
@@ -333,7 +328,7 @@ func (n *NPC) Search(world, query string) (*SearchResult, error) {
 	}, nil
 }
 
-// resolveSlug turns the model's NPC reference (display
+// ResolveSlug turns the model's NPC reference (display
 // name, nickname, or slug) into the on-disk slug via the
 // registry. Returns ErrNPCNotFound when the registry has
 // no match — the GM surfaces this to the model as a
@@ -342,13 +337,57 @@ func (n *NPC) Search(world, query string) (*SearchResult, error) {
 // The model occasionally writes the slug directly
 // ("naruto_uzumaki"); the worldregistry.Lookup accepts
 // that case too.
-func (n *NPC) resolveSlug(world, name string) (string, error) {
+func (n *NPC) ResolveSlug(world, name string) (string, error) {
 	r := n.loadRegistry(world)
+
 	entry, ok := r.Lookup(name)
 	if !ok {
 		return "", ErrNPCNotFound
 	}
+
 	return entry.Slug, nil
+}
+
+// loadRegistry reads characters.yaml for world through the
+// worldregistry package. On any parse or read error it logs
+// and returns an empty registry — Load / UpdateNPC then
+// surface "npc not found" to the model, which is the
+// correct recovery path (model creates the NPC and retries).
+func (n *NPC) loadRegistry(world string) *worldregistry.Registry {
+	if n.FS == nil || world == "" {
+		return &worldregistry.Registry{}
+	}
+
+	r, err := worldregistry.Load(n.FS, world)
+	if err != nil {
+		n.log.Warn().Err(err).Str("world", world).Msg("npc: registry load failed; treating as empty")
+
+		return &worldregistry.Registry{}
+	}
+
+	return r
+}
+
+// saveRegistry persists the registry through the file
+// store. Save errors are logged; the caller may still
+// return success on the per-NPC file write so the rest
+// of create_npc proceeds (a stale roster is recoverable
+// on the next load).
+func (n *NPC) saveRegistry(world string, r *worldregistry.Registry) {
+	if n.FS == nil || world == "" {
+		return
+	}
+
+	body, err := r.Save()
+	if err != nil {
+		n.log.Warn().Err(err).Str("world", world).Msg("npc: registry marshal failed")
+
+		return
+	}
+
+	if err := n.FS.WriteRawAtomic("worlds/"+world+"/characters.yaml", body); err != nil {
+		n.log.Warn().Err(err).Str("world", world).Msg("npc: registry write failed")
+	}
 }
 
 // splitRelationText splits "Target: note" on the
@@ -360,5 +399,6 @@ func splitRelationText(s string) (string, string) {
 			return strings.TrimSpace(s[:i]), strings.TrimSpace(s[i+1:])
 		}
 	}
+
 	return strings.TrimSpace(s), ""
 }

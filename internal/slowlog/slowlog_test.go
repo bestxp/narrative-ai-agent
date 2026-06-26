@@ -1,4 +1,4 @@
-package slowlog
+package slowlog_test
 
 import (
 	"bytes"
@@ -8,13 +8,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bestxp/narrative-ai-agent/internal/slowlog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func TestDiscard_NeverPanics(t *testing.T) {
 	t.Parallel()
-	l := Discard()
+
+	l := slowlog.Discard()
 	assert.NoError(t, l.WriteOK("test", ""))
 	assert.NoError(t, l.Write("test", "", map[string]any{"x": 1}))
 }
@@ -22,13 +24,14 @@ func TestDiscard_NeverPanics(t *testing.T) {
 func TestFile_AppendsJSONLines(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	l, err := File(dir + "/slow.log")
+	l, err := slowlog.File(dir + "/slow.log")
 	require.NoError(t, err)
 	require.NoError(t, l.WriteOK("llm.request", "123"))
 	require.NoError(t, l.Write("tool.update_state", "123", map[string]any{"path": "state.md", "bytes": 42}))
 
 	data, err := os.ReadFile(dir + "/slow.log")
 	require.NoError(t, err)
+
 	lines := splitNonEmpty(data)
 	require.Len(t, lines, 2)
 
@@ -46,7 +49,7 @@ func TestFile_AppendsJSONLines(t *testing.T) {
 func TestFile_ConcurrentWrites(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	l, err := File(dir + "/slow.log")
+	l, err := slowlog.File(dir + "/slow.log")
 	require.NoError(t, err)
 
 	var wg sync.WaitGroup
@@ -57,8 +60,10 @@ func TestFile_ConcurrentWrites(t *testing.T) {
 	}
 
 	wg.Wait()
+
 	data, err := os.ReadFile(dir + "/slow.log")
 	require.NoError(t, err)
+
 	lines := splitNonEmpty(data)
 	assert.Len(t, lines, 50)
 
@@ -70,16 +75,18 @@ func TestFile_ConcurrentWrites(t *testing.T) {
 func TestFile_MissingDirIsCreated(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	l, err := File(dir + "/nested/dir/slow.log")
+	l, err := slowlog.File(dir + "/nested/dir/slow.log")
 	require.NoError(t, err)
 	assert.NoError(t, l.WriteOK("k", ""))
 }
 
 func TestFile_TimestampFormatting(t *testing.T) {
 	t.Parallel()
-	l := Discard()
+
+	l := slowlog.Discard()
 	fixed := time.Date(2026, 6, 5, 22, 30, 0, 123_000_000, time.UTC)
-	l.now = func() time.Time { return fixed }
+
+	l.SetNow(func() time.Time { return fixed })
 	require.NoError(t, l.WriteOK("k", ""))
 	// Indirect tripwire: the format used in Write must match.
 	assert.True(t, json.Valid([]byte(`{"time":"`+fixed.Format(time.RFC3339Nano)+`"}`)))
@@ -94,6 +101,7 @@ type entry struct {
 
 func parseLine(t *testing.T, line []byte) entry {
 	t.Helper()
+
 	var e entry
 	require.NoError(t, json.Unmarshal(line, &e))
 

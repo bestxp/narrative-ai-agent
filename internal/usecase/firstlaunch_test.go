@@ -1,4 +1,4 @@
-package usecase
+package usecase_test
 
 import (
 	"testing"
@@ -6,6 +6,7 @@ import (
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
 	"github.com/bestxp/narrative-ai-agent/internal/repository/api"
 	yamlfs "github.com/bestxp/narrative-ai-agent/internal/storage/fs"
+	"github.com/bestxp/narrative-ai-agent/internal/usecase"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -16,12 +17,13 @@ func TestFirstLaunch_CreatesSkeleton(t *testing.T) {
 	fs, _ := storage.NewFileStore(t.TempDir())
 	ys, _ := yamlfs.New(fs.Root())
 	repos := api.NewYamlRepositories(ys)
-	fl := NewFirstLaunchWithLogger(fs, repos.WorldState, zerolog.Nop())
+	fl := usecase.NewFirstLaunchWithLogger(fs, repos.WorldState, zerolog.Nop())
 	err := fl.Launch(
-		CharacterSpec{DisplayName: "Маркус", Dir: "Маркус", TrueNature: "человек", Philosophy: "воля"},
-		WorldSpec{DisplayName: "Наруто", Dir: "naruto", IsKnown: true, Canon: "деревня скрытого листа"},
+		usecase.CharacterSpec{DisplayName: "Маркус", Dir: "Маркус", TrueNature: "человек", Philosophy: "воля"},
+		usecase.WorldSpec{DisplayName: "Наруто", Dir: "naruto", IsKnown: true, Canon: "деревня скрытого листа"},
 	)
 	require.NoError(t, err)
+
 	for _, rel := range []string{
 		storage.InfoFile,
 		"characters/markus/SOUL.yaml",
@@ -53,10 +55,10 @@ func TestFirstLaunch_Idempotent(t *testing.T) {
 	fs, _ := storage.NewFileStore(t.TempDir())
 	ys, _ := yamlfs.New(fs.Root())
 	repos := api.NewYamlRepositories(ys)
-	fl := NewFirstLaunchWithLogger(fs, repos.WorldState, zerolog.Nop())
-	require.NoError(t, fl.Launch(CharacterSpec{Dir: "a", DisplayName: "A"}, WorldSpec{Dir: "b", DisplayName: "B", Canon: "x"}))
-	err := fl.Launch(CharacterSpec{Dir: "c", DisplayName: "C"}, WorldSpec{Dir: "d", DisplayName: "D", Canon: "x"})
-	assert.ErrorIs(t, err, ErrAlreadyLaunched)
+	fl := usecase.NewFirstLaunchWithLogger(fs, repos.WorldState, zerolog.Nop())
+	require.NoError(t, fl.Launch(usecase.CharacterSpec{Dir: "a", DisplayName: "A"}, usecase.WorldSpec{Dir: "b", DisplayName: "B", Canon: "x"}))
+	err := fl.Launch(usecase.CharacterSpec{Dir: "c", DisplayName: "C"}, usecase.WorldSpec{Dir: "d", DisplayName: "D", Canon: "x"})
+	assert.ErrorIs(t, err, usecase.ErrAlreadyLaunched)
 }
 
 func TestFirstLaunch_TransliteratesCyrillic(t *testing.T) {
@@ -64,8 +66,11 @@ func TestFirstLaunch_TransliteratesCyrillic(t *testing.T) {
 	fs, _ := storage.NewFileStore(t.TempDir())
 	ys, _ := yamlfs.New(fs.Root())
 	repos := api.NewYamlRepositories(ys)
-	fl := NewFirstLaunchWithLogger(fs, repos.WorldState, zerolog.Nop())
-	require.NoError(t, fl.Launch(CharacterSpec{Dir: "Маркус", DisplayName: "Маркус"}, WorldSpec{Dir: "ВанПис", DisplayName: "ВанПис", Canon: "x"}))
+	fl := usecase.NewFirstLaunchWithLogger(fs, repos.WorldState, zerolog.Nop())
+	require.NoError(t, fl.Launch(
+		usecase.CharacterSpec{Dir: "Маркус", DisplayName: "Маркус"},
+		usecase.WorldSpec{Dir: "ВанПис", DisplayName: "ВанПис", Canon: "x"},
+	))
 	assert.True(t, fs.Exists("characters/markus"))
 	assert.True(t, fs.Exists("worlds/vanpis"))
 }

@@ -33,6 +33,7 @@ func NewFileStoreWithLogger(root string, log zerolog.Logger) (*FileStore, error)
 	if err != nil {
 		return nil, fmt.Errorf("abs root: %w", err)
 	}
+
 	if err := os.MkdirAll(abs, 0o755); err != nil {
 		return nil, fmt.Errorf("mkdir root: %w", err)
 	}
@@ -107,6 +108,7 @@ func (f *FileStore) CharacterInventory(name string) string {
 // Exists reports whether path (relative to root) is present.
 func (f *FileStore) Exists(rel string) bool {
 	_, err := os.Stat(filepath.Join(f.root, rel))
+
 	return err == nil
 }
 
@@ -118,6 +120,7 @@ func (f *FileStore) ReadRaw(rel string) (string, error) {
 	if errors.Is(err, os.ErrNotExist) {
 		return "", nil
 	}
+
 	if err != nil {
 		return "", fmt.Errorf("read_raw: ReadFile failed: %w", err)
 	}
@@ -130,6 +133,7 @@ func (f *FileStore) ReadRaw(rel string) (string, error) {
 // to strip any line-number prefix pollution before persisting.
 func (f *FileStore) WriteRaw(rel, content string) error {
 	clean := stripIndexPollution(content)
+
 	p := filepath.Join(f.root, rel)
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		return fmt.Errorf("write_raw: %w", err)
@@ -147,6 +151,7 @@ func (f *FileStore) WriteRaw(rel, content string) error {
 // WriteRawAtomic writes via temp file + rename to avoid torn writes.
 func (f *FileStore) WriteRawAtomic(rel, content string) error {
 	clean := stripIndexPollution(content)
+
 	p := filepath.Join(f.root, rel)
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		return fmt.Errorf("write_raw_atomic: %w", err)
@@ -184,11 +189,14 @@ func (f *FileStore) Patch(rel, oldStr, newStr string) error {
 	switch {
 	case count == 0:
 		f.log.Warn().Str("path", rel).Msg("patch: old string not found")
+
 		return ErrPatchNotFound
 	case count > 1:
 		f.log.Warn().Str("path", rel).Int("matches", count).Msg("patch: ambiguous")
+
 		return ErrPatchAmbiguous
 	}
+
 	next := strings.Replace(current, oldStr, newStr, 1)
 
 	return f.WriteRawAtomic(rel, next)
@@ -204,6 +212,7 @@ func (f *FileStore) AppendIfMissing(rel, line string) (bool, error) {
 	if strings.Contains(current, line) {
 		return false, nil
 	}
+
 	if current != "" && !strings.HasSuffix(current, "\n") {
 		current += "\n"
 	}
@@ -217,6 +226,7 @@ func (f *FileStore) CountLines(rel string) int {
 	if err != nil || current == "" {
 		return -1
 	}
+
 	n := strings.Count(current, "\n")
 	if !strings.HasSuffix(current, "\n") {
 		n++
@@ -233,6 +243,7 @@ func (f *FileStore) ListChildren(rel string) ([]string, error) {
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
+
 	if err != nil {
 		return nil, fmt.Errorf("list_children: ReadDir failed: %w", err)
 	}
@@ -262,6 +273,7 @@ var indexLineRe = regexp.MustCompile(`^\s*\d+\|\s?`)
 
 func stripIndexPollution(s string) string {
 	var buf bytes.Buffer
+
 	scanner := bufio.NewScanner(strings.NewReader(s))
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 
@@ -287,10 +299,13 @@ func (f *FileStore) PipeCat(rel string, w io.Writer) error {
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
+
 	if err != nil {
 		return fmt.Errorf("pipe_cat: Open failed: %w", err)
 	}
+
 	defer func() { _ = fp.Close() }()
+
 	if _, err = io.Copy(w, fp); err != nil {
 		return fmt.Errorf("pipe_cat: copy failed: %w", err)
 	}

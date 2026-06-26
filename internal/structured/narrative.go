@@ -68,10 +68,11 @@ func Parse(text string) (*Narrative, error) {
 	if looksLikeJSON(body) { //nolint:nestif // intentional JSON detection nesting
 		var n Narrative
 
-		cleaned := sanitizeJSONQuotes(body)
+		cleaned := SanitizeJSONQuotes(body)
 		if err := json.Unmarshal(cleaned, &n); err == nil {
 			return &n, nil
 		}
+
 		first := extractFirstJSONObject(cleaned)
 		if first != nil {
 			var n2 Narrative
@@ -98,9 +99,12 @@ func Parse(text string) (*Narrative, error) {
 	if idx < 0 {
 		return nil, ErrNotJSON
 	}
+
 	sub := body[idx:]
+
 	var n Narrative
-	cleaned := sanitizeJSONQuotes(sub)
+
+	cleaned := SanitizeJSONQuotes(sub)
 	if err := json.Unmarshal(cleaned, &n); err == nil {
 		return &n, nil
 	}
@@ -157,16 +161,22 @@ func findOpeningBrace(data []byte) int {
 
 		if escape {
 			escape = false
+
 			continue
 		}
+
 		if c == '\\' && inStr {
 			escape = true
+
 			continue
 		}
+
 		if c == '"' {
 			inStr = !inStr
+
 			continue
 		}
+
 		if !inStr && c == '{' {
 			return i
 		}
@@ -186,15 +196,19 @@ func extractFirstJSONObject(data []byte) []byte {
 
 		if escape {
 			escape = false
+
 			continue
 		}
 
 		if c == '\\' && inStr {
 			escape = true
+
 			continue
 		}
+
 		if c == '"' {
 			inStr = !inStr
+
 			continue
 		}
 
@@ -220,7 +234,7 @@ func extractFirstJSONObject(data []byte) []byte {
 	return nil
 }
 
-// sanitizeJSONQuotes escapes unescaped double quotes that appear
+// SanitizeJSONQuotes escapes unescaped double quotes that appear
 // inside JSON string literals. Models occasionally use '"' as
 // typographic quotation marks inside narration or dialogue (e.g.
 // «"Другой способ"...»); these break the JSON parser because
@@ -232,24 +246,29 @@ func extractFirstJSONObject(data []byte) []byte {
 // opening and closing quotes that sit next to structural chars.
 // When we escape an inner quote we do NOT toggle the in-string
 // state — the string stays open.
-func sanitizeJSONQuotes(data []byte) []byte {
+func SanitizeJSONQuotes(data []byte) []byte {
 	var out bytes.Buffer
+
 	inStr := false
 
 	escape := false
 	for i, c := range data {
 		if escape {
 			out.WriteByte(c)
+
 			escape = false
 
 			continue
 		}
+
 		if c == '\\' && inStr {
 			out.WriteByte(c)
+
 			escape = true
 
 			continue
 		}
+
 		if c == '"' {
 			if inStr && !isJSONStructural(data, i-1) && !isJSONStructural(data, i+1) {
 				// Inner quote surrounded by text — escape it,
@@ -261,6 +280,7 @@ func sanitizeJSONQuotes(data []byte) []byte {
 			}
 
 			out.WriteByte(c)
+
 			inStr = !inStr
 
 			continue
@@ -320,9 +340,11 @@ func stripFence(s string) []byte {
 	if !strings.HasPrefix(s, "```") {
 		return []byte(s)
 	}
+
 	if idx := strings.Index(s, "\n"); idx > 0 {
 		s = s[idx+1:]
 	}
+
 	if idx := strings.LastIndex(s, "```"); idx >= 0 {
 		s = s[:idx]
 	}
@@ -340,6 +362,7 @@ func (n *Narrative) MissingFields() []string {
 	if strings.TrimSpace(n.Narration) == "" {
 		missing = append(missing, "narration")
 	}
+
 	if strings.TrimSpace(n.Context) == "" {
 		missing = append(missing, "context")
 	}
@@ -347,6 +370,7 @@ func (n *Narrative) MissingFields() []string {
 	if strings.TrimSpace(n.Future) == "" {
 		missing = append(missing, "future")
 	}
+
 	if strings.TrimSpace(n.Validation) == "" {
 		missing = append(missing, "validation")
 	}

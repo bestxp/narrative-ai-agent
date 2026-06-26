@@ -33,12 +33,14 @@ func (r *ChronicleYaml) Load(world string) (chronicle.Chronicle, error) {
 	if err != nil {
 		return chronicle.Chronicle{}, fmt.Errorf("chronicle_load: Read failed: %w", err)
 	}
+
 	if strings.TrimSpace(string(body)) == "" {
 		return chronicle.Chronicle{
 			Periods: []chronicle.Period{},
 			Days:    map[int]string{},
 		}, nil
 	}
+
 	c, err := chronicle.Load(string(body))
 	if err != nil {
 		return chronicle.Chronicle{}, fmt.Errorf("wrap: %w", err)
@@ -49,9 +51,11 @@ func (r *ChronicleYaml) Load(world string) (chronicle.Chronicle, error) {
 	if c.Periods == nil {
 		c.Periods = []chronicle.Period{}
 	}
+
 	if c.Days == nil {
 		c.Days = map[int]string{}
 	}
+
 	return c, nil
 }
 
@@ -61,7 +65,12 @@ func (r *ChronicleYaml) Save(world string, c chronicle.Chronicle) error {
 	if err != nil {
 		return fmt.Errorf("save: Save failed: %w", err)
 	}
-	return r.store.Write(chronicleKey(world), []byte(body))
+
+	if err := r.store.Write(chronicleKey(world), []byte(body)); err != nil {
+		return fmt.Errorf("save: write: %w", err)
+	}
+
+	return nil
 }
 
 // Compile-time guard.

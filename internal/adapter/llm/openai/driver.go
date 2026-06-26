@@ -76,6 +76,7 @@ func New(role llm.RoleConfig, log zerolog.Logger) *Driver {
 		if err := json.Unmarshal(paramsBytes, &fp); err != nil {
 			panic(fmt.Sprintf("openai: reparse tool %q: %v", t.Function.Name, err))
 		}
+
 		d.prodTools = append(d.prodTools, openaisdk.ChatCompletionToolUnionParam{
 			OfFunction: &openaisdk.ChatCompletionFunctionToolParam{
 				Function: shared.FunctionDefinitionParam{
@@ -95,8 +96,18 @@ func (d *Driver) Close() error { return nil }
 
 // Stream sends a chat request to the configured provider and
 // invokes onChunk for every parsed delta. h4 wire surface
-// (json_object + tools + auto + strict) is built in buildParams. //nolint:funlen // complex function; splitting would harm readability.
-func (d *Driver) Stream(ctx context.Context, req llm.ChatRequest, onChunk func(llm.Chunk) error) error { //nolint:funlen // complex function; splitting would harm readability.
+// (json_object + tools + auto + strict) is built in buildParams.
+//
+// OpenAI streaming has many branches (tool-call deltas, content deltas, role hints,
+// usage, refusal, stop reasons); flattening into helpers would scatter the
+// per-chunk state machine across files
+//
+//nolint:gocognit,funlen // streaming chunk dispatch is multi-stage and intentionally straight-line.
+func (d *Driver) Stream(
+	ctx context.Context,
+	req llm.ChatRequest,
+	onChunk func(llm.Chunk) error,
+) error {
 	params, err := d.buildParams(req)
 	if err != nil {
 		return fmt.Errorf("openai: build params: %w", err)
@@ -106,6 +117,7 @@ func (d *Driver) Stream(ctx context.Context, req llm.ChatRequest, onChunk func(l
 	if timeout <= 0 {
 		timeout = d.role.RequestTimeoutSeconds
 	}
+
 	if timeout > 0 {
 		var cancel context.CancelFunc
 
@@ -117,6 +129,7 @@ func (d *Driver) Stream(ctx context.Context, req llm.ChatRequest, onChunk func(l
 	defer func() { _ = stream.Close() }()
 
 	acc := newToolAccumulator(d.log)
+
 	var rawTrace []string
 
 	for stream.Next() {
@@ -137,17 +150,20 @@ func (d *Driver) Stream(ctx context.Context, req llm.ChatRequest, onChunk func(l
 			if choice.Delta.Content != "" {
 				out.Content = choice.Delta.Content
 			}
+
 			if f, ok := choice.Delta.JSON.ExtraFields["reasoning"]; ok && f.Valid() {
 				if s := unquoteJSONString(f.Raw()); s != "" {
 					out.Reasoning = s
 				}
 			}
+
 			if len(choice.Delta.ToolCalls) > 0 {
 				merged := acc.merge(choice.Delta.ToolCalls)
 				if merged != nil {
 					out.ToolCalls = merged
 				}
 			}
+
 			if chunk.Usage.PromptTokens > 0 || chunk.Usage.CompletionTokens > 0 {
 				out.Usage = llm.Usage{
 					PromptTokens:     int(chunk.Usage.PromptTokens),
@@ -155,12 +171,14 @@ func (d *Driver) Stream(ctx context.Context, req llm.ChatRequest, onChunk func(l
 					TotalTokens:      int(chunk.Usage.TotalTokens),
 				}
 			}
+
 			out.RawTrace = rawTrace
 			if err := onChunk(out); err != nil {
 				return fmt.Errorf("openai: chunk callback: %w", err)
 			}
 		}
 	}
+
 	if err := stream.Err(); err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
 			return fmt.Errorf("openai: stream deadline: %w", err)
@@ -168,6 +186,7 @@ func (d *Driver) Stream(ctx context.Context, req llm.ChatRequest, onChunk func(l
 
 		return fmt.Errorf("openai: stream: %w", err)
 	}
+
 	if err := onChunk(llm.Chunk{Done: true, RawTrace: rawTrace}); err != nil {
 		return fmt.Errorf("openai: done callback: %w", err)
 	}
@@ -202,6 +221,7 @@ func (d *Driver) buildParams(req llm.ChatRequest) (openaisdk.ChatCompletionNewPa
 					},
 				})
 			}
+
 			msg := openaisdk.ChatCompletionAssistantMessageParam{
 				Content: openaisdk.ChatCompletionAssistantMessageParamContentUnion{
 					OfString: openaisdk.Opt(m.Content),
@@ -259,6 +279,7 @@ func (d *Driver) buildParams(req llm.ChatRequest) (openaisdk.ChatCompletionNewPa
 	if req.Temperature > 0 {
 		params.Temperature = openaisdk.Opt(req.Temperature)
 	}
+
 	if req.MaxTokens > 0 {
 		// OpenAI v3 deprecates `max_tokens` in favour of
 		// `max_completion_tokens`. We send the new key on
@@ -266,6 +287,7 @@ func (d *Driver) buildParams(req llm.ChatRequest) (openaisdk.ChatCompletionNewPa
 		// (older Ollama) silently ignore it.
 		params.MaxCompletionTokens = openaisdk.Opt(int64(req.MaxTokens))
 	}
+
 	if req.ReasoningEffort != "" {
 		params.ReasoningEffort = shared.ReasoningEffort(req.ReasoningEffort)
 	}
@@ -285,6 +307,12 @@ func newToolAccumulator(log zerolog.Logger) *toolAccumulator {
 	return &toolAccumulator{buf: make(map[int64]*llm.ToolCall), log: log}
 }
 
+// streaming tool-call accumulator has many state-transition branches;
+// one-liner extraction would obscure the ordering.
+//
+// one-liner extraction would obscure the ordering.
+//
+//nolint:funlen // streaming tool-call accumulator has many state-transition branches;
 func (a *toolAccumulator) merge(deltas []openaisdk.ChatCompletionChunkChoiceDeltaToolCall) []llm.ToolCall {
 	var changed bool
 
@@ -292,29 +320,38 @@ func (a *toolAccumulator) merge(deltas []openaisdk.ChatCompletionChunkChoiceDelt
 		if d.Function.Name == "" && d.Function.Arguments == "" {
 			continue
 		}
+
 		idx := max(d.Index, 0)
+
 		entry, ok := a.buf[idx]
 		if !ok {
 			entry = &llm.ToolCall{Index: int(idx), Type: "function"}
 			a.buf[idx] = entry
 		}
+
 		if d.ID != "" {
 			entry.ID = d.ID
 		}
+
 		if d.Type != "" {
 			entry.Type = d.Type
 		}
+
 		if d.Function.Name != "" {
 			entry.Function.Name = d.Function.Name
 		}
+
 		if d.Function.Arguments != "" {
 			entry.Function.Arguments += d.Function.Arguments
 		}
+
 		changed = true
 	}
+
 	if !changed {
 		return nil
 	}
+
 	dropped := 0
 
 	for idx, e := range a.buf {
@@ -329,6 +366,7 @@ func (a *toolAccumulator) merge(deltas []openaisdk.ChatCompletionChunkChoiceDelt
 			dropped++
 		}
 	}
+
 	if dropped > 0 {
 		if l := a.log; l.GetLevel() != zerolog.Disabled {
 			l.Warn().
@@ -336,6 +374,7 @@ func (a *toolAccumulator) merge(deltas []openaisdk.ChatCompletionChunkChoiceDelt
 				Msg("openai.llm: dropped tool calls with invalid arguments JSON (Ollama double-wrap / truncation)")
 		}
 	}
+
 	if len(a.buf) == 0 {
 		return nil
 	}
@@ -355,7 +394,9 @@ func unquoteJSONString(raw string) string {
 	if len(raw) < 2 || raw[0] != '"' || raw[len(raw)-1] != '"' {
 		return raw
 	}
+
 	inner := raw[1 : len(raw)-1]
+
 	var out strings.Builder
 
 	for i := 0; i < len(inner); i++ {

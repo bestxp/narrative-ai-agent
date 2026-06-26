@@ -23,6 +23,7 @@ func EstimateConversationTokens(messages []llm.Message, systemPromptChars int) i
 		for _, tc := range m.ToolCalls {
 			total += len(tc.Function.Name) + len(tc.Function.Arguments)
 		}
+
 		if m.Name != "" {
 			total += len(m.Name)
 		}
@@ -41,6 +42,7 @@ func NeedsCompaction(messages []llm.Message, systemPromptChars, contextWindow in
 	if contextWindow <= 0 || threshold <= 0 {
 		return false
 	}
+
 	tokens := EstimateConversationTokens(messages, systemPromptChars)
 
 	return tokens >= int(float64(contextWindow)*threshold)
@@ -71,6 +73,7 @@ func CompactConversations(messages []llm.Message, keepRecent int) ([]llm.Message
 	if keepRecent < 0 {
 		keepRecent = 0
 	}
+
 	before := EstimateConversationTokens(messages, 0)
 	if len(messages) <= keepRecent {
 		return messages, CompactionResult{
@@ -80,6 +83,7 @@ func CompactConversations(messages []llm.Message, keepRecent int) ([]llm.Message
 			KeptRecent:   keepRecent,
 		}
 	}
+
 	dropped := len(messages) - keepRecent
 	kept := messages[len(messages)-keepRecent:]
 	after := EstimateConversationTokens(kept, 0)
@@ -98,6 +102,7 @@ func CompactConversations(messages []llm.Message, keepRecent int) ([]llm.Message
 // at the call site.
 func NewCompactionEvent(role string, before, after, dropped, keptRecent int, now time.Time) domain.CompactionEvent {
 	trigger := "context_window*0.7"
+
 	return domain.CompactionEvent{
 		At:           now.UTC(),
 		Trigger:      trigger,
@@ -115,14 +120,17 @@ func DescribeCompaction(r CompactionResult, role string, verbose bool) string {
 	if r.DroppedTurns == 0 {
 		return "" // nothing to say when no trimming happened
 	}
+
 	if !verbose {
 		return fmt.Sprintf("🔄 компактирую историю (%dk → %dk tok, −%d ходов)",
 			r.BeforeTokens/1000, r.AfterTokens/1000, r.DroppedTurns)
 	}
+
 	out := "🔄 компактирую историю\n"
 	out += fmt.Sprintf("   было:  %d tok\n", r.BeforeTokens)
 	out += fmt.Sprintf("   стало: %d tok\n", r.AfterTokens)
 	out += fmt.Sprintf("   дропнуто: %d ходов\n", r.DroppedTurns)
+
 	out += fmt.Sprintf("   осталось: %d свежих\n", r.KeptRecent)
 	if role != "" {
 		out += fmt.Sprintf("   роль: %s\n", role)

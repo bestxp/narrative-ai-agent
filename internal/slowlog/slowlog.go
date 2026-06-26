@@ -110,3 +110,14 @@ func (l *Logger) Write(kind, chat string, fields map[string]any) error {
 func (l *Logger) WriteOK(kind, chat string) error {
 	return l.Write(kind, chat, nil)
 }
+
+// SetNow replaces the time-source used by Write/WriteOK. Intended
+// for tests that need deterministic timestamps; production code
+// should leave it alone (the default is time.Now).
+func (l *Logger) SetNow(now func() time.Time) {
+	if now == nil {
+		now = time.Now
+	}
+
+	l.now = now
+}

@@ -85,7 +85,13 @@ type Summarizer struct {
 // NewSummarizer builds a Summarizer for the given role. The
 // role's SystemPromptPath is read at construction so a missing
 // prompt is a startup-time error, not a runtime surprise.
-func NewSummarizer(llmCli LLMClient, role llm.RoleConfig, systemPrompt string, slow *slowlog.Logger, log zerolog.Logger) *Summarizer {
+func NewSummarizer(
+	llmCli LLMClient,
+	role llm.RoleConfig,
+	systemPrompt string,
+	slow *slowlog.Logger,
+	log zerolog.Logger,
+) *Summarizer {
 	return &Summarizer{
 		llm:    llmCli,
 		role:   role,
@@ -102,14 +108,22 @@ func NewSummarizer(llmCli LLMClient, role llm.RoleConfig, systemPrompt string, s
 // 0.7+ which produce noisy summaries. The system prompt is
 // the same prompts/summary.md (or whatever the operator
 // pointed at via the fallback path).
-func NewFallbackSummarizer(llmCli LLMClient, narrative llm.RoleConfig, systemPrompt string, slow *slowlog.Logger, log zerolog.Logger) *Summarizer {
+func NewFallbackSummarizer(
+	llmCli LLMClient,
+	narrative llm.RoleConfig,
+	systemPrompt string,
+	slow *slowlog.Logger,
+	log zerolog.Logger,
+) *Summarizer {
 	role := narrative
 	if role.MaxTokens > 500 {
 		role.MaxTokens = 500
 	}
+
 	if role.Temperature == 0 || role.Temperature > 0.4 {
 		role.Temperature = 0.2
 	}
+
 	return &Summarizer{
 		llm:          llmCli,
 		role:         role,
@@ -158,13 +172,16 @@ func (s *Summarizer) SummarizeOldTurns(ctx context.Context, messages []llm.Messa
 	if !s.IsConfigured() {
 		return SummaryResult{Source: "skipped"}, nil
 	}
+
 	if len(messages) == 0 {
 		return SummaryResult{Source: "skipped"}, nil
 	}
+
 	userText, err := s.renderSummary("summarizer_old_turns_user.md.tmpl", prompts.NewOldTurnsSummaryData(projectMessages(messages)))
 	if err != nil {
 		return SummaryResult{}, fmt.Errorf("summarizer: render old-turns user: %w", err)
 	}
+
 	tokens := EstimateConversationTokens(messages, 0)
 	req := llm.ChatRequest{
 		Model: s.role.Model,
@@ -175,21 +192,27 @@ func (s *Summarizer) SummarizeOldTurns(ctx context.Context, messages []llm.Messa
 		Temperature: s.role.Temperature,
 		MaxTokens:   s.role.MaxTokens,
 	}
+
 	var buf strings.Builder
+
 	streamErr := s.llm.Stream(ctx, req, func(ch llm.Chunk) error {
 		if ch.Done || ch.Content == "" {
 			return nil
 		}
+
 		buf.WriteString(ch.Content)
+
 		return nil
 	})
 	if streamErr != nil {
 		return SummaryResult{}, fmt.Errorf("summarizer: stream: %w", streamErr)
 	}
+
 	out := strings.TrimSpace(buf.String())
 	if out == "" {
 		return SummaryResult{}, fmt.Errorf("summarizer: empty response from %s", s.role.Model)
 	}
+
 	res := SummaryResult{
 		Text:   out,
 		Tokens: tokens,
@@ -201,6 +224,7 @@ func (s *Summarizer) SummarizeOldTurns(ctx context.Context, messages []llm.Messa
 		Int("input_tokens", tokens).
 		Int("output_chars", len(out)).
 		Msg("summary generated")
+
 	if s.slow != nil {
 		_ = s.slow.Write("summary.generated", "", map[string]any{
 			"model":        s.role.Model,
@@ -209,6 +233,7 @@ func (s *Summarizer) SummarizeOldTurns(ctx context.Context, messages []llm.Messa
 			"output_chars": len(out),
 		})
 	}
+
 	return res, nil
 }
 
@@ -220,6 +245,7 @@ func source(s *Summarizer) string {
 	if s.fallbackMode {
 		return "summary-fallback"
 	}
+
 	return "summary"
 }
 
@@ -258,16 +284,28 @@ type NPCSummaryResult struct {
 // use on the same role (the GM serialises per-chat turns
 // with chatMu; the maintenance tool is called serially
 // per round by the dispatcher).
-func (s *Summarizer) SummarizeNPC(ctx context.Context, displayName, world string, yamlBody, chronicleTail []byte) (NPCSummaryResult, error) {
+func (s *Summarizer) SummarizeNPC(
+	ctx context.Context,
+	displayName, world string,
+	yamlBody, chronicleTail []byte,
+) (NPCSummaryResult, error) {
 	res := NPCSummaryResult{Body: yamlBody, Compressed: false}
 	if !s.IsConfigured() {
 		return res, nil
 	}
+
 	if len(yamlBody) == 0 {
 		return res, nil
 	}
 
-	userText, err := s.renderSummary("summarizer_npc_user.md.tmpl", prompts.NewNPCSummaryData(world, displayName, projectNPCProfile(yamlBody), projectChronicle(parseChronicleBytes(chronicleTail))))
+	data := prompts.NewNPCSummaryData(
+		world,
+		displayName,
+		projectNPCProfile(yamlBody),
+		projectChronicle(parseChronicleBytes(chronicleTail)),
+	)
+
+	userText, err := s.renderSummary("summarizer_npc_user.md.tmpl", data)
 	if err != nil {
 		return res, fmt.Errorf("summarizer: render npc user: %w", err)
 	}
@@ -280,6 +318,7 @@ func (s *Summarizer) SummarizeNPC(ctx context.Context, displayName, world string
 	if role.MaxTokens < 2000 {
 		role.MaxTokens = 2000
 	}
+
 	if role.Temperature == 0 || role.Temperature > 0.4 {
 		role.Temperature = 0.2
 	}
@@ -295,16 +334,20 @@ func (s *Summarizer) SummarizeNPC(ctx context.Context, displayName, world string
 	}
 
 	var buf strings.Builder
+
 	streamErr := s.llm.Stream(ctx, req, func(ch llm.Chunk) error {
 		if ch.Done || ch.Content == "" {
 			return nil
 		}
+
 		buf.WriteString(ch.Content)
+
 		return nil
 	})
 	if streamErr != nil {
 		return res, fmt.Errorf("summarizer: npc stream: %w", streamErr)
 	}
+
 	out := strings.TrimSpace(buf.String())
 	if out == "" {
 		return res, fmt.Errorf("summarizer: empty response for npc %q", displayName)
@@ -339,12 +382,15 @@ func stripYAMLFence(s string) string {
 	if !strings.HasPrefix(s, "```") {
 		return s
 	}
+
 	if idx := strings.Index(s, "\n"); idx > 0 {
 		s = s[idx+1:]
 	}
+
 	if idx := strings.LastIndex(s, "```"); idx >= 0 {
 		s = s[:idx]
 	}
+
 	return strings.TrimSpace(s)
 }
 
@@ -365,6 +411,7 @@ func projectMessages(msgs []llm.Message) []prompts.MessageData {
 				toolCalls = append(toolCalls, tc.Function.Name)
 			}
 		}
+
 		out = append(out, prompts.MessageData{
 			Role:      m.Role,
 			Content:   m.Content,
@@ -372,6 +419,7 @@ func projectMessages(msgs []llm.Message) []prompts.MessageData {
 			ToolCalls: toolCalls,
 		})
 	}
+
 	return out
 }
 
@@ -384,6 +432,7 @@ func projectChronicle(c *chronicle.Chronicle) *prompts.ChronicleData {
 	if c == nil {
 		return nil
 	}
+
 	out := &prompts.ChronicleData{
 		Periods: make([]prompts.ChroniclePeriodData, len(c.Periods)),
 	}
@@ -394,10 +443,13 @@ func projectChronicle(c *chronicle.Chronicle) *prompts.ChronicleData {
 			Memory: p.Memory,
 		}
 	}
+
 	for n, txt := range c.Days {
 		out.Days = append(out.Days, prompts.ChronicleDayData{Number: n, Text: txt})
 	}
+
 	sort.Slice(out.Days, func(i, j int) bool { return out.Days[i].Number < out.Days[j].Number })
+
 	return out
 }
 
@@ -409,10 +461,12 @@ func parseChronicleBytes(body []byte) *chronicle.Chronicle {
 	if len(body) == 0 {
 		return nil
 	}
+
 	c, err := chronicle.Load(string(body))
 	if err != nil {
 		return nil
 	}
+
 	return &c
 }
 
@@ -426,10 +480,12 @@ func projectNPCProfile(yamlBody []byte) *prompts.NPCProfileData {
 	if len(yamlBody) == 0 {
 		return nil
 	}
+
 	p, err := npcprofile.Load(string(yamlBody))
 	if err != nil {
 		return nil
 	}
+
 	rows := make([]prompts.NPCRelationRow, 0, len(p.RelationsNPCs))
 	for _, r := range p.RelationsNPCs {
 		rows = append(rows, prompts.NPCRelationRow{
@@ -437,6 +493,7 @@ func projectNPCProfile(yamlBody []byte) *prompts.NPCProfileData {
 			Note:   strings.TrimSpace(r.Note),
 		})
 	}
+
 	return prompts.NewNPCProfileDataFromFields(
 		strings.TrimSpace(p.DisplayName),
 		strings.TrimSpace(p.Temperament),
@@ -460,7 +517,9 @@ func projectState(stateBody string) *prompts.StateData {
 	if strings.TrimSpace(stateBody) == "" {
 		return nil
 	}
+
 	snap := files.ParseStateYAMLFull(stateBody)
+
 	return prompts.NewStateData(
 		snap.World, snap.Day, snap.InFlight,
 		snap.Daytime, snap.Location, snap.Moment, snap.Current,
@@ -499,16 +558,28 @@ type LoreSummaryResult struct {
 // untouched. The caller (MaintainLore) decides what
 // counts as "valid" — for lore this is just a non-empty
 // body with at least one "## " section.
-func (s *Summarizer) SummarizeLore(ctx context.Context, world string, loreBody, chronicleTail, stateMD []byte) (LoreSummaryResult, error) {
+func (s *Summarizer) SummarizeLore(
+	ctx context.Context,
+	world string,
+	loreBody, chronicleTail, stateMD []byte,
+) (LoreSummaryResult, error) {
 	res := LoreSummaryResult{Body: loreBody, Compressed: false}
 	if !s.IsConfigured() {
 		return res, nil
 	}
+
 	if len(loreBody) == 0 {
 		return res, nil
 	}
 
-	userText, err := s.renderSummary("summarizer_lore_user.md.tmpl", prompts.NewLoreSummaryData(world, string(loreBody), projectChronicle(parseChronicleBytes(chronicleTail)), projectState(string(stateMD))))
+	data := prompts.NewLoreSummaryData(
+		world,
+		string(loreBody),
+		projectChronicle(parseChronicleBytes(chronicleTail)),
+		projectState(string(stateMD)),
+	)
+
+	userText, err := s.renderSummary("summarizer_lore_user.md.tmpl", data)
 	if err != nil {
 		return res, fmt.Errorf("summarizer: render lore user: %w", err)
 	}
@@ -517,6 +588,7 @@ func (s *Summarizer) SummarizeLore(ctx context.Context, world string, loreBody, 
 	if role.MaxTokens < 4000 {
 		role.MaxTokens = 4000
 	}
+
 	if role.Temperature == 0 || role.Temperature > 0.4 {
 		role.Temperature = 0.2
 	}
@@ -532,24 +604,30 @@ func (s *Summarizer) SummarizeLore(ctx context.Context, world string, loreBody, 
 	}
 
 	var buf strings.Builder
+
 	streamErr := s.llm.Stream(ctx, req, func(ch llm.Chunk) error {
 		if ch.Done || ch.Content == "" {
 			return nil
 		}
+
 		buf.WriteString(ch.Content)
+
 		return nil
 	})
 	if streamErr != nil {
 		return res, fmt.Errorf("summarizer: lore stream: %w", streamErr)
 	}
+
 	out := strings.TrimSpace(buf.String())
 	if out == "" {
 		return res, fmt.Errorf("summarizer: empty response for lore of %q", world)
 	}
+
 	cleaned := stripMarkdownFence(out)
 	res.Body = []byte(cleaned)
 	res.OutputChars = len(cleaned)
 	res.Compressed = true
+
 	return res, nil
 }
 
@@ -593,19 +671,32 @@ type CharacterMemorySummaryResult struct {
 // untouched (the caller writes nothing). The
 // caller (MaintainCharacterMemory) is the only
 // gatekeeper — we just produce the body.
-func (s *Summarizer) SummarizeCharacterMemory(ctx context.Context, world, character string, memoryBody, chronicleTail []byte) (CharacterMemorySummaryResult, error) {
+func (s *Summarizer) SummarizeCharacterMemory(
+	ctx context.Context,
+	world, character string,
+	memoryBody, chronicleTail []byte,
+) (CharacterMemorySummaryResult, error) {
 	res := CharacterMemorySummaryResult{Body: memoryBody, Compressed: false, BeforeBytes: len(memoryBody)}
 	if !s.IsConfigured() {
 		return res, nil
 	}
+
 	if s.characterMemoryPrompt == "" {
 		return res, errors.New("summarizer: character_memory prompt not wired")
 	}
+
 	if len(memoryBody) == 0 {
 		return res, nil
 	}
 
-	userText, err := s.renderSummary("summarizer_charmem_user.md.tmpl", prompts.NewCharacterMemorySummaryData(world, character, string(memoryBody), projectChronicle(parseChronicleBytes(chronicleTail))))
+	data := prompts.NewCharacterMemorySummaryData(
+		world,
+		character,
+		string(memoryBody),
+		projectChronicle(parseChronicleBytes(chronicleTail)),
+	)
+
+	userText, err := s.renderSummary("summarizer_charmem_user.md.tmpl", data)
 	if err != nil {
 		return res, fmt.Errorf("summarizer: render charmem user: %w", err)
 	}
@@ -614,6 +705,7 @@ func (s *Summarizer) SummarizeCharacterMemory(ctx context.Context, world, charac
 	if role.MaxTokens < 4000 {
 		role.MaxTokens = 4000
 	}
+
 	if role.Temperature == 0 || role.Temperature > 0.4 {
 		role.Temperature = 0.2
 	}
@@ -635,26 +727,22 @@ func (s *Summarizer) SummarizeCharacterMemory(ctx context.Context, world, charac
 		MaxTokens:   role.MaxTokens,
 	}
 
-	var buf strings.Builder
-	streamErr := s.llm.Stream(ctx, req, func(ch llm.Chunk) error {
-		if ch.Done || ch.Content == "" {
-			return nil
-		}
-		buf.WriteString(ch.Content)
-		return nil
-	})
+	streamRaw, streamErr := s.streamToString(ctx, req)
 	if streamErr != nil {
 		return res, fmt.Errorf("summarizer: character_memory stream: %w", streamErr)
 	}
-	out := strings.TrimSpace(buf.String())
+
+	out := strings.TrimSpace(streamRaw)
 	if out == "" {
 		return res, nil
 	}
+
 	cleaned := stripYAMLFence(out)
 	res.Body = []byte(cleaned)
 	res.OutputChars = len(cleaned)
 	res.AfterBytes = len(cleaned)
 	res.Compressed = len(cleaned) < len(memoryBody)
+
 	return res, nil
 }
 
@@ -668,12 +756,15 @@ func stripMarkdownFence(s string) string {
 	if !strings.HasPrefix(s, "```") {
 		return s
 	}
+
 	if idx := strings.Index(s, "\n"); idx > 0 {
 		s = s[idx+1:]
 	}
+
 	if idx := strings.LastIndex(s, "```"); idx >= 0 {
 		s = s[:idx]
 	}
+
 	return strings.TrimSpace(s)
 }
 
@@ -711,16 +802,28 @@ type ChronicleSummaryResult struct {
 // of activity in a 30-day calendar window). The caller
 // treats that as "no compression happened" and leaves
 // the file untouched.
-func (s *Summarizer) SummarizeChronicle(ctx context.Context, world string, startDay, endDay int, fullChronicle string) (ChronicleSummaryResult, error) {
+func (s *Summarizer) SummarizeChronicle(
+	ctx context.Context,
+	world string,
+	startDay, endDay int,
+	fullChronicle string,
+) (ChronicleSummaryResult, error) {
 	res := ChronicleSummaryResult{Body: nil, Compressed: false, InputDays: endDay - startDay + 1}
 	if !s.IsConfigured() {
 		return res, nil
 	}
+
 	if endDay < startDay {
 		return res, fmt.Errorf("summarizer: chronicle window invalid: start=%d end=%d", startDay, endDay)
 	}
 
-	userText, err := s.renderSummary("summarizer_chronicle_user.md.tmpl", prompts.NewChronicleSummaryData(world, startDay, endDay, projectChronicle(parseChronicleBytes([]byte(fullChronicle)))))
+	userText, err := s.renderSummary(
+		"summarizer_chronicle_user.md.tmpl",
+		prompts.NewChronicleSummaryData(
+			world, startDay, endDay,
+			projectChronicle(parseChronicleBytes([]byte(fullChronicle))),
+		),
+	)
 	if err != nil {
 		return res, fmt.Errorf("summarizer: render chronicle user: %w", err)
 	}
@@ -729,6 +832,7 @@ func (s *Summarizer) SummarizeChronicle(ctx context.Context, world string, start
 	if role.MaxTokens < 2000 {
 		role.MaxTokens = 2000
 	}
+
 	if role.Temperature == 0 || role.Temperature > 0.4 {
 		role.Temperature = 0.2
 	}
@@ -744,24 +848,30 @@ func (s *Summarizer) SummarizeChronicle(ctx context.Context, world string, start
 	}
 
 	var buf strings.Builder
+
 	streamErr := s.llm.Stream(ctx, req, func(ch llm.Chunk) error {
 		if ch.Done || ch.Content == "" {
 			return nil
 		}
+
 		buf.WriteString(ch.Content)
+
 		return nil
 	})
 	if streamErr != nil {
 		return res, fmt.Errorf("summarizer: chronicle stream: %w", streamErr)
 	}
+
 	out := strings.TrimSpace(buf.String())
 	if out == "" {
 		return res, nil
 	}
+
 	cleaned := stripMarkdownFence(out)
 	res.Body = []byte(cleaned)
 	res.OutputChars = len(cleaned)
 	res.Compressed = true
+
 	return res, nil
 }
 
@@ -826,22 +936,6 @@ func (s *Summarizer) SetCompactionConfig(c prompts.CompactionData) {
 	s.compaction = c
 }
 
-// renderSummary renders a summarizer user-message template
-// with the Summarizer's compaction config wired in, so the
-// template can reference {{ .Compaction.* }} for the soft
-// targets. Shorthand for
-// `prompts.RenderSummarizerUser` + config injection.
-func (s *Summarizer) renderSummary(name string, sum *prompts.SummarizerData) (string, error) {
-	out, err := prompts.Render(name, prompts.PromptData{
-		Compaction: s.compaction,
-		Summarizer: sum,
-	})
-	if err != nil {
-		return "", fmt.Errorf("render_summary %s: %w", name, err)
-	}
-	return out, nil
-}
-
 // SummarizeInPlace compresses the current in-memory
 // conversation of day N into a 150-300 word narrative
 // that will be appended to index:1 as "## Хроника
@@ -853,19 +947,32 @@ func (s *Summarizer) renderSummary(name string, sum *prompts.SummarizerData) (st
 // (the compaction_in_place.md prompt is explicit about
 // this). On end_day the same conversation is
 // re-compressed differently — see SummarizeEndOfDay.
-func (s *Summarizer) SummarizeInPlace(ctx context.Context, world string, day int, messages []llm.Message) (InPlaceSummaryResult, error) {
+// summarizer dispatch is intentionally straight-line; helper extraction would just shuffle the same lines.
+//
+//nolint:funlen // summarizer dispatch is intentionally straight-line; helper extraction would just shuffle the same lines
+func (s *Summarizer) SummarizeInPlace(
+	ctx context.Context,
+	world string,
+	day int,
+	messages []llm.Message,
+) (InPlaceSummaryResult, error) {
 	res := InPlaceSummaryResult{Day: day}
 	if !s.IsConfigured() {
 		return res, nil
 	}
+
 	if s.compactionInPlacePrompt == "" {
 		return res, errors.New("summarizer: in-place compaction prompt not wired")
 	}
+
 	if len(messages) == 0 {
 		return res, nil
 	}
 
-	userText, err := s.renderSummary("summarizer_inplace_user.md.tmpl", prompts.NewInPlaceSummaryData(world, day, projectMessages(messages)))
+	userText, err := s.renderSummary(
+		"summarizer_inplace_user.md.tmpl",
+		prompts.NewInPlaceSummaryData(world, day, projectMessages(messages)),
+	)
 	if err != nil {
 		return res, fmt.Errorf("summarizer: render in-place user: %w", err)
 	}
@@ -874,6 +981,7 @@ func (s *Summarizer) SummarizeInPlace(ctx context.Context, world string, day int
 	if role.MaxTokens < 2000 {
 		role.MaxTokens = 2000
 	}
+
 	if role.Temperature == 0 || role.Temperature > 0.4 {
 		role.Temperature = 0.2
 	}
@@ -889,24 +997,30 @@ func (s *Summarizer) SummarizeInPlace(ctx context.Context, world string, day int
 	}
 
 	var buf strings.Builder
+
 	streamErr := s.llm.Stream(ctx, req, func(ch llm.Chunk) error {
 		if ch.Done || ch.Content == "" {
 			return nil
 		}
+
 		buf.WriteString(ch.Content)
+
 		return nil
 	})
 	if streamErr != nil {
 		return res, fmt.Errorf("summarizer: in-place stream: %w", streamErr)
 	}
+
 	out := strings.TrimSpace(buf.String())
 	if out == "" {
 		return res, nil
 	}
+
 	cleaned := stripMarkdownFence(out)
 	res.Body = []byte(cleaned)
 	res.OutputChars = len(cleaned)
 	res.Compressed = true
+
 	return res, nil
 }
 
@@ -932,19 +1046,30 @@ type EndOfDaySummaryResult struct {
 // past tense. Quotations are short (1 sentence max).
 // Format is a free-form narrative (NOT a numbered list
 // — that was the v1 mistake).
-func (s *Summarizer) SummarizeEndOfDay(ctx context.Context, world string, day int, messages []llm.Message, stateMD string) (EndOfDaySummaryResult, error) {
+func (s *Summarizer) SummarizeEndOfDay(
+	ctx context.Context,
+	world string,
+	day int,
+	messages []llm.Message,
+	stateMD string,
+) (EndOfDaySummaryResult, error) {
 	res := EndOfDaySummaryResult{Day: day}
 	if !s.IsConfigured() {
 		return res, nil
 	}
+
 	if s.endOfDayPrompt == "" {
 		return res, errors.New("summarizer: end-of-day prompt not wired")
 	}
+
 	if len(messages) == 0 {
 		return res, nil
 	}
 
-	userText, err := s.renderSummary("summarizer_eod_user.md.tmpl", prompts.NewEndOfDaySummaryData(world, day, projectMessages(messages), projectState(stateMD)))
+	userText, err := s.renderSummary(
+		"summarizer_eod_user.md.tmpl",
+		prompts.NewEndOfDaySummaryData(world, day, projectMessages(messages), projectState(stateMD)),
+	)
 	if err != nil {
 		return res, fmt.Errorf("summarizer: render eod user: %w", err)
 	}
@@ -953,6 +1078,7 @@ func (s *Summarizer) SummarizeEndOfDay(ctx context.Context, world string, day in
 	if role.MaxTokens < 3000 {
 		role.MaxTokens = 3000
 	}
+
 	if role.Temperature == 0 || role.Temperature > 0.4 {
 		role.Temperature = 0.2
 	}
@@ -967,24 +1093,61 @@ func (s *Summarizer) SummarizeEndOfDay(ctx context.Context, world string, day in
 		MaxTokens:   role.MaxTokens,
 	}
 
-	var buf strings.Builder
-	streamErr := s.llm.Stream(ctx, req, func(ch llm.Chunk) error {
-		if ch.Done || ch.Content == "" {
-			return nil
-		}
-		buf.WriteString(ch.Content)
-		return nil
-	})
+	streamRaw, streamErr := s.streamToString(ctx, req)
 	if streamErr != nil {
 		return res, fmt.Errorf("summarizer: end-of-day stream: %w", streamErr)
 	}
-	out := strings.TrimSpace(buf.String())
+
+	out := strings.TrimSpace(streamRaw)
 	if out == "" {
 		return res, nil
 	}
+
 	cleaned := stripMarkdownFence(out)
 	res.Body = []byte(cleaned)
 	res.OutputChars = len(cleaned)
 	res.Compressed = true
+
 	return res, nil
+}
+
+// renderSummary renders a summarizer user-message template
+// with the Summarizer's compaction config wired in, so the
+// template can reference {{ .Compaction.* }} for the soft
+// targets. Shorthand for
+// `prompts.RenderSummarizerUser` + config injection.
+func (s *Summarizer) renderSummary(name string, sum *prompts.SummarizerData) (string, error) {
+	out, err := prompts.Render(name, prompts.PromptData{
+		Compaction: s.compaction,
+		Summarizer: sum,
+	})
+	if err != nil {
+		return "", fmt.Errorf("render_summary %s: %w", name, err)
+	}
+
+	return out, nil
+}
+
+// streamToString runs the LLM stream and concatenates content
+// chunks into a single string. Done chunks and empty chunks
+// are skipped; the caller decides how to handle empty
+// output. Used by every Summarize* method to keep the
+// streaming boilerplate out of each prompt-specific path.
+func (s *Summarizer) streamToString(ctx context.Context, req llm.ChatRequest) (string, error) {
+	var buf strings.Builder
+
+	streamErr := s.llm.Stream(ctx, req, func(ch llm.Chunk) error {
+		if ch.Done || ch.Content == "" {
+			return nil
+		}
+
+		buf.WriteString(ch.Content)
+
+		return nil
+	})
+	if streamErr != nil {
+		return "", fmt.Errorf("summarizer.streamToString: %w", streamErr)
+	}
+
+	return buf.String(), nil
 }

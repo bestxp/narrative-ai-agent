@@ -1,4 +1,4 @@
-package files
+package files_test
 
 import (
 	"encoding/json"
@@ -14,6 +14,7 @@ import (
 	"github.com/bestxp/narrative-ai-agent/internal/slowlog"
 	yamlfs "github.com/bestxp/narrative-ai-agent/internal/storage/fs"
 	"github.com/bestxp/narrative-ai-agent/internal/usecase/tools"
+	"github.com/bestxp/narrative-ai-agent/internal/usecase/tools/files"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -26,6 +27,7 @@ func readFile(path string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read_file: %w", err)
 	}
+
 	return body, nil
 }
 
@@ -33,7 +35,7 @@ func readFile(path string) ([]byte, error) {
 // It writes the registry (info.yaml) and the world directory
 // stub so UpdateState/ParseStateMD have something to read on
 // disk.
-func newTestToolset(t *testing.T) *Toolset {
+func newTestToolset(t *testing.T) *files.Toolset {
 	t.Helper()
 	fs, err := storage.NewFileStore(t.TempDir())
 	require.NoError(t, err)
@@ -42,8 +44,10 @@ func newTestToolset(t *testing.T) *Toolset {
 		"active_character: markus\nactive_world: naruto\n"))
 	yamlStore, err := yamlfs.New(fs.Root())
 	require.NoError(t, err)
+
 	repos := api.NewYamlRepositories(yamlStore)
-	return New(fs, repos, zerolog.Nop(), slowlog.Discard(), nil, nil, nil, nil)
+
+	return files.New(fs, repos, zerolog.Nop(), slowlog.Discard(), nil, nil, nil, nil)
 }
 
 // captureSlowlog returns a *slowlog.Logger that writes JSON
@@ -56,26 +60,33 @@ func captureSlowlog(t *testing.T) (*slowlog.Logger, func(kind string) []slowlog.
 	dir := t.TempDir()
 	logger, err := slowlog.File(dir + "/slow.log")
 	require.NoError(t, err)
+
 	read := func(kind string) []slowlog.Entry {
 		data, err := readFile(dir + "/slow.log")
 		if err != nil {
 			return nil
 		}
+
 		var out []slowlog.Entry
+
 		for line := range strings.SplitSeq(strings.TrimRight(string(data), "\n"), "\n") {
 			if line == "" {
 				continue
 			}
+
 			var e slowlog.Entry
 			if err := json.Unmarshal([]byte(line), &e); err != nil {
 				continue
 			}
+
 			if e.Kind == kind {
 				out = append(out, e)
 			}
 		}
+
 		return out
 	}
+
 	return logger, read
 }
 
@@ -213,7 +224,7 @@ func TestUpdateState_ReplacesNPCList(t *testing.T) {
 // `tool.update_state` entries. Keeping this separate from
 // newTestToolset means existing tests that rely on
 // `slowlog.Discard()` aren't affected.
-func newStateWithSlowlog(t *testing.T) (*State, func(kind string) []slowlog.Entry) {
+func newStateWithSlowlog(t *testing.T) (*files.State, func(kind string) []slowlog.Entry) {
 	t.Helper()
 	fs, err := storage.NewFileStore(t.TempDir())
 	require.NoError(t, err)
@@ -222,9 +233,11 @@ func newStateWithSlowlog(t *testing.T) (*State, func(kind string) []slowlog.Entr
 		"active_character: markus\nactive_world: naruto\n"))
 	yamlStore, err := yamlfs.New(fs.Root())
 	require.NoError(t, err)
+
 	repos := api.NewYamlRepositories(yamlStore)
 	logger, read := captureSlowlog(t)
-	st := newState(zerolog.Nop(), logger, repos)
+	st := files.NewState(zerolog.Nop(), logger, repos)
+
 	return st, read
 }
 
@@ -283,7 +296,8 @@ func TestUpdateState_SlowlogNilSafe(t *testing.T) {
 	require.NoError(t, fs.EnsureDir("worlds/naruto/characters"))
 	yamlStore, _ := yamlfs.New(fs.Root())
 	repos := api.NewYamlRepositories(yamlStore)
-	st := newState(zerolog.Nop(), nil, repos) // <-- nil slow
+	st := files.NewState(zerolog.Nop(), nil, repos) // <-- nil slow
+
 	require.NoError(t, fs.WriteRawAtomic("info.yaml", "active_character: markus\nactive_world: naruto\n"))
 	require.NoError(t, st.UpdateState(tools.StateSnapshot{
 		Day: 1, InFlight: true, Moment: "m",
@@ -298,6 +312,7 @@ func TestUpdateState_SlowlogNilSafe(t *testing.T) {
 // ElementsMatch is safe on an absent field.
 func toStrSlice(t *testing.T, v any) []string {
 	t.Helper()
+
 	if v == nil {
 		return []string{}
 	}
@@ -312,6 +327,7 @@ func toStrSlice(t *testing.T, v any) []string {
 				out = append(out, s)
 			}
 		}
+
 		return out
 	default:
 		return []string{}
@@ -327,18 +343,27 @@ var errNoActiveWorld = errors.New("renderStateBodyForTest: no active world")
 // state.md via the repository layer (Load + render).
 // Used by tests that need byte-level assertions on the
 // rendered markdown.
-func renderStateBodyForTest(t *testing.T, ts *Toolset) (string, error) {
+func renderStateBodyForTest(t *testing.T, ts *files.Toolset) (string, error) {
 	t.Helper()
-	info, err := ts.repos.Info.Load()
+
+	info, err := ts.Repos.Info.Load()
 	if err != nil {
 		return "", errNoActiveWorld
 	}
+
 	if info.ActiveWorld == "" {
 		return "", errNoActiveWorld
 	}
-	snap, err := ts.repos.WorldState.Load(info.ActiveWorld)
+
+	snap, err := ts.Repos.WorldState.Load(info.ActiveWorld)
 	if err != nil {
 		return "", fmt.Errorf("snapshot_state: WorldState.Load failed: %w", err)
 	}
-	return yaml.RenderStateBody(snap)
+
+	body, err := yaml.RenderStateBody(snap)
+	if err != nil {
+		return "", fmt.Errorf("snapshot_state: RenderStateBody failed: %w", err)
+	}
+
+	return body, nil
 }

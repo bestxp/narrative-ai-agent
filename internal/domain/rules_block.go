@@ -22,10 +22,12 @@ func StripRulesBlock(text string) string {
 	if text == "" {
 		return text
 	}
+
 	loc := rulesBlockRe.FindStringIndex(text)
 	if loc == nil {
 		return text
 	}
+
 	out := text[:loc[0]]
 
 	return cleanTrailingWhitespace(out)

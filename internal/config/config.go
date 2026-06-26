@@ -502,8 +502,11 @@ func Load(path string) (*Config, error) {
 // order of checks is meaningful: messages mentioning the offending
 // section come first so the operator can fix config.yaml quickly.
 //
-//nolint:gocognit // complex validation logic
-func (c *Config) Validate() error { //nolint:funlen // complex function; splitting would harm readability.
+// config validation traverses every nested section (messaging, llm, prompts, storage);
+// flattening into helpers would scatter the per-section invariants
+//
+//nolint:gocognit,cyclop,funlen // config validation traverses every nested section; flattening scatters invariants.
+func (c *Config) Validate() error {
 	// At least one transport must be configured.
 	tgOK := c.Messaging.Telegram.IsConfigured()
 	vkOK := c.Messaging.VK.IsConfigured()
@@ -512,30 +515,37 @@ func (c *Config) Validate() error { //nolint:funlen // complex function; splitti
 	if !tgOK && !vkOK && !wsOK {
 		return errors.New("at least one messaging transport must be configured (telegram, vk or wschat)")
 	}
+
 	if tgOK {
 		if c.Messaging.Telegram.Token == "REPLACE_WITH_BOTFATHER_TOKEN" {
 			return errors.New("messaging.telegram.token must be set to a real bot token")
 		}
+
 		if len(c.Messaging.Telegram.AllowedUserIDs) == 0 {
 			return errors.New("messaging.telegram.allowed_user_ids must contain at least one user id")
 		}
 	}
+
 	if vkOK {
 		if len(c.Messaging.VK.AllowedUserIDs) == 0 {
 			return errors.New("messaging.vk.allowed_user_ids must contain at least one user id")
 		}
+
 		if c.Messaging.VK.PollingWait == 0 {
 			c.Messaging.VK.PollingWait = 25
 		}
 	}
+
 	if wsOK {
 		if c.Messaging.WSChat.DevToken == "" && len(c.Messaging.WSChat.AllowedTokens) == 0 {
 			return errors.New("messaging.wschat.dev_token (or allowed_tokens) must be set when wschat is enabled")
 		}
+
 		if c.Messaging.WSChat.ChatID == "" {
 			c.Messaging.WSChat.ChatID = "dev"
 		}
 	}
+
 	if c.Paths.DataRoot == "" {
 		c.Paths.DataRoot = "game-data"
 	}
@@ -566,6 +576,7 @@ func (c *Config) Validate() error { //nolint:funlen // complex function; splitti
 	if c.Git.Remote == "" {
 		c.Git.Remote = "origin"
 	}
+
 	if c.Git.Branch == "" {
 		c.Git.Branch = "master"
 	}
@@ -574,6 +585,7 @@ func (c *Config) Validate() error { //nolint:funlen // complex function; splitti
 	if c.Narrative.WordLimit == 0 {
 		c.Narrative.WordLimit = 150
 	}
+
 	if c.Narrative.Language == "" {
 		c.Narrative.Language = "ru"
 	}
@@ -612,6 +624,7 @@ func (c *Config) Validate() error { //nolint:funlen // complex function; splitti
 	if !ok {
 		return fmt.Errorf("llm.%s role must be configured (model + system_prompt_path)", NarrativeRole)
 	}
+
 	if narr.Model == "" {
 		return fmt.Errorf("llm.%s.model must be set", NarrativeRole)
 	}
@@ -643,6 +656,12 @@ func nonZeroFloat(v, def float64) float64 {
 	return v
 }
 
+// TelegramIsAllowed checks the Telegram allow list. Per-transport
+// helpers live here; main.go can pick the right one.
+func (c *Config) TelegramIsAllowed(userID int) bool {
+	return slices.Contains(c.Messaging.Telegram.AllowedUserIDs, userID)
+}
+
 // resolveRelativePaths anchors every user-supplied path to the
 // directory of the config file so the bot behaves the same regardless
 // of where it is invoked from.
@@ -650,6 +669,7 @@ func (c *Config) resolveRelativePaths(base string) {
 	if !filepath.IsAbs(c.Paths.DataRoot) {
 		c.Paths.DataRoot = filepath.Join(base, c.Paths.DataRoot)
 	}
+
 	if !filepath.IsAbs(c.Paths.GitWorkdir) {
 		c.Paths.GitWorkdir = filepath.Join(base, c.Paths.GitWorkdir)
 	}
@@ -660,12 +680,6 @@ func (c *Config) resolveRelativePaths(base string) {
 			c.LLM.Roles[name] = role
 		}
 	}
-}
-
-// TelegramIsAllowed checks the Telegram allow list. Per-transport
-// helpers live here; main.go can pick the right one.
-func (c *Config) TelegramIsAllowed(userID int) bool {
-	return slices.Contains(c.Messaging.Telegram.AllowedUserIDs, userID)
 }
 
 // VKConfig is the per-transport configuration for VKontakte.

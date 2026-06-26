@@ -1,10 +1,11 @@
-package config
+package config_test
 
 import (
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/bestxp/narrative-ai-agent/internal/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -34,6 +35,7 @@ llm:
 
 func TestLoad_OK(t *testing.T) {
 	t.Parallel()
+
 	body := `
 messaging:
   telegram:
@@ -57,7 +59,7 @@ llm:
       model: "qwen2.5:7b-instruct"
       temperature: 0.4
 `
-	cfg, err := Load(writeTempConfig(t, body))
+	cfg, err := config.Load(writeTempConfig(t, body))
 	require.NoError(t, err)
 	assert.Equal(t, "ABC:XYZ", cfg.Messaging.Telegram.Token)
 	assert.True(t, cfg.TelegramIsAllowed(111))
@@ -68,6 +70,7 @@ llm:
 
 func TestLoad_RejectsPlaceholderToken(t *testing.T) {
 	t.Parallel()
+
 	body := `
 messaging:
   telegram:
@@ -77,13 +80,14 @@ llm:
   roles:
     narrative: { model: "x" }
 `
-	_, err := Load(writeTempConfig(t, body))
+	_, err := config.Load(writeTempConfig(t, body))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "messaging.telegram.token")
 }
 
 func TestLoad_RejectsEmptyAllowed(t *testing.T) {
 	t.Parallel()
+
 	body := `
 messaging:
   telegram:
@@ -93,7 +97,7 @@ llm:
   roles:
     narrative: { model: "x" }
 `
-	_, err := Load(writeTempConfig(t, body))
+	_, err := config.Load(writeTempConfig(t, body))
 	require.Error(t, err)
 }
 
@@ -109,19 +113,19 @@ llm:
   roles:
     narrative: { model: "x" }
 `
-	_, err := Load(writeTempConfig(t, body))
+	_, err := config.Load(writeTempConfig(t, body))
 	require.Error(t, err)
 }
 
 func TestLoad_AppliesDefaults(t *testing.T) {
 	t.Parallel()
-	cfg, err := Load(writeTempConfig(t, minimalValidYAML))
+	cfg, err := config.Load(writeTempConfig(t, minimalValidYAML))
 	require.NoError(t, err)
 	assert.NotEmpty(t, cfg.Paths.DataRoot)
 	assert.Equal(t, "origin", cfg.Git.Remote)
 	assert.Equal(t, 150, cfg.Narrative.WordLimit)
 	assert.Equal(t, 120, cfg.LLM.DefaultTimeoutSeconds)
-	role, ok := cfg.Role(NarrativeRole)
+	role, ok := cfg.Role(config.NarrativeRole)
 	require.True(t, ok)
 	assert.Equal(t, "qwen2.5:7b-instruct", role.Model)
 	assert.Equal(t, "http://localhost:11434/v1", role.APIURL)
@@ -135,6 +139,7 @@ func TestLoad_AppliesDefaults(t *testing.T) {
 
 func TestLoad_MultipleRoles(t *testing.T) {
 	t.Parallel()
+
 	body := `
 messaging:
   telegram:
@@ -152,12 +157,13 @@ llm:
       max_tokens: 400
       system_prompt_path: "prompts/summary.md"
 `
-	cfg, err := Load(writeTempConfig(t, body))
+	cfg, err := config.Load(writeTempConfig(t, body))
 	require.NoError(t, err)
 	assert.Len(t, cfg.LLM.Roles, 2)
 	narr, ok := cfg.Role("narrative")
 	require.True(t, ok)
 	assert.InDelta(t, 0.8, narr.Temperature, 1e-9)
+
 	sum, ok := cfg.Role("summary")
 	require.True(t, ok)
 	assert.InDelta(t, 0.2, sum.Temperature, 1e-9)
@@ -179,9 +185,10 @@ llm:
     narrative:
       model: "x"
 `
-	cfg, err := Load(writeTempConfig(t, body))
+	cfg, err := config.Load(writeTempConfig(t, body))
 	require.NoError(t, err)
-	role, ok := cfg.Role(NarrativeRole)
+
+	role, ok := cfg.Role(config.NarrativeRole)
 	require.True(t, ok)
 	assert.InDelta(t, 0.8, role.Temperature, 1e-9)
 	assert.Equal(t, 2500, role.MaxTokens)
@@ -192,8 +199,9 @@ llm:
 
 func TestRole_UnknownReturnsFalse(t *testing.T) {
 	t.Parallel()
-	cfg, err := Load(writeTempConfig(t, minimalValidYAML))
+	cfg, err := config.Load(writeTempConfig(t, minimalValidYAML))
 	require.NoError(t, err)
+
 	_, ok := cfg.Role("does-not-exist")
 	assert.False(t, ok)
 }
@@ -211,31 +219,34 @@ llm:
   roles:
     narrative: { model: "" }
 `
-	cfg, err := Load(writeTempConfig(t, body))
+	cfg, err := config.Load(writeTempConfig(t, body))
 	// Validate() rejects empty model: the bot refuses to start with
 	// a half-configured narrative role.
 	require.Error(t, err)
+
 	_ = cfg
 }
 
 func TestMustRole_PanicsOnMissing(t *testing.T) {
 	t.Parallel()
-	cfg, err := Load(writeTempConfig(t, minimalValidYAML))
+	cfg, err := config.Load(writeTempConfig(t, minimalValidYAML))
 	require.NoError(t, err)
 	assert.Panics(t, func() { cfg.MustRole("ghost") })
 }
 
 func TestMustRole_ReturnsConfigured(t *testing.T) {
 	t.Parallel()
-	cfg, err := Load(writeTempConfig(t, minimalValidYAML))
+	cfg, err := config.Load(writeTempConfig(t, minimalValidYAML))
 	require.NoError(t, err)
-	r := cfg.MustRole(NarrativeRole)
+
+	r := cfg.MustRole(config.NarrativeRole)
 	assert.Equal(t, "qwen2.5:7b-instruct", r.Model)
 }
 
 func TestTelegramIsAllowed_EmptyList(t *testing.T) {
 	t.Parallel()
-	cfg := &Config{}
+
+	cfg := &config.Config{}
 	assert.False(t, cfg.TelegramIsAllowed(0))
 	assert.False(t, cfg.TelegramIsAllowed(42))
 }
@@ -243,13 +254,14 @@ func TestTelegramIsAllowed_EmptyList(t *testing.T) {
 func TestLoad_RemoteDisabled_DefaultsFalse(t *testing.T) {
 	t.Parallel()
 	// Absent `remote_disabled` key → push is enabled.
-	cfg, err := Load(writeTempConfig(t, minimalValidYAML))
+	cfg, err := config.Load(writeTempConfig(t, minimalValidYAML))
 	require.NoError(t, err)
 	assert.False(t, cfg.Git.RemoteDisabled)
 }
 
 func TestLoad_RemoteDisabled_TrueHonoured(t *testing.T) {
 	t.Parallel()
+
 	body := `
 messaging:
   telegram:
@@ -261,7 +273,7 @@ llm:
   roles:
     narrative: { model: "x" }
 `
-	cfg, err := Load(writeTempConfig(t, body))
+	cfg, err := config.Load(writeTempConfig(t, body))
 	require.NoError(t, err)
 	assert.True(t, cfg.Git.RemoteDisabled)
 }
