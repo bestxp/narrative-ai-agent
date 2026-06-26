@@ -88,9 +88,6 @@ func newEndOfDayTestEnv(t *testing.T) (*GM, *storage.FileStore, *scriptingLLM) {
 	require.NoError(t, fs.WriteRawAtomic(storage.InfoFile,
 		domain.BuildInfo("markus", "naruto", nil, nil)))
 	require.NoError(t, fs.EnsureDir("characters/markus"))
-	require.NoError(t, fs.WriteRawAtomic("characters/markus/SOUL.md", "# Markus\n\n## Истинная сущность\nчеловек\n"))
-	require.NoError(t, fs.WriteRawAtomic("characters/markus/SKILL.md", "# Skills\n\n## Базовые способности\nничего особенного\n"))
-	require.NoError(t, fs.WriteRawAtomic("characters/markus/memory.md", "# Memory\n\n## Другие миры\nпомнит Наруто\n"))
 	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/state.md",
 		"День 1 (в процессе).\nАктивные NPC прямо сейчас: Какаши\nЛокация: Полигон\nМомент: тренировка\n"))
 	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/lore.md", "lore"))

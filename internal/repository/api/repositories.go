@@ -45,10 +45,7 @@ type Repositories struct {
 // by the worldregistry package — the file backend reads
 // it directly through the FileStore so the lookup path
 // can use the full-featured Registry.Lookup (substring
-// matching, nickname lookup). A legacy characters.md
-// fallback used to live in the YAML repository; it was
-// removed because operators reported it conflicting
-// with characters.yaml.
+// matching, nickname lookup).
 func NewYamlRepositories(store storage.Storage) *Repositories {
 	return &Repositories{
 		Info:       yaml.NewInfoYaml(store),

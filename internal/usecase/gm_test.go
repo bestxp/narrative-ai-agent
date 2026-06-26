@@ -22,7 +22,6 @@ func newGMTestEnv(t *testing.T) (*GM, *storage.FileStore, *FakeLLM) {
 	fs, _ := storage.NewFileStore(t.TempDir())
 	require.NoError(t, fs.WriteRawAtomic(storage.InfoFile, domain.BuildInfo("markus", "naruto", nil, nil)))
 	require.NoError(t, fs.EnsureDir("characters/markus"))
-	require.NoError(t, fs.WriteRawAtomic("characters/markus/SOUL.md", "# Markus"))
 	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/state.yaml",
 		"state:\n  world: naruto\n  day: 1\n  in-flight: true\n  npcs:\n    - Какаши\n"))
 	require.NoError(t, fs.WriteRawAtomic("worlds/naruto/lore.md", "lore"))
@@ -1098,9 +1097,7 @@ func findNPCSection(t *testing.T, worldMsg, displayName string) string {
 	header := "### " + displayName
 
 	idx := strings.Index(worldMsg, header)
-	if idx < 0 {
-		t.Fatalf("NPC %q not found in world block:\n%s", displayName, worldMsg)
-	}
+	require.GreaterOrEqualf(t, idx, 0, "NPC %q not found in world block:\n%s", displayName, worldMsg)
 
 	rest := worldMsg[idx+len(header):]
 	// End at the next "### " sibling.

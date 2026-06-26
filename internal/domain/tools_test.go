@@ -95,14 +95,10 @@ func TestRotatePlanTool_HasBounds(t *testing.T) {
 	probe := paramsJSON(t, tool.Function.Parameters)
 
 	props, ok := probe["properties"].(map[string]any)
-	if !ok {
-		t.Fatalf("properties missing or wrong type: %T", probe["properties"])
-	}
+	require.Truef(t, ok, "properties missing or wrong type: %T", probe["properties"])
 
 	events, ok := props["events"].(map[string]any)
-	if !ok {
-		t.Fatalf("events property missing or wrong type: %T", props["events"])
-	}
+	require.Truef(t, ok, "events property missing or wrong type: %T", props["events"])
 
 	assert.Equal(t, "array", events["type"])
 	assert.InDelta(t, float64(3), events["minItems"], 1e-9)
@@ -118,14 +114,10 @@ func TestUpdateSoulTool_SectionIsFreeString(t *testing.T) {
 	probe := paramsJSON(t, tool.Function.Parameters)
 
 	props, ok := probe["properties"].(map[string]any)
-	if !ok {
-		t.Fatalf("properties missing or wrong type: %T", probe["properties"])
-	}
+	require.Truef(t, ok, "properties missing or wrong type: %T", probe["properties"])
 
 	section, ok := props["section"].(map[string]any)
-	if !ok {
-		t.Fatalf("section property missing or wrong type: %T", props["section"])
-	}
+	require.Truef(t, ok, "section property missing or wrong type: %T", props["section"])
 
 	assert.Equal(t, "string", section["type"])
 	_, hasEnum := section["enum"]
@@ -140,19 +132,13 @@ func TestUpdateSkillTool_SectionIsEnum(t *testing.T) {
 	probe := paramsJSON(t, tool.Function.Parameters)
 
 	props, ok := probe["properties"].(map[string]any)
-	if !ok {
-		t.Fatalf("properties missing or wrong type: %T", probe["properties"])
-	}
+	require.Truef(t, ok, "properties missing or wrong type: %T", probe["properties"])
 
 	section, ok := props["section"].(map[string]any)
-	if !ok {
-		t.Fatalf("section property missing or wrong type: %T", props["section"])
-	}
+	require.Truef(t, ok, "section property missing or wrong type: %T", props["section"])
 
 	enum, ok := section["enum"].([]any)
-	if !ok {
-		t.Fatalf("enum missing or wrong type: %T", section["enum"])
-	}
+	require.Truef(t, ok, "enum missing or wrong type: %T", section["enum"])
 	// 9 fixed sections (Ранг, Оружие, Базовые способности,
 	// Фундаментальные стихии, Особые проявления,
 	// Универсальные навыки, Ограничения, Глаза, Доспех).
@@ -166,19 +152,13 @@ func TestUpdateMemoryTool_SectionIsEnum(t *testing.T) {
 	probe := paramsJSON(t, tool.Function.Parameters)
 
 	props, ok := probe["properties"].(map[string]any)
-	if !ok {
-		t.Fatalf("properties missing or wrong type: %T", probe["properties"])
-	}
+	require.Truef(t, ok, "properties missing or wrong type: %T", probe["properties"])
 
 	section, ok := props["section"].(map[string]any)
-	if !ok {
-		t.Fatalf("section property missing or wrong type: %T", props["section"])
-	}
+	require.Truef(t, ok, "section property missing or wrong type: %T", props["section"])
 
 	enum, ok := section["enum"].([]any)
-	if !ok {
-		t.Fatalf("enum missing or wrong type: %T", section["enum"])
-	}
+	require.Truef(t, ok, "enum missing or wrong type: %T", section["enum"])
 
 	assert.ElementsMatch(t, []any{
 		"Яркие моменты", "Факты о мире", "Обещания и цели", "Важные люди",
@@ -191,19 +171,13 @@ func TestUpdateInventoryTool_TypeIsEnum(t *testing.T) {
 	probe := paramsJSON(t, tool.Function.Parameters)
 
 	props, ok := probe["properties"].(map[string]any)
-	if !ok {
-		t.Fatalf("properties missing or wrong type: %T", probe["properties"])
-	}
+	require.Truef(t, ok, "properties missing or wrong type: %T", probe["properties"])
 
 	typ, ok := props["type"].(map[string]any)
-	if !ok {
-		t.Fatalf("type property missing or wrong type: %T", props["type"])
-	}
+	require.Truef(t, ok, "type property missing or wrong type: %T", props["type"])
 
 	enum, ok := typ["enum"].([]any)
-	if !ok {
-		t.Fatalf("enum missing or wrong type: %T", typ["enum"])
-	}
+	require.Truef(t, ok, "enum missing or wrong type: %T", typ["enum"])
 
 	assert.ElementsMatch(t, []any{
 		"weapon", "armor", "accessory", "consumable",
@@ -217,9 +191,7 @@ func TestRemoveInventoryItemTool_HasName(t *testing.T) {
 	probe := paramsJSON(t, tool.Function.Parameters)
 
 	required, ok := probe["required"].([]any)
-	if !ok {
-		t.Fatalf("required missing or wrong type: %T", probe["required"])
-	}
+	require.Truef(t, ok, "required missing or wrong type: %T", probe["required"])
 
 	assert.Contains(t, required, "name")
 }

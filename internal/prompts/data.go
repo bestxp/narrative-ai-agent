@@ -82,12 +82,7 @@ type PromptData struct {
 	Character  CharacterData
 	World      WorldData
 	NPCProfile *NPCProfileData
-	// LegacyNPC carries the legacy tools.NPCProfile
-	// fields (free-text scalars) for the
-	// npc_profile_legacy.md.tmpl template. Exactly one
-	// of NPCProfile / LegacyNPC is populated per render.
-	LegacyNPC *LegacyNPCProfileData
-	State     *StateData
+	State      *StateData
 	// Summarizer carries the raw inputs for a summarizer
 	// user-message render. Populated only by the 7
 	// Summarizer.Summarize* methods; nil for all other
@@ -240,27 +235,6 @@ type NPCProfileData struct {
 	CurrentStatus     string
 	CriticalKnowledge []string
 	Nicknames         []string
-	LastUpdate        string
-}
-
-// LegacyNPCProfileData is the structured shape used by
-// npc_profile_legacy.md.tmpl. It mirrors the legacy
-// tools.NPCProfile struct (free-text scalar fields)
-// and is kept separate from NPCProfileData so the
-// modern npcprofile.Profile (with strict typed arrays)
-// is the canonical path. The legacy renderer stays
-// here for the few callers that still hand the
-// toolset a tools.NPCProfile directly (tests, the
-// /me command, and any external integration).
-type LegacyNPCProfileData struct {
-	DisplayName       string
-	Nicknames         []string
-	Temperament       string
-	Relations         string
-	Abilities         []string
-	PersonalMemory    string
-	CurrentStatus     string
-	CriticalKnowledge string
 	LastUpdate        string
 }
 

@@ -1,13 +1,14 @@
 package fs_test
 
 import (
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/bestxp/narrative-ai-agent/internal/storage/fs"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestNew_CreatesRootDir(t *testing.T) {
@@ -15,22 +16,14 @@ func TestNew_CreatesRootDir(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "data")
 
 	s, err := fs.New(dir)
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
+	require.NoError(t, err, "New")
 
-	if s.Root() == "" {
-		t.Fatal("Root() empty")
-	}
+	require.NotEmpty(t, s.Root(), "Root() must not be empty")
 
 	info, err := os.Stat(dir)
-	if err != nil {
-		t.Fatalf("root not created: %v", err)
-	}
+	require.NoError(t, err, "root not created")
 
-	if !info.IsDir() {
-		t.Fatal("root is not a directory")
-	}
+	require.True(t, info.IsDir(), "root must be a directory")
 }
 
 func TestReadWrite_RoundTrip(t *testing.T) {
@@ -38,18 +31,12 @@ func TestReadWrite_RoundTrip(t *testing.T) {
 	s, _ := fs.New(t.TempDir())
 
 	want := []byte("hello world")
-	if err := s.Write("a/b.txt", want); err != nil {
-		t.Fatalf("Write: %v", err)
-	}
+	require.NoError(t, s.Write("a/b.txt", want), "Write")
 
 	got, err := s.Read("a/b.txt")
-	if err != nil {
-		t.Fatalf("Read: %v", err)
-	}
+	require.NoError(t, err, "Read")
 
-	if string(got) != string(want) {
-		t.Errorf("got %q, want %q", got, want)
-	}
+	assert.Equal(t, string(want), string(got), "Read returned different bytes than written")
 }
 
 func TestRead_Missing(t *testing.T) {
@@ -57,13 +44,8 @@ func TestRead_Missing(t *testing.T) {
 	s, _ := fs.New(t.TempDir())
 
 	got, err := s.Read("does/not/exist.txt")
-	if err != nil {
-		t.Fatalf("missing Read should not error: %v", err)
-	}
-
-	if got != nil {
-		t.Errorf("missing Read should return nil bytes, got %q", got)
-	}
+	require.NoError(t, err, "missing Read should not error")
+	assert.Empty(t, got, "missing Read should return nil bytes")
 }
 
 func TestExists(t *testing.T) {
@@ -71,106 +53,62 @@ func TestExists(t *testing.T) {
 	s, _ := fs.New(t.TempDir())
 
 	ok, err := s.Exists("nonexistent")
-	if err != nil {
-		t.Fatalf("Exists (missing): %v", err)
-	}
+	require.NoError(t, err, "Exists (missing)")
+	require.False(t, ok, "Exists returned true for missing key")
 
-	if ok {
-		t.Error("Exists returned true for missing key")
-	}
-
-	if err := s.Write("here.txt", []byte("x")); err != nil {
-		t.Fatalf("Write: %v", err)
-	}
+	require.NoError(t, s.Write("here.txt", []byte("x")), "Write")
 
 	ok, err = s.Exists("here.txt")
-	if err != nil {
-		t.Fatalf("Exists (present): %v", err)
-	}
-
-	if !ok {
-		t.Error("Exists returned false for present key")
-	}
+	require.NoError(t, err, "Exists (present)")
+	require.True(t, ok, "Exists returned false for present key")
 }
 
 func TestWrite_Overwrites(t *testing.T) {
 	t.Parallel()
 
 	s, _ := fs.New(t.TempDir())
-	if err := s.Write("f.txt", []byte("first")); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := s.Write("f.txt", []byte("second")); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, s.Write("f.txt", []byte("first")), "first write")
+	require.NoError(t, s.Write("f.txt", []byte("second")), "second write")
 
 	got, _ := s.Read("f.txt")
-	if string(got) != "second" {
-		t.Errorf("expected overwrite, got %q", got)
-	}
+	assert.Equal(t, "second", string(got), "expected overwrite")
 }
 
 func TestWrite_AtomicViaTmpRename(t *testing.T) {
 	t.Parallel()
 
 	s, _ := fs.New(t.TempDir())
-	if err := s.Write("a.txt", []byte("v1")); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, s.Write("a.txt", []byte("v1")), "Write")
 	// During a successful Write there must not be a
 	// leftover .tmp file.
-	if _, err := os.Stat(filepath.Join(s.Root(), "a.txt.tmp")); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("expected no .tmp file after Write, got err=%v", err)
-	}
+	_, err := os.Stat(filepath.Join(s.Root(), "a.txt.tmp"))
+	assert.ErrorIs(t, err, os.ErrNotExist, "expected no .tmp file after Write")
 }
 
 func TestListChildren(t *testing.T) {
 	t.Parallel()
 
 	s, _ := fs.New(t.TempDir())
-	if err := s.Write("d/a.txt", []byte("x")); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := s.Write("d/b.txt", []byte("y")); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := s.Write("d/sub/c.txt", []byte("z")); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, s.Write("d/a.txt", []byte("x")), "write a.txt")
+	require.NoError(t, s.Write("d/b.txt", []byte("y")), "write b.txt")
+	require.NoError(t, s.Write("d/sub/c.txt", []byte("z")), "write sub/c.txt")
 
 	got, err := s.ListChildren("d")
-	if err != nil {
-		t.Fatalf("ListChildren: %v", err)
-	}
+	require.NoError(t, err, "ListChildren")
 
 	want := map[string]bool{"a.txt": false, "b.txt": false, "sub": true}
-	if len(got) != len(want) {
-		t.Errorf("expected %d entries, got %d (%v)", len(want), len(got), got)
-	}
+	require.Len(t, got, len(want), "expected %d entries, got %d (%v)", len(want), len(got), got)
 
 	for _, name := range got {
 		isDir, ok := want[name]
-		if !ok {
-			t.Errorf("unexpected entry: %q", name)
-
-			continue
-		}
+		assert.True(t, ok, "unexpected entry: %q", name)
 
 		full := filepath.Join(s.Root(), "d", name)
 
 		info, err := os.Stat(full)
-		if err != nil {
-			t.Errorf("stat %q: %v", name, err)
+		require.NoError(t, err, "stat %q", name)
 
-			continue
-		}
-
-		if info.IsDir() != isDir {
-			t.Errorf("entry %q: expected isDir=%v, got %v", name, isDir, info.IsDir())
-		}
+		assert.Equal(t, isDir, info.IsDir(), "entry %q: isDir", name)
 	}
 }
 
@@ -179,30 +117,17 @@ func TestListChildren_MissingDir(t *testing.T) {
 	s, _ := fs.New(t.TempDir())
 
 	got, err := s.ListChildren("does/not/exist")
-	if err != nil {
-		t.Fatalf("missing dir ListChildren should not error: %v", err)
-	}
-
-	if got != nil {
-		t.Errorf("missing dir should return nil entries, got %v", got)
-	}
+	require.NoError(t, err, "missing dir ListChildren should not error")
+	assert.Empty(t, got, "missing dir should return nil entries")
 }
 
 func TestEnsureDir_Idempotent(t *testing.T) {
 	t.Parallel()
 
 	s, _ := fs.New(t.TempDir())
-	if err := s.EnsureDir("a/b/c.txt"); err != nil {
-		t.Fatalf("EnsureDir: %v", err)
-	}
-
-	if err := s.EnsureDir("a/b/c.txt"); err != nil {
-		t.Fatalf("EnsureDir second call: %v", err)
-	}
-
-	if err := s.Write("a/b/c.txt", []byte("hi")); err != nil {
-		t.Fatalf("Write after EnsureDir: %v", err)
-	}
+	require.NoError(t, s.EnsureDir("a/b/c.txt"), "EnsureDir")
+	require.NoError(t, s.EnsureDir("a/b/c.txt"), "EnsureDir second call")
+	require.NoError(t, s.Write("a/b/c.txt", []byte("hi")), "Write after EnsureDir")
 }
 
 func TestStripIndexPollutionBytes(t *testing.T) {
@@ -223,9 +148,7 @@ func TestStripIndexPollutionBytes(t *testing.T) {
 			t.Parallel()
 
 			got := string(fs.StripIndexPollutionBytes([]byte(c.in)))
-			if got != c.want {
-				t.Errorf("got %q, want %q", got, c.want)
-			}
+			assert.Equal(t, c.want, got, "StripIndexPollutionBytes(%q)", c.in)
 		})
 	}
 }
@@ -236,28 +159,19 @@ func TestJoin(t *testing.T) {
 	got := s.Join("worlds/naruto/chronicle.yaml")
 
 	want := filepath.Join(s.Root(), "worlds/naruto/chronicle.yaml")
-	if got != want {
-		t.Errorf("Join: got %q, want %q", got, want)
-	}
+	assert.Equal(t, want, got, "Join")
 }
 
 func TestIsDirKey(t *testing.T) {
 	t.Parallel()
 
-	if fs.IsDirKey("worlds/naruto/") != true {
-		t.Error("trailing slash should be a dir key")
-	}
-
-	if fs.IsDirKey("worlds/naruto/chronicle.yaml") != false {
-		t.Error("non-trailing slash should not be a dir key")
-	}
+	assert.True(t, fs.IsDirKey("worlds/naruto/"), "trailing slash should be a dir key")
+	assert.False(t, fs.IsDirKey("worlds/naruto/chronicle.yaml"), "non-trailing slash should not be a dir key")
 }
 
 func TestRoot_Absolute(t *testing.T) {
 	t.Parallel()
 
 	s, _ := fs.New(t.TempDir())
-	if !strings.HasPrefix(s.Root(), "/") {
-		t.Errorf("Root() should be absolute, got %q", s.Root())
-	}
+	assert.True(t, strings.HasPrefix(s.Root(), "/"), "Root() should be absolute, got %q", s.Root())
 }

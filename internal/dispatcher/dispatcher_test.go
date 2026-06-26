@@ -44,7 +44,9 @@ func initRepo(t *testing.T) string {
 	return dir
 }
 
-func newCfg(_ *testing.T, workdir string) *config.Config {
+func newCfg(t *testing.T, workdir string) *config.Config {
+	t.Helper()
+
 	return &config.Config{
 		Messaging: config.MessagingConfig{
 			Telegram: config.TelegramConfig{

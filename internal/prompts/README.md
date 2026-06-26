@@ -16,7 +16,6 @@ startup, not silently at runtime.
 | `world_state.md.tmpl` | user[0] — `[WORLD_STATE]` | `domain.BuildWorldStateMessage` on every turn |
 | `state.md.tmpl` | `worlds/<w>/state.md` body | `usecase/tools/files/state.go:UpdateState` |
 | `npc_profile.md.tmpl` | `characters/<dir>/<slug>.yaml` markdown view (canonical) | `npcprofile.Profile.BuildMarkdown` |
-| `npc_profile_legacy.md.tmpl` | legacy `tools.NPCProfile` markdown view | (kept for back-compat with tests) |
 | `compaction_in_place.md.tmpl` | in-place compaction prompt | `cmd/bot/main.go` once at startup |
 | `end_of_day.md.tmpl` | end-of-day protocol prompt | same |
 | `character_memory_maintain.md.tmpl` | defrag character memory | same |
@@ -43,7 +42,6 @@ type PromptData struct {
     Character  CharacterData
     World      WorldData
     NPCProfile *NPCProfileData    // NPC files only
-    LegacyNPC  *LegacyNPCProfileData // legacy NPC struct only
     State      *StateData         // state.md only
 }
 ```

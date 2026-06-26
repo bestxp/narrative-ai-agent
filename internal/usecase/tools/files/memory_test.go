@@ -224,9 +224,7 @@ func appendDay(t *testing.T, m *files.Memory, day int, text string) error {
 		return fmt.Errorf("appendDay: Chronicle.Load failed: %w", err)
 	}
 
-	if !c.AppendDay(day, text) {
-		t.Fatalf("appendDay: day %d already present", day)
-	}
+	require.Truef(t, c.AppendDay(day, text), "appendDay: day %d already present", day)
 
 	if err := m.Repos.Chronicle.Save(world, c); err != nil {
 		return fmt.Errorf("appendDay: Chronicle.Save failed: %w", err)

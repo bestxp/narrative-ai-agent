@@ -28,8 +28,8 @@ import (
 // actually need LLM assistance (MaintainNPCs,
 // MaintainLore, ChronicleCompressWindow,
 // MaintainCharacterMemory). Methods that only touch
-// local file data (AppendLore, AppendMemory) do NOT
-// take an LLM dependency.
+// local file data (AppendLore) do NOT take an LLM
+// dependency.
 type Memory struct {
 	Repos *api.Repositories
 	log   zerolog.Logger
@@ -69,22 +69,6 @@ func (m *Memory) AppendLore(world, header, bullet string) error {
 	}
 
 	m.log.Info().Str("world", world).Str("header", header).Msg("append_lore")
-
-	return nil
-}
-
-// AppendMemory is a no-op here — the legacy per-character
-// memory.md journal was retired in the h5 refactor.
-// Kept for interface compatibility; calls
-// CharacterMemoryRepository.Save with the current state
-// unchanged (a no-op write). Operators with active legacy
-// callers should migrate to update_character instead.
-func (m *Memory) AppendMemory(character, line string) error {
-	// Best-effort: read the existing memory, no-op. This
-	// keeps the interface stable without resurrecting the
-	// old markdown journal.
-	_, _ = m.Repos.Memory.Load(character)
-	m.log.Warn().Str("character", character).Str("line", line).Msg("append_memory is a no-op post-h5 refactor; use update_character")
 
 	return nil
 }

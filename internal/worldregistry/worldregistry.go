@@ -17,14 +17,8 @@
 // deterministic regardless of how the operator
 // chose to spell the file.
 //
-// Earlier revisions kept a `characters.md` fallback
-// for worlds where the operator had hand-edited a
-// markdown table. That fallback was removed: it
-// produced duplicate-NPC cases where one registry
-// listed a character that the other did not. The
-// registry is now characters.yaml and nothing else;
+// The canonical roster is characters.yaml —
 // create_npc is the only path that writes to it.
-//
 // If a name is not in the registry, Lookup returns
 // (slug="", ok=false) — the caller (UpdateNPC /
 // Load) is then expected to surface a "create_npc
@@ -84,11 +78,9 @@ type registryFile struct {
 
 // Load reads the registry for world from fs.
 //
-// Only characters.yaml is read. There is no
-// characters.md fallback: the canonical roster is
-// one file, owned by this package, and an empty
-// world returns an empty Registry (the first NPC
-// to be created will seed it).
+// The canonical roster is characters.yaml — an
+// empty world returns an empty Registry (the first
+// NPC to be created will seed it).
 func Load(fs interface {
 	ReadRaw(rel string) (string, error)
 	WriteRawAtomic(rel, body string) error

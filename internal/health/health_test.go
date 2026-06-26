@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/bestxp/narrative-ai-agent/internal/health"
+	"github.com/stretchr/testify/require"
 )
 
 // fakeReporter satisfies Reporter with a configurable snapshot.
@@ -40,24 +41,18 @@ func TestLiveAlwaysOK(t *testing.T) {
 	t.Parallel()
 
 	s := health.New(":0", nil)
-	if err := s.Start(); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
+	require.NoError(t, s.Start(), "Start")
 
 	defer func() { _ = s.Shutdown(context.Background()) }()
 
 	url := "http://" + s.Addr() + "/healthz"
 
 	resp, err := httpGetCtx(t.Context(), url)
-	if err != nil {
-		t.Fatalf("GET /healthz: %v", err)
-	}
+	require.NoError(t, err, "GET /healthz")
 
 	defer func() { _ = resp.Body.Close() }()
 
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status: %d", resp.StatusCode)
-	}
+	require.Equal(t, http.StatusOK, resp.StatusCode)
 }
 
 func TestReadyzRequiresConnected(t *testing.T) {
@@ -66,9 +61,7 @@ func TestReadyzRequiresConnected(t *testing.T) {
 	r := &fakeReporter{}
 
 	s := health.New(":0", r)
-	if err := s.Start(); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
+	require.NoError(t, s.Start(), "Start")
 
 	defer func() { _ = s.Shutdown(context.Background()) }()
 
@@ -80,9 +73,7 @@ func TestReadyzRequiresConnected(t *testing.T) {
 	})
 
 	resp, _ := httpGetCtx(t.Context(), "http://"+s.Addr()+"/readyz")
-	if resp.StatusCode != http.StatusServiceUnavailable {
-		t.Fatalf("expected 503, got %d", resp.StatusCode)
-	}
+	require.Equal(t, http.StatusServiceUnavailable, resp.StatusCode, "expected 503")
 
 	_ = resp.Body.Close()
 
@@ -92,18 +83,14 @@ func TestReadyzRequiresConnected(t *testing.T) {
 	})
 
 	resp, _ = httpGetCtx(t.Context(), "http://"+s.Addr()+"/readyz")
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200, got %d", resp.StatusCode)
-	}
+	require.Equal(t, http.StatusOK, resp.StatusCode, "expected 200")
 
 	defer func() { _ = resp.Body.Close() }()
 
 	var body map[string]any
 
 	_ = json.NewDecoder(resp.Body).Decode(&body)
-	if body["status"] != "ready" {
-		t.Fatalf("body[status] = %v, want ready", body["status"])
-	}
+	require.Equal(t, "ready", body["status"], "body[status]")
 }
 
 func TestHealthEndpointAlwaysReturnsJSON(t *testing.T) {
@@ -112,9 +99,7 @@ func TestHealthEndpointAlwaysReturnsJSON(t *testing.T) {
 	r := &fakeReporter{}
 
 	s := health.New(":0", r)
-	if err := s.Start(); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
+	require.NoError(t, s.Start(), "Start")
 
 	defer func() { _ = s.Shutdown(context.Background()) }()
 
@@ -122,53 +107,41 @@ func TestHealthEndpointAlwaysReturnsJSON(t *testing.T) {
 	r.set([]health.Report{{Name: "telegram", State: health.StatusConnected}})
 
 	resp, err := httpGetCtx(t.Context(), "http://"+s.Addr()+"/health")
-	if err != nil {
-		t.Fatalf("GET /health: %v", err)
-	}
+	require.NoError(t, err, "GET /health")
 
 	defer func() { _ = resp.Body.Close() }()
 
-	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
-		t.Fatalf("content-type = %q, want application/json", ct)
-	}
+	ct := resp.Header.Get("Content-Type")
+	require.True(t, strings.HasPrefix(ct, "application/json"), "content-type = %q, want application/json", ct)
 
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status: %d", resp.StatusCode)
-	}
+	require.Equal(t, http.StatusOK, resp.StatusCode)
 
 	var out map[string]any
 
 	_ = json.NewDecoder(resp.Body).Decode(&out)
-	if _, ok := out["clients"]; !ok {
-		t.Fatalf("missing clients in body: %v", out)
-	}
+	_, ok := out["clients"]
+	require.True(t, ok, "missing clients in body: %v", out)
 }
 
 func TestShutdownDrains(t *testing.T) {
 	t.Parallel()
 
 	s := health.New(":0", &fakeReporter{})
-	if err := s.Start(); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
+	require.NoError(t, s.Start(), "Start")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	if err := s.Shutdown(ctx); err != nil {
-		t.Fatalf("Shutdown: %v", err)
-	}
+	require.NoError(t, s.Shutdown(ctx), "Shutdown")
 
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://"+s.Addr()+"/healthz", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err == nil {
 		_ = resp.Body.Close()
 
-		t.Fatal("expected connection error after Shutdown, got success")
+		require.Fail(t, "expected connection error after Shutdown, got success")
 	}
 }
 

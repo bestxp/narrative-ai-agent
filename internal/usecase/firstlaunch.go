@@ -86,11 +86,11 @@ func (f *FirstLaunch) Launch(char CharacterSpec, world WorldSpec) error {
 //	memory.yaml    — what the GG remembers (fixed enum)
 //	inventory.yaml — what the GG has on them
 //
-// Legacy .md files are detected on first launch and
-// migrated through the LLM-driven path (with
-// charprofile.MigrateFromMarkdown as fallback).
-// Today the firstlaunch seed is plain YAML; the
-// migration is wired in tools/files/character.go.
+// The firstlaunch seed is plain YAML for the four
+// character files and the world-context blocks.
+// There is no runtime fallback for old data —
+// operators with legacy content run a one-shot
+// shell script outside the bot's runtime path.
 func (f *FirstLaunch) ensureStateExists(world string, day int, inFlight bool) error {
 	if f.repos == nil {
 		return nil
@@ -256,11 +256,7 @@ func (f *FirstLaunch) writeWorld(dir string, w WorldSpec) error {
 	}
 	// The NPC registry (characters.yaml) is NOT seeded
 	// here. It is created lazily on the first
-	// create_npc call via the worldregistry package —
-	// earlier revisions wrote an empty characters.md
-	// table on first launch which produced
-	// duplicate-NPC cases where one registry listed a
-	// character that the other did not.
+	// create_npc call via the worldregistry package.
 	return nil
 }
 

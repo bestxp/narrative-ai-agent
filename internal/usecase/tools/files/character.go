@@ -19,14 +19,12 @@ import (
 // inventory), the /me snapshot.
 //
 // The h5 refactor moved all character storage to
-// YAML (see planning/char_format.md). Legacy markdown
-// migration is gone — the bot ships with the YAML
-// format, and any operator who needs to import a
-// legacy .md file does it through a one-shot shell
-// script, NOT through the bot's runtime path. This
-// keeps the runtime clean of "fallback for old
-// data" branches and lets us evolve the YAML shape
-// freely.
+// YAML (see planning/char_format.md). The bot
+// ships with the YAML format and evolves the
+// on-disk shape freely — there is no runtime
+// fallback for old data. Operators migrating from
+// a legacy format run a one-shot shell script
+// outside the bot's runtime path.
 type Character struct {
 	Repos *api.Repositories
 	log   zerolog.Logger

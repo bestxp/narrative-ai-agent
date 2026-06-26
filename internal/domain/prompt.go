@@ -23,11 +23,11 @@ type CharacterContext struct {
 	// Display name (e.g. "Маркус"). Used as the section header
 	// in the system prompt.
 	Character string
-	// SOUL.md contents — who the character is.
+	// CharacterSOUL is the body of characters/<dir>/SOUL.yaml.
 	CharacterSOUL string
-	// SKILL.md contents — what the character can do.
+	// CharacterSKILL is the body of characters/<dir>/skill.yaml.
 	CharacterSKILL string
-	// memory.md contents — cross-multiverse memories.
+	// CharacterMemory is the body of characters/<dir>/memory.yaml.
 	CharacterMemory string
 	// CharacterSections lists `## <name>` headers currently
 	// present in the character's three files. Rendered into

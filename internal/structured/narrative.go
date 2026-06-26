@@ -35,8 +35,8 @@ type Narrative struct {
 }
 
 // ErrNotJSON is returned by Parse when the input is not
-// detectable as a JSON object. The GM uses this sentinel
-// to fall back to the legacy markdown parser without
+// detectable as a JSON object. The GM treats this as
+// "send the raw markdown to the player" without
 // logging a spurious warning.
 var ErrNotJSON = errors.New("structured: input is not a JSON object")
 

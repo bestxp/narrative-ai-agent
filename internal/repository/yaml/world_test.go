@@ -23,11 +23,8 @@ type testEnv struct {
 
 func newTestEnv(t *testing.T) *testEnv {
 	t.Helper()
-
 	s, err := fs.New(t.TempDir())
-	if err != nil {
-		t.Fatalf("fs.New: %v", err)
-	}
+	require.NoError(t, err)
 
 	return &testEnv{store: s}
 }

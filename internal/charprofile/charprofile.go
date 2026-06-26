@@ -17,9 +17,9 @@
 // YAML — BuildMarkdown / BuildHuman render the same
 // canonical block layout the legacy path used, so the
 // prompt and the player's eyes do not need to change.
-// Storage is hidden behind Load / Save / Append /
-// MigrateFromMarkdown helpers; the rest of the bot
-// only sees the typed values.
+// Storage is hidden behind Load / Save / Append
+// helpers; the rest of the bot only sees the typed
+// values.
 //
 // Four files live under characters/<dir>/:
 //
@@ -27,12 +27,6 @@
 //	skill.yaml     — what the GG can do
 //	memory.yaml    — what the GG remembers
 //	inventory.yaml — what the GG has on them
-//
-// The legacy free-form SOUL.md / SKILL.md / memory.md
-// are honoured on read: MigrateFromMarkdown parses
-// `## <section>` blocks into data[].values, falls
-// back to the deterministic parse if the LLM-driven
-// path is unavailable.
 package charprofile
 
 import (
@@ -129,10 +123,7 @@ type Soul struct {
 
 // Skill is the skill.yaml payload. The sections
 // are a fixed enum (see SkillFixedSections); the
-// model cannot invent new ones. Section "permanent
-// party" lives here for historical reasons
-// (extractPermanentParty in gm.go read it from the
-// old SKILL.md) — see the cross-world note below.
+// model cannot invent new ones.
 //
 // Cross-world note: the operator decided that
 // permanent party is a WORLD-scoped concern, not a

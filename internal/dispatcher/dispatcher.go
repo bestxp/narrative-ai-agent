@@ -343,10 +343,11 @@ func (d *Dispatcher) cmdStatus() (string, error) {
 	return fmt.Sprintf("Персонаж: %s\nМир: %s\n\n**world state**\n%s", sc.Character, sc.World, sc.State), nil
 }
 
-// cmdMe shows the active character's persistent files: SOUL.md,
-// SKILL.md, memory.md and the current state.md. Each section is
-// truncated to roughly the screen size so a Telegram reply stays
-// under 4096 chars even on heavily-developed characters.
+// cmdMe shows the active character's YAML files (SOUL.yaml,
+// skill.yaml, memory.yaml, inventory.yaml) and the current state.
+// Each section is truncated to roughly the screen size so a
+// Telegram reply stays under 4096 chars even on heavily-developed
+// characters.
 func (d *Dispatcher) cmdMe() (string, error) {
 	if d.tools == nil {
 		return "character_update не подключён.", nil

@@ -199,8 +199,7 @@ type Tool interface {
 	EndScene(world string, permanentParty []string) (*EndSceneResult, error)
 	RotatePlan(world string, events []string) error
 
-	// --- memory.md / lore.md / NPC condensation ---
-	AppendMemory(character, line string) error
+	// --- memory.yaml / lore.md / NPC condensation ---
 	AppendLore(world, header, bullet string) error
 	// MaintainNPCs walks the active world's NPC files
 	// and asks the LLM-driven summarizer to compact

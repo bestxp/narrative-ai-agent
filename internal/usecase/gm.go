@@ -704,7 +704,7 @@ func (g *GM) runConversation(ctx context.Context, chatID string, cb Callbacks) (
 	// are first compressed to a 200-400 token fact log and
 	// appended to state.md so the next system prompt still
 	// sees them. Without a summarizer we just drop (the
-	// facts live in state.md/chronicle.yaml/SOUL.md anyway,
+	// facts live in state.md/chronicle.yaml/SOUL.yaml anyway,
 	// and the operator sees a "🔄" notice all the same).
 	if g.Compaction.ContextWindow > 0 { //nolint:nestif // compaction logic requires nesting
 		ctxChars := len(g.staticPrompt)
@@ -3033,7 +3033,7 @@ func (g *GM) dispatchOneTool(ctx context.Context, tc llm.ToolCall) (string, stri
 		//      may pass as a list of names — for now we
 		//      accept it as a comma-separated string in
 		//      `permanent_party` or read it from
-		//      characters/<active>/SKILL.md as a
+		//      characters/<active>/skill.yaml as a
 		//      `## permanent_party` section);
 		//   2. reset the per-chat conversation so the
 		//      next turn starts with a clean dialogue;
@@ -3051,7 +3051,7 @@ func (g *GM) dispatchOneTool(ctx context.Context, tc llm.ToolCall) (string, stri
 		//   1. explicit tool arg: permanent_party (comma-
 		//      separated list of display names).
 		//   2. implicit: a "## permanent_party" section in
-		//      characters/<active>/SKILL.md. This lets the
+		//      characters/<active>/skill.yaml. This lets the
 		//      operator pin a default cast without the
 		//      model having to repeat it on every call.
 		var pp []string

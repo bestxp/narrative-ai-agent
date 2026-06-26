@@ -18,11 +18,10 @@ func npcProfileKey(world, slug string) string {
 // NPCProfileRepository. Each NPC has its own YAML file
 // under worlds/<w>/characters/<slug>.yaml.
 //
-// The NPC registry (worlds/<w>/characters.yaml) used
-// to live here as NPCRegistryYaml — the load path also
-// had a characters.md fallback. Both were removed:
-// characters.yaml is the only canonical roster and
-// is read/written through the worldregistry package.
+// The NPC roster (worlds/<w>/characters.yaml) lives
+// in the worldregistry package — it is the only
+// canonical roster and the read/write path goes
+// through Registry.Load / Registry.Save.
 type NPCProfileYaml struct {
 	store storage.Storage
 }
