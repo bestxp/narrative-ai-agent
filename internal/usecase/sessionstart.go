@@ -113,7 +113,7 @@ func (s *SessionStart) ensureRegistry() error {
 // must backfill. If chronicle is ahead of state, returns (false, true)
 // — caller must surface a hallucination warning to the player.
 func (s *SessionStart) checkSync(world, state string) (stateAhead, chronicleAhead bool) {
-	stateDay, stateOK := extractDayNumber(state)
+	stateDay, stateOK := dayHeaderRe(state)
 	memRaw, _ := s.fs.ReadRaw(s.fs.WorldChronicle(world))
 
 	var (
@@ -174,8 +174,4 @@ func extractDayHeaderRegex() func(string) (int, bool) {
 
 		return n, true
 	}
-}
-
-func extractDayNumber(s string) (int, bool) {
-	return dayHeaderRe(s)
 }

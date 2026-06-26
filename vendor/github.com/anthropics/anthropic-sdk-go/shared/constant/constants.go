@@ -66,6 +66,7 @@ type CodeExecution string                           // Always "code_execution"
 type CodeExecution20250522 string                   // Always "code_execution_20250522"
 type CodeExecution20250825 string                   // Always "code_execution_20250825"
 type CodeExecution20260120 string                   // Always "code_execution_20260120"
+type CodeExecution20260521 string                   // Always "code_execution_20260521"
 type CodeExecutionOutput string                     // Always "code_execution_output"
 type CodeExecutionResult string                     // Always "code_execution_result"
 type CodeExecutionToolResult string                 // Always "code_execution_tool_result"
@@ -98,6 +99,8 @@ type Error string                                   // Always "error"
 type Errored string                                 // Always "errored"
 type Event string                                   // Always "event"
 type Expired string                                 // Always "expired"
+type Fallback string                                // Always "fallback"
+type FallbackMessage string                         // Always "fallback_message"
 type File string                                    // Always "file"
 type Image string                                   // Always "image"
 type InputJSONDelta string                          // Always "input_json_delta"
@@ -152,6 +155,7 @@ type SessionStatusTerminated string                 // Always "session.status_te
 type SessionThreadCreated string                    // Always "session.thread_created"
 type SessionThreadIdled string                      // Always "session.thread_idled"
 type SessionThreadTerminated string                 // Always "session.thread_terminated"
+type SessionUpdated string                          // Always "session.updated"
 type SignatureDelta string                          // Always "signature_delta"
 type StrReplace string                              // Always "str_replace"
 type StrReplaceBasedEditTool string                 // Always "str_replace_based_edit_tool"
@@ -258,6 +262,7 @@ func (c CodeExecution) Default() CodeExecution                 { return "code_ex
 func (c CodeExecution20250522) Default() CodeExecution20250522 { return "code_execution_20250522" }
 func (c CodeExecution20250825) Default() CodeExecution20250825 { return "code_execution_20250825" }
 func (c CodeExecution20260120) Default() CodeExecution20260120 { return "code_execution_20260120" }
+func (c CodeExecution20260521) Default() CodeExecution20260521 { return "code_execution_20260521" }
 func (c CodeExecutionOutput) Default() CodeExecutionOutput     { return "code_execution_output" }
 func (c CodeExecutionResult) Default() CodeExecutionResult     { return "code_execution_result" }
 func (c CodeExecutionToolResult) Default() CodeExecutionToolResult {
@@ -296,6 +301,8 @@ func (c Error) Default() Error                             { return "error" }
 func (c Errored) Default() Errored                         { return "errored" }
 func (c Event) Default() Event                             { return "event" }
 func (c Expired) Default() Expired                         { return "expired" }
+func (c Fallback) Default() Fallback                       { return "fallback" }
+func (c FallbackMessage) Default() FallbackMessage         { return "fallback_message" }
 func (c File) Default() File                               { return "file" }
 func (c Image) Default() Image                             { return "image" }
 func (c InputJSONDelta) Default() InputJSONDelta           { return "input_json_delta" }
@@ -362,6 +369,7 @@ func (c SessionThreadIdled) Default() SessionThreadIdled     { return "session.t
 func (c SessionThreadTerminated) Default() SessionThreadTerminated {
 	return "session.thread_terminated"
 }
+func (c SessionUpdated) Default() SessionUpdated { return "session.updated" }
 func (c SignatureDelta) Default() SignatureDelta { return "signature_delta" }
 func (c StrReplace) Default() StrReplace         { return "str_replace" }
 func (c StrReplaceBasedEditTool) Default() StrReplaceBasedEditTool {
@@ -486,6 +494,7 @@ func (c CodeExecution) MarshalJSON() ([]byte, error)                       { ret
 func (c CodeExecution20250522) MarshalJSON() ([]byte, error)               { return marshalString(c) }
 func (c CodeExecution20250825) MarshalJSON() ([]byte, error)               { return marshalString(c) }
 func (c CodeExecution20260120) MarshalJSON() ([]byte, error)               { return marshalString(c) }
+func (c CodeExecution20260521) MarshalJSON() ([]byte, error)               { return marshalString(c) }
 func (c CodeExecutionOutput) MarshalJSON() ([]byte, error)                 { return marshalString(c) }
 func (c CodeExecutionResult) MarshalJSON() ([]byte, error)                 { return marshalString(c) }
 func (c CodeExecutionToolResult) MarshalJSON() ([]byte, error)             { return marshalString(c) }
@@ -518,6 +527,8 @@ func (c Error) MarshalJSON() ([]byte, error)                               { ret
 func (c Errored) MarshalJSON() ([]byte, error)                             { return marshalString(c) }
 func (c Event) MarshalJSON() ([]byte, error)                               { return marshalString(c) }
 func (c Expired) MarshalJSON() ([]byte, error)                             { return marshalString(c) }
+func (c Fallback) MarshalJSON() ([]byte, error)                            { return marshalString(c) }
+func (c FallbackMessage) MarshalJSON() ([]byte, error)                     { return marshalString(c) }
 func (c File) MarshalJSON() ([]byte, error)                                { return marshalString(c) }
 func (c Image) MarshalJSON() ([]byte, error)                               { return marshalString(c) }
 func (c InputJSONDelta) MarshalJSON() ([]byte, error)                      { return marshalString(c) }
@@ -572,6 +583,7 @@ func (c SessionStatusTerminated) MarshalJSON() ([]byte, error)             { ret
 func (c SessionThreadCreated) MarshalJSON() ([]byte, error)                { return marshalString(c) }
 func (c SessionThreadIdled) MarshalJSON() ([]byte, error)                  { return marshalString(c) }
 func (c SessionThreadTerminated) MarshalJSON() ([]byte, error)             { return marshalString(c) }
+func (c SessionUpdated) MarshalJSON() ([]byte, error)                      { return marshalString(c) }
 func (c SignatureDelta) MarshalJSON() ([]byte, error)                      { return marshalString(c) }
 func (c StrReplace) MarshalJSON() ([]byte, error)                          { return marshalString(c) }
 func (c StrReplaceBasedEditTool) MarshalJSON() ([]byte, error)             { return marshalString(c) }

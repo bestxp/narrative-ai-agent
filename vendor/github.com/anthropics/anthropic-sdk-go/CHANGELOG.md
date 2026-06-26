@@ -1,5 +1,73 @@
 # Changelog
 
+## 1.52.0 (2026-06-24)
+
+Full Changelog: [v1.51.1...v1.52.0](https://github.com/anthropics/anthropic-sdk-go/compare/v1.51.1...v1.52.0)
+
+### Features
+
+* **client:** add support for system.message streaming events ([7bb296d](https://github.com/anthropics/anthropic-sdk-go/commit/7bb296db56de13140605495642cf72889f829ed8))
+
+
+### Chores
+
+* **api:** add support for new refusal category ([46f8625](https://github.com/anthropics/anthropic-sdk-go/commit/46f86259a94c1d43a21b3d44dd5eb40e9d4b3e13))
+* **api:** add support for sending User Profile ID in request headers ([5cab486](https://github.com/anthropics/anthropic-sdk-go/commit/5cab486af669c06349d03bb66f0214557422561c))
+
+## 1.51.1 (2026-06-18)
+
+Full Changelog: [v1.51.0...v1.51.1](https://github.com/anthropics/anthropic-sdk-go/compare/v1.51.0...v1.51.1)
+
+### Bug Fixes
+
+* **helpers:** single source for x-stainless-helper, append semantics, and tag the fallback middleware ([#88](https://github.com/anthropics/anthropic-sdk-go/issues/88)) ([ebbdb7d](https://github.com/anthropics/anthropic-sdk-go/commit/ebbdb7dea37b15cdd055c53806a51e06422847fe))
+
+## 1.51.0 (2026-06-18)
+
+Full Changelog: [v1.50.2...v1.51.0](https://github.com/anthropics/anthropic-sdk-go/compare/v1.50.2...v1.51.0)
+
+### Features
+
+* **api:** add support for new code_execution_20260120 tool ([f54a4a8](https://github.com/anthropics/anthropic-sdk-go/commit/f54a4a8e6f9c271b2b31e0cf504cdab8005f28c4))
+
+## 1.50.2 (2026-06-15)
+
+Full Changelog: [v1.50.1...v1.50.2](https://github.com/anthropics/anthropic-sdk-go/compare/v1.50.1...v1.50.2)
+
+### Chores
+
+* **api:** remove retired models from API and SDKs ([11f5c82](https://github.com/anthropics/anthropic-sdk-go/commit/11f5c8239cb11351c5f42aac6bb12c0dc8fdccd2))
+
+## 1.50.1 (2026-06-09)
+
+Full Changelog: [v1.50.0...v1.50.1](https://github.com/anthropics/anthropic-sdk-go/compare/v1.50.0...v1.50.1)
+
+### Bug Fixes
+
+* **api:** add `frontier_llm` refusal category ([9ebbaf7](https://github.com/anthropics/anthropic-sdk-go/commit/9ebbaf76a334618a062f787bd4937e3370cb117c))
+
+## 1.50.0 (2026-06-09)
+
+Full Changelog: [v1.49.0...v1.50.0](https://github.com/anthropics/anthropic-sdk-go/compare/v1.49.0...v1.50.0)
+
+### Features
+
+* **api:** add support for Managed Agents deployments and environment variable credentials ([f72e1d8](https://github.com/anthropics/anthropic-sdk-go/commit/f72e1d84cf3b6d2319c083d8ae814dcae236f217))
+
+## 1.49.0 (2026-06-09)
+
+Full Changelog: [v1.48.0...v1.49.0](https://github.com/anthropics/anthropic-sdk-go/compare/v1.48.0...v1.49.0)
+
+### Features
+
+* **api:** add support for claude-mythos-5 and claude-fable-5, with support for server-side fallbacks on refusal ([782f223](https://github.com/anthropics/anthropic-sdk-go/commit/782f2239803f6c0b65a9b23a7efe7e12059ac8a0))
+* **client:** adds client-side fallbacks middleware for API providers that do not support server-side fallbacks ([782f223](https://github.com/anthropics/anthropic-sdk-go/commit/782f2239803f6c0b65a9b23a7efe7e12059ac8a0))
+
+
+### Bug Fixes
+
+* 3p middleware ordering ([#38](https://github.com/anthropics/anthropic-sdk-go/issues/38)) ([8f47086](https://github.com/anthropics/anthropic-sdk-go/commit/8f47086cb6094c7c6ba06a7b9d94d56ead5ba295))
+
 ## 1.48.0 (2026-06-06)
 
 Full Changelog: [v1.47.0...v1.48.0](https://github.com/anthropics/anthropic-sdk-go/compare/v1.47.0...v1.48.0)

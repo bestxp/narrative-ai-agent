@@ -169,7 +169,7 @@ type SummaryResult struct {
 // On any error the function returns a zero SummaryResult and
 // the err — the caller (GM) logs and falls back to drop-only.
 func (s *Summarizer) SummarizeOldTurns(ctx context.Context, messages []llm.Message) (SummaryResult, error) {
-	if !s.IsConfigured() {
+	if s == nil || !s.IsConfigured() {
 		return SummaryResult{Source: "skipped"}, nil
 	}
 

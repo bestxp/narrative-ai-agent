@@ -14,7 +14,8 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: healthprobe <url> [timeout-seconds]")
+		_, _ = fmt.Fprintln(os.Stderr, "usage: healthprobe <url> [timeout-seconds]")
+
 		os.Exit(2)
 	}
 
@@ -39,23 +40,27 @@ func main() {
 	// always an http(s) endpoint pointing at the local service. We
 	// still validate scheme to fail loudly on misconfiguration rather
 	// than silently leaking SSRF-able inputs.
+
 	u, err := url.Parse(os.Args[1])
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		fmt.Fprintln(os.Stderr, "healthprobe: invalid url:", os.Args[1])
+		_, _ = fmt.Fprintln(os.Stderr, "healthprobe: invalid url:", os.Args[1])
+
 		os.Exit(1)
 	}
 
-	//nolint:gosec // request URL is operator-supplied healthcheck target with validated scheme/host
-	// request URL is operator-supplied healthcheck target; scheme/host are validated above before the request is built.
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	// request URL is operator-supplied healthcheck target; scheme/host
+	// are validated above before the request is built.
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil) //nolint:gosec // operator URL has validated scheme/host.
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "healthprobe: request:", err)
+		_, _ = fmt.Fprintln(os.Stderr, "healthprobe: request:", err)
+
 		os.Exit(1)
 	}
 
-	r, err := c.Do(req) //nolint:gosec // request URL is operator-supplied healthcheck target with validated scheme/host
+	r, err := c.Do(req) //nolint:gosec // operator URL has validated scheme/host.
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "healthprobe: get:", err)
+		_, _ = fmt.Fprintln(os.Stderr, "healthprobe: get:", err)
+
 		os.Exit(1)
 	}
 
@@ -63,10 +68,11 @@ func main() {
 		defer func() { _ = r.Body.Close() }()
 
 		if r.StatusCode < 200 || r.StatusCode >= 400 {
-			fmt.Fprintf(os.Stderr, "healthprobe: status %d\n", r.StatusCode)
+			_, _ = fmt.Fprintf(os.Stderr, "healthprobe: status %d\n", r.StatusCode)
+
 			os.Exit(1)
 		}
 
-		fmt.Printf("ok %d\n", r.StatusCode) //nolint:forbidigo // healthprobe stdout contract: "ok <code>"
+		_, _ = fmt.Printf("ok %d\n", r.StatusCode) //nolint:forbidigo // healthprobe stdout contract: "ok <code>"
 	}()
 }

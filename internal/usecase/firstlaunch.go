@@ -44,10 +44,7 @@ type WorldSpec struct {
 	Canon       string // для известного — справочник, для выдуманного — сценарий
 }
 
-var (
-	ErrAlreadyLaunched = errors.New("first launch: game-data/info.yaml already exists")
-	ErrInvalidSpec     = errors.New("first launch: invalid character or world name")
-)
+var ErrAlreadyLaunched = errors.New("first launch: game-data/info.yaml already exists")
 
 func (f *FirstLaunch) Launch(char CharacterSpec, world WorldSpec) error {
 	if f.fs.Exists(storage.InfoFile) {

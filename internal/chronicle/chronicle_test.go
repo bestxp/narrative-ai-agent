@@ -376,14 +376,3 @@ func TestSaveLoad_EmptyChronicle(t *testing.T) {
 		t.Errorf("expected 0 days, got %d", len(out.Days))
 	}
 }
-
-func TestWindowSize_MatchesLimits(t *testing.T) {
-	t.Parallel()
-	// Sanity: the local alias must agree with the
-	// single source of truth in internal/limits. If
-	// they drift, the bot's compression rule silently
-	// changes and operators see no warning.
-	if chronicle.WindowSize != 30 {
-		t.Errorf("chronicle.WindowSize = %d, want 30 (limits.MemoriseWindowDays)", chronicle.WindowSize)
-	}
-}

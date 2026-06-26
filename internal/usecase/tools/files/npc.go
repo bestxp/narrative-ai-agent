@@ -49,13 +49,9 @@ var ErrNPCExists = errors.New("npc file already exists")
 // is called for an NPC that has no file yet.
 var ErrNPCNotFound = errors.New("npc: file not found; call create_npc first")
 
-// SanitizedName is a slug-friendly version of display
-// name — latin-only, lowercase, hyphens for spaces.
+// sanitizeName converts a display name into a slug-friendly
+// filename: latin-only, lowercase, hyphens for spaces.
 // Used as the on-disk filename (without .yaml).
-func SanitizedName(display string) string {
-	return sanitizeName(display)
-}
-
 func sanitizeName(s string) string {
 	s = strings.ToLower(strings.TrimSpace(s))
 	s = strings.ReplaceAll(s, " ", "-")

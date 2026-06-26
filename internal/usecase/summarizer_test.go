@@ -19,6 +19,8 @@ import (
 func TestSummarizer_NotConfigured(t *testing.T) {
 	t.Parallel()
 	// nil summarizer is the "no summary role wired" case.
+	// SummarizeOldTurns guards on s == nil before any field access,
+	// so the receiver can be nil safely.
 	var s *Summarizer
 	assert.False(t, s.IsConfigured())
 	res, err := s.SummarizeOldTurns(context.Background(), nil)

@@ -40,12 +40,6 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// ErrNotFound is returned by Lookup when the
-// display_name is not in the registry. The caller
-// should treat this as a soft signal — the NPC
-// might just not have been introduced yet.
-var ErrNotFound = errors.New("worldregistry: npc not in registry")
-
 // ErrEmpty is returned by LoadFromYAML when the world's
 // characters.yaml is missing or empty. An empty Registry is
 // still returned so callers can treat "world with no NPCs yet"

@@ -204,8 +204,3 @@ func IsRepo(workdir string) bool {
 
 	return cmd.Run() == nil
 }
-
-// ErrNetwork is returned by SyncRebase when the underlying git process
-// fails for connectivity reasons. The caller is expected to surface the
-// failure honestly to the player.
-var ErrNetwork = errors.New("git network operation failed")

@@ -43,9 +43,6 @@ type CharacterSnapshot = tools.CharacterSnapshot
 // importing the files package directly.
 type FileToolset = files.Toolset
 
-// FileBackend identifies the file-backed implementation.
-const FileBackend = "files"
-
 // NewFileToolset is the canonical entry point for the
 // file-backed toolset. main.go calls this once and hands
 // the result to gm and dispatcher.
@@ -75,15 +72,6 @@ func NewFileToolset(fs *storage.FileStore, repos *api.Repositories, log zerolog.
 // around the file backend's snapshot formatter.
 func FormatCharacterSnapshot(s *CharacterSnapshot, maxPerSection int) string {
 	return files.FormatSnapshot(s, maxPerSection)
-}
-
-// NPCCompactLineThreshold is the line count at which
-// /maintenance triggers a per-NPC compact.
-const NPCCompactLineThreshold = files.NPCCompactLineThreshold
-
-// ExtractDayNumber parses "День N" out of a state.md body.
-func ExtractDayNumber(body string) (int, bool) {
-	return files.ExtractDayNumber(body)
 }
 
 // AppendHistoryFunc is the function type summarizer.go and

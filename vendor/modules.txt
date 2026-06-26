@@ -6,7 +6,7 @@ github.com/SevereCloud/vksdk/v3/events
 github.com/SevereCloud/vksdk/v3/internal
 github.com/SevereCloud/vksdk/v3/longpoll-bot
 github.com/SevereCloud/vksdk/v3/object
-# github.com/anthropics/anthropic-sdk-go v1.48.0
+# github.com/anthropics/anthropic-sdk-go v1.52.0
 ## explicit; go 1.24
 github.com/anthropics/anthropic-sdk-go
 github.com/anthropics/anthropic-sdk-go/config
@@ -21,6 +21,7 @@ github.com/anthropics/anthropic-sdk-go/internal/encoding/json/sentinel
 github.com/anthropics/anthropic-sdk-go/internal/encoding/json/shims
 github.com/anthropics/anthropic-sdk-go/internal/paramutil
 github.com/anthropics/anthropic-sdk-go/internal/requestconfig
+github.com/anthropics/anthropic-sdk-go/internal/stainlessheader
 github.com/anthropics/anthropic-sdk-go/option
 github.com/anthropics/anthropic-sdk-go/packages/jsonl
 github.com/anthropics/anthropic-sdk-go/packages/pagination
@@ -32,7 +33,7 @@ github.com/anthropics/anthropic-sdk-go/shared/constant
 # github.com/bahlo/generic-list-go v0.2.0
 ## explicit; go 1.18
 github.com/bahlo/generic-list-go
-# github.com/buger/jsonparser v1.1.2
+# github.com/buger/jsonparser v1.2.0
 ## explicit; go 1.13
 github.com/buger/jsonparser
 # github.com/davecgh/go-spew v1.1.1
@@ -41,7 +42,7 @@ github.com/davecgh/go-spew/spew
 # github.com/eekstunt/telegramify-markdown-go v0.2.0
 ## explicit; go 1.22
 github.com/eekstunt/telegramify-markdown-go
-# github.com/go-json-experiment/json v0.0.0-20260601182631-00ed12fed2a6
+# github.com/go-json-experiment/json v0.0.0-20260623181947-01eb4420fa68
 ## explicit; go 1.26
 github.com/go-json-experiment/json
 github.com/go-json-experiment/json/internal
@@ -58,11 +59,11 @@ github.com/gorilla/websocket
 # github.com/invopop/jsonschema v0.14.0
 ## explicit; go 1.24
 github.com/invopop/jsonschema
-# github.com/kaptinlin/jsonrepair v0.4.6
-## explicit; go 1.26.3
+# github.com/kaptinlin/jsonrepair v0.4.8
+## explicit; go 1.26.4
 github.com/kaptinlin/jsonrepair
-# github.com/klauspost/compress v1.18.4
-## explicit; go 1.23
+# github.com/klauspost/compress v1.18.6
+## explicit; go 1.24
 github.com/klauspost/compress
 github.com/klauspost/compress/fse
 github.com/klauspost/compress/huff0
@@ -71,13 +72,13 @@ github.com/klauspost/compress/internal/le
 github.com/klauspost/compress/internal/snapref
 github.com/klauspost/compress/zstd
 github.com/klauspost/compress/zstd/internal/xxhash
-# github.com/mattn/go-colorable v0.1.14
+# github.com/mattn/go-colorable v0.1.15
 ## explicit; go 1.18
 github.com/mattn/go-colorable
-# github.com/mattn/go-isatty v0.0.20
-## explicit; go 1.15
+# github.com/mattn/go-isatty v0.0.22
+## explicit; go 1.21
 github.com/mattn/go-isatty
-# github.com/openai/openai-go/v3 v3.39.0
+# github.com/openai/openai-go/v3 v3.41.0
 ## explicit; go 1.22
 github.com/openai/openai-go/v3
 github.com/openai/openai-go/v3/auth
@@ -156,17 +157,19 @@ github.com/yuin/goldmark/renderer
 github.com/yuin/goldmark/renderer/html
 github.com/yuin/goldmark/text
 github.com/yuin/goldmark/util
-# go.yaml.in/yaml/v4 v4.0.0-rc.2
+# go.yaml.in/yaml/v4 v4.0.0-rc.6
 ## explicit; go 1.18
 go.yaml.in/yaml/v4
-# golang.org/x/sync v0.20.0
+go.yaml.in/yaml/v4/internal/libyaml
+go.yaml.in/yaml/v4/plugin/limit
+# golang.org/x/sync v0.21.0
 ## explicit; go 1.25.0
 golang.org/x/sync/errgroup
 # golang.org/x/sys v0.46.0
 ## explicit; go 1.25.0
 golang.org/x/sys/unix
 golang.org/x/sys/windows
-# golang.org/x/text v0.35.0
+# golang.org/x/text v0.38.0
 ## explicit; go 1.25.0
 golang.org/x/text/encoding
 golang.org/x/text/encoding/charmap

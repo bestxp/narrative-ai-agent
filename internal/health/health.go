@@ -37,8 +37,6 @@ import (
 type Status string
 
 const (
-	StatusUnknown   Status = "unknown"
-	StatusStarting  Status = "starting"
 	StatusConnected Status = "connected"
 	StatusReconnect Status = "reconnecting"
 	StatusStopped   Status = "stopped"
@@ -133,7 +131,7 @@ func (s *Server) Start() error {
 			// We deliberately do not expose this error through
 			// a channel: the bot's main loop will see the
 			// process exit and restart the container.
-			fmt.Fprintf(os.Stderr, "health: serve: %v\n", err)
+			_, _ = fmt.Fprintf(os.Stderr, "health: serve: %v\n", err)
 		}
 	}()
 

@@ -157,20 +157,6 @@ type Memory struct {
 	Base `yaml:",inline"`
 }
 
-// SoulFixedSections is the suggested enum for
-// SOUL.yaml. The list is not enforced by the
-// package (Soul sections are free-form); the model
-// gets it via the prompt and the operator can add
-// new entries without changing code.
-//
-//nolint:gochecknoglobals // canonical fixed-section catalogue read by prompt + parser
-var SoulFixedSections = []string{
-	"Истинная сущность",
-	"Предпочтения",
-	"Философия и принципы",
-	"Прочее",
-}
-
 // SkillFixedSections is the strict enum of skill.yaml
 // section names. Append rejects any section not on
 // this list. The model must be told (via prompt) to

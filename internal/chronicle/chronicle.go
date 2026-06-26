@@ -61,12 +61,6 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// DefaultWindow is the default 30-day compression window.
-// The legacy constant lived in usecase/tools/files/memory.go
-// as `const window = 30`; we keep the same number here so
-// existing deployments do not need to reset their state.
-const DefaultWindow = 30
-
 // FileStore is the minimal storage surface the chronicle
 // package needs. Mirrors staging.FileStore so callers can
 // pass a *storage.FileStore directly.

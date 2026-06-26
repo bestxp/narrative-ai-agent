@@ -246,18 +246,18 @@ func (p *Profile) BuildMarkdown() (string, error) {
 // layout.
 func (p *Profile) BuildCompact() string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "## %s\n", strings.TrimSpace(p.DisplayName))
+	appendf(&b, "## %s\n", strings.TrimSpace(p.DisplayName))
 
 	if s := strings.TrimSpace(p.Temperament); s != "" {
-		fmt.Fprintf(&b, "Темперамент: %s\n", s)
+		appendf(&b, "Темперамент: %s\n", s)
 	}
 
 	if s := strings.TrimSpace(p.RelationsGG); s != "" {
-		fmt.Fprintf(&b, "К ГГ: %s\n", s)
+		appendf(&b, "К ГГ: %s\n", s)
 	}
 
 	if s := strings.TrimSpace(p.CurrentStatus); s != "" {
-		fmt.Fprintf(&b, "Текущий статус: %s\n", s)
+		appendf(&b, "Текущий статус: %s\n", s)
 	}
 
 	if len(p.RelationsNPCs) > 0 {
@@ -272,12 +272,12 @@ func (p *Profile) BuildCompact() string {
 		}
 
 		if len(rels) > 0 {
-			fmt.Fprintf(&b, "Связи: %s\n", strings.Join(rels, ", "))
+			appendf(&b, "Связи: %s\n", strings.Join(rels, ", "))
 		}
 	}
 
 	if s := strings.TrimSpace(p.LastUpdate); s != "" {
-		fmt.Fprintf(&b, "Свежее: %s\n", s)
+		appendf(&b, "Свежее: %s\n", s)
 	}
 
 	return strings.TrimSpace(b.String())
@@ -304,11 +304,11 @@ func (p *Profile) BuildOneLine() string {
 	}
 
 	if s := strings.TrimSpace(p.Temperament); s != "" {
-		fmt.Fprintf(&b, "\n%s.", truncateRune(s, 120))
+		appendf(&b, "\n%s.", truncateRune(s, 120))
 	}
 
 	if s := strings.TrimSpace(p.CurrentStatus); s != "" {
-		fmt.Fprintf(&b, "\nСейчас: %s", truncateRune(s, 120))
+		appendf(&b, "\nСейчас: %s", truncateRune(s, 120))
 	}
 
 	return strings.TrimSpace(b.String())
@@ -329,6 +329,14 @@ func truncateRune(s string, maxRunes int) string {
 	}
 
 	return string(runes[:maxRunes]) + "…"
+}
+
+// appendf writes a formatted string to b and discards the
+// (always-nil) error from fmt.Fprintf. strings.Builder.Write
+// is the only Write call here, so the error cannot occur at
+// runtime; this keeps the call sites single-line.
+func appendf(b *strings.Builder, format string, args ...any) {
+	_, _ = fmt.Fprintf(b, format, args...)
 }
 
 // SectionKind enumerates the section names the

@@ -205,37 +205,6 @@ func diffStrings(a, b []string) []string {
 	return out
 }
 
-// ParseStateYAML decodes the day counter from a
-// state.yaml body. planning/0001 (state+stage
-// merge): the on-disk format is YAML, not the legacy
-// markdown. Returns 0 when the body is empty or
-// unparseable — callers treat 0 as "unknown".
-//
-// Why this is local to the tools/files package: the
-// full StateSnapshot parse lives in
-// internal/repository/yaml/world_state_yaml.go
-// (ParseStateYAML), which is the canonical round-trip
-// for the writer tool path. The state-tool path
-// (UpdateState / ArchiveChronicleDay) does not need
-// the full snapshot — just the day counter — so the
-// narrow helper stays here.
-func ParseStateYAML(body string) int {
-	if strings.TrimSpace(body) == "" {
-		return 0
-	}
-
-	var raw struct {
-		State struct {
-			Day int `yaml:"day"`
-		} `yaml:"state"`
-	}
-	if err := gyaml.Unmarshal([]byte(body), &raw); err != nil {
-		return 0
-	}
-
-	return raw.State.Day
-}
-
 // ParseStateYAMLFull decodes the full StateSnapshot
 // from a state.yaml body. planning/0001 (state+stage
 // merge): the on-disk format is YAML, not markdown.

@@ -3,7 +3,6 @@ package files
 import (
 	"errors"
 	"fmt"
-	"regexp"
 	"slices"
 	"strings"
 
@@ -344,10 +343,10 @@ func FormatSnapshot(s *tools.CharacterSnapshot, maxPerSection int) string {
 	}
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "**Персонаж: %s**\n", s.Character)
+	appendf(&b, "**Персонаж: %s**\n", s.Character)
 
 	if s.World != "" {
-		fmt.Fprintf(&b, "**Мир: %s** (день %d)\n\n", s.World, s.Day)
+		appendf(&b, "**Мир: %s** (день %d)\n\n", s.World, s.Day)
 	} else {
 		b.WriteString("**Мир: —**\n\n")
 	}
@@ -363,17 +362,25 @@ func FormatSnapshot(s *tools.CharacterSnapshot, maxPerSection int) string {
 		{"state.md (текущий момент)", s.State},
 	} {
 		if sec.body == "" {
-			fmt.Fprintf(&b, "## %s\n_(пусто)_\n\n", sec.title)
+			appendf(&b, "## %s\n_(пусто)_\n\n", sec.title)
 
 			continue
 		}
 
-		fmt.Fprintf(&b, "## %s\n", sec.title)
+		appendf(&b, "## %s\n", sec.title)
 		b.WriteString(truncateForMe(sec.body, maxPerSection))
 		b.WriteString("\n\n")
 	}
 
 	return strings.TrimSpace(b.String())
+}
+
+// appendf writes a formatted string to b and discards the
+// (always-nil) error from fmt.Fprintf. strings.Builder.Write
+// is the only Write call here, so the error cannot occur at
+// runtime; this keeps the call sites single-line.
+func appendf(b *strings.Builder, format string, args ...any) {
+	_, _ = fmt.Fprintf(b, format, args...)
 }
 
 func truncateForMe(s string, maxLines int) string {
@@ -387,37 +394,6 @@ func truncateForMe(s string, maxLines int) string {
 	}
 
 	return strings.Join(lines[:maxLines], "\n") + fmt.Sprintf("\n[…+%d строк обрезано…]", len(lines)-maxLines)
-}
-
-// extractDayNumber parses the "День N" line out of
-// a state.md body. Kept as a helper for tests that
-// exercise state body text directly.
-var dayHeaderRe = regexp.MustCompile(`День (\d+)`)
-
-func extractDayNumber(s string) (int, bool) {
-	m := dayHeaderRe.FindStringSubmatch(s)
-	if len(m) < 2 {
-		return 0, false
-	}
-
-	n := 0
-
-	for _, r := range m[1] {
-		if r < '0' || r > '9' {
-			return 0, false
-		}
-
-		n = n*10 + int(r-'0')
-	}
-
-	return n, true
-}
-
-// ExtractDayNumber is the public alias for the
-// day-number parser; world-transition code calls
-// it through this exported wrapper.
-func ExtractDayNumber(s string) (int, bool) {
-	return extractDayNumber(s)
 }
 
 // enumContains is duplicated from charprofile to

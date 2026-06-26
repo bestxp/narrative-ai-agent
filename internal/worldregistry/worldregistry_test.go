@@ -88,8 +88,12 @@ func TestLoadEmpty(t *testing.T) {
 		t.Fatalf("err = %v, want ErrEmpty", err)
 	}
 
-	if r == nil || len(r.All()) != 0 {
-		t.Fatalf("entries=%d, want 0", len(r.All()))
+	if r == nil {
+		t.Fatal("registry is nil despite ErrEmpty contract")
+	}
+
+	if got := len(r.All()); got != 0 {
+		t.Fatalf("entries=%d, want 0", got)
 	}
 }
 
@@ -116,8 +120,12 @@ func TestNoMarkdownFallback(t *testing.T) {
 		t.Fatalf("err = %v, want ErrEmpty", err)
 	}
 
-	if r == nil || len(r.All()) != 0 {
-		t.Fatalf("entries=%d, want 0 (markdown must be ignored)", len(r.All()))
+	if r == nil {
+		t.Fatal("registry is nil despite ErrEmpty contract")
+	}
+
+	if got := len(r.All()); got != 0 {
+		t.Fatalf("entries=%d, want 0 (markdown must be ignored)", got)
 	}
 
 	if _, ok := fs.files["worlds/naruto/characters.yaml"]; ok {

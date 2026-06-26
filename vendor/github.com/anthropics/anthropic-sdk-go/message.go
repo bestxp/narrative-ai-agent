@@ -5,6 +5,7 @@ package anthropic
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"reflect"
 	"slices"
@@ -52,20 +53,23 @@ func NewMessageService(opts ...option.RequestOption) (r MessageService) {
 // [user guide](https://docs.claude.com/en/docs/initial-setup)
 //
 // Note: If you choose to set a timeout for this request, we recommend 10 minutes.
-func (r *MessageService) New(ctx context.Context, body MessageNewParams, opts ...option.RequestOption) (res *Message, err error) {
+func (r *MessageService) New(ctx context.Context, params MessageNewParams, opts ...option.RequestOption) (res *Message, err error) {
+	if !param.IsOmitted(params.UserProfileID) {
+		opts = append(opts, option.WithHeader("anthropic-user-profile-id", fmt.Sprintf("%v", params.UserProfileID.Value)))
+	}
 	opts = slices.Concat(r.Options, opts)
-	warnIfThinkingEnabled(body.Model, body.Thinking.OfEnabled != nil)
+	warnIfThinkingEnabled(params.Model, params.Thinking.OfEnabled != nil)
 
 	// For non-streaming requests, calculate the appropriate timeout based on maxTokens
 	// and check against model-specific limits
-	timeout, timeoutErr := CalculateNonStreamingTimeout(int(body.MaxTokens), body.Model, opts)
+	timeout, timeoutErr := CalculateNonStreamingTimeout(int(params.MaxTokens), params.Model, opts)
 	if timeoutErr != nil {
 		return nil, timeoutErr
 	}
 	opts = append(opts, option.WithRequestTimeout(timeout))
 
 	path := "v1/messages"
-	err = requestconfig.ExecuteNewRequest(ctx, http.MethodPost, path, body, &res, opts...)
+	err = requestconfig.ExecuteNewRequest(ctx, http.MethodPost, path, params, &res, opts...)
 	return res, err
 }
 
@@ -79,16 +83,19 @@ func (r *MessageService) New(ctx context.Context, body MessageNewParams, opts ..
 // [user guide](https://docs.claude.com/en/docs/initial-setup)
 //
 // Note: If you choose to set a timeout for this request, we recommend 10 minutes.
-func (r *MessageService) NewStreaming(ctx context.Context, body MessageNewParams, opts ...option.RequestOption) (stream *ssestream.Stream[MessageStreamEventUnion]) {
+func (r *MessageService) NewStreaming(ctx context.Context, params MessageNewParams, opts ...option.RequestOption) (stream *ssestream.Stream[MessageStreamEventUnion]) {
 	var (
 		raw *http.Response
 		err error
 	)
+	if !param.IsOmitted(params.UserProfileID) {
+		opts = append(opts, option.WithHeader("anthropic-user-profile-id", fmt.Sprintf("%v", params.UserProfileID.Value)))
+	}
 	opts = slices.Concat(r.Options, opts)
-	warnIfThinkingEnabled(body.Model, body.Thinking.OfEnabled != nil)
+	warnIfThinkingEnabled(params.Model, params.Thinking.OfEnabled != nil)
 	opts = append(opts, option.WithJSONSet("stream", true))
 	path := "v1/messages"
-	err = requestconfig.ExecuteNewRequest(ctx, http.MethodPost, path, body, &raw, opts...)
+	err = requestconfig.ExecuteNewRequest(ctx, http.MethodPost, path, params, &raw, opts...)
 	return ssestream.NewStream[MessageStreamEventUnion](ssestream.NewDecoder(raw), err)
 }
 
@@ -484,7 +491,9 @@ type CacheControlEphemeralParam struct {
 	// - `5m`: 5 minutes
 	// - `1h`: 1 hour
 	//
-	// Defaults to `5m`.
+	// Defaults to `5m`. See
+	// [prompt caching pricing](https://docs.claude.com/en/docs/build-with-claude/prompt-caching)
+	// for details.
 	//
 	// Any of "5m", "1h".
 	TTL  CacheControlEphemeralTTL `json:"ttl,omitzero"`
@@ -507,7 +516,9 @@ func (r *CacheControlEphemeralParam) UnmarshalJSON(data []byte) error {
 // - `5m`: 5 minutes
 // - `1h`: 1 hour
 //
-// Defaults to `5m`.
+// Defaults to `5m`. See
+// [prompt caching pricing](https://docs.claude.com/en/docs/build-with-claude/prompt-caching)
+// for details.
 type CacheControlEphemeralTTL string
 
 const (
@@ -1098,7 +1109,8 @@ type CodeExecutionTool20250522Param struct {
 	DeferLoading param.Opt[bool] `json:"defer_loading,omitzero"`
 	// When true, guarantees schema validation on tool names and inputs
 	Strict param.Opt[bool] `json:"strict,omitzero"`
-	// Any of "direct", "code_execution_20250825", "code_execution_20260120".
+	// Any of "direct", "code_execution_20250825", "code_execution_20260120",
+	// "code_execution_20260521".
 	AllowedCallers []string `json:"allowed_callers,omitzero"`
 	// Create a cache control breakpoint at this content block.
 	CacheControl CacheControlEphemeralParam `json:"cache_control,omitzero"`
@@ -1129,7 +1141,8 @@ type CodeExecutionTool20250825Param struct {
 	DeferLoading param.Opt[bool] `json:"defer_loading,omitzero"`
 	// When true, guarantees schema validation on tool names and inputs
 	Strict param.Opt[bool] `json:"strict,omitzero"`
-	// Any of "direct", "code_execution_20250825", "code_execution_20260120".
+	// Any of "direct", "code_execution_20250825", "code_execution_20260120",
+	// "code_execution_20260521".
 	AllowedCallers []string `json:"allowed_callers,omitzero"`
 	// Create a cache control breakpoint at this content block.
 	CacheControl CacheControlEphemeralParam `json:"cache_control,omitzero"`
@@ -1163,7 +1176,8 @@ type CodeExecutionTool20260120Param struct {
 	DeferLoading param.Opt[bool] `json:"defer_loading,omitzero"`
 	// When true, guarantees schema validation on tool names and inputs
 	Strict param.Opt[bool] `json:"strict,omitzero"`
-	// Any of "direct", "code_execution_20250825", "code_execution_20260120".
+	// Any of "direct", "code_execution_20250825", "code_execution_20260120",
+	// "code_execution_20260521".
 	AllowedCallers []string `json:"allowed_callers,omitzero"`
 	// Create a cache control breakpoint at this content block.
 	CacheControl CacheControlEphemeralParam `json:"cache_control,omitzero"`
@@ -1184,6 +1198,40 @@ func (r CodeExecutionTool20260120Param) MarshalJSON() (data []byte, err error) {
 	return param.MarshalObject(r, (*shadow)(&r))
 }
 func (r *CodeExecutionTool20260120Param) UnmarshalJSON(data []byte) error {
+	return apijson.UnmarshalRoot(data, r)
+}
+
+// Code execution tool with REPL state persistence.
+//
+// The properties Name, Type are required.
+type CodeExecutionTool20260521Param struct {
+	// If true, tool will not be included in initial system prompt. Only loaded when
+	// returned via tool_reference from tool search.
+	DeferLoading param.Opt[bool] `json:"defer_loading,omitzero"`
+	// When true, guarantees schema validation on tool names and inputs
+	Strict param.Opt[bool] `json:"strict,omitzero"`
+	// Any of "direct", "code_execution_20250825", "code_execution_20260120",
+	// "code_execution_20260521".
+	AllowedCallers []string `json:"allowed_callers,omitzero"`
+	// Create a cache control breakpoint at this content block.
+	CacheControl CacheControlEphemeralParam `json:"cache_control,omitzero"`
+	// Name of the tool.
+	//
+	// This is how the tool will be called by the model and in `tool_use` blocks.
+	//
+	// This field can be elided, and will marshal its zero value as "code_execution".
+	Name constant.CodeExecution `json:"name" default:"code_execution"`
+	// This field can be elided, and will marshal its zero value as
+	// "code_execution_20260521".
+	Type constant.CodeExecution20260521 `json:"type" default:"code_execution_20260521"`
+	paramObj
+}
+
+func (r CodeExecutionTool20260521Param) MarshalJSON() (data []byte, err error) {
+	type shadow CodeExecutionTool20260521Param
+	return param.MarshalObject(r, (*shadow)(&r))
+}
+func (r *CodeExecutionTool20260521Param) UnmarshalJSON(data []byte) error {
 	return apijson.UnmarshalRoot(data, r)
 }
 
@@ -3391,7 +3439,8 @@ type MemoryTool20250818Param struct {
 	DeferLoading param.Opt[bool] `json:"defer_loading,omitzero"`
 	// When true, guarantees schema validation on tool names and inputs
 	Strict param.Opt[bool] `json:"strict,omitzero"`
-	// Any of "direct", "code_execution_20250825", "code_execution_20260120".
+	// Any of "direct", "code_execution_20250825", "code_execution_20260120",
+	// "code_execution_20260521".
 	AllowedCallers []string `json:"allowed_callers,omitzero"`
 	// Create a cache control breakpoint at this content block.
 	CacheControl  CacheControlEphemeralParam `json:"cache_control,omitzero"`
@@ -3564,6 +3613,7 @@ type MessageCountTokensToolUnionParam struct {
 	OfCodeExecutionTool20250522   *CodeExecutionTool20250522Param   `json:",omitzero,inline"`
 	OfCodeExecutionTool20250825   *CodeExecutionTool20250825Param   `json:",omitzero,inline"`
 	OfCodeExecutionTool20260120   *CodeExecutionTool20260120Param   `json:",omitzero,inline"`
+	OfCodeExecutionTool20260521   *CodeExecutionTool20260521Param   `json:",omitzero,inline"`
 	OfMemoryTool20250818          *MemoryTool20250818Param          `json:",omitzero,inline"`
 	OfTextEditor20250124          *ToolTextEditor20250124Param      `json:",omitzero,inline"`
 	OfTextEditor20250429          *ToolTextEditor20250429Param      `json:",omitzero,inline"`
@@ -3584,6 +3634,7 @@ func (u MessageCountTokensToolUnionParam) MarshalJSON() ([]byte, error) {
 		u.OfCodeExecutionTool20250522,
 		u.OfCodeExecutionTool20250825,
 		u.OfCodeExecutionTool20260120,
+		u.OfCodeExecutionTool20260521,
 		u.OfMemoryTool20250818,
 		u.OfTextEditor20250124,
 		u.OfTextEditor20250429,
@@ -3611,6 +3662,8 @@ func (u *MessageCountTokensToolUnionParam) asAny() any {
 		return u.OfCodeExecutionTool20250825
 	} else if !param.IsOmitted(u.OfCodeExecutionTool20260120) {
 		return u.OfCodeExecutionTool20260120
+	} else if !param.IsOmitted(u.OfCodeExecutionTool20260521) {
+		return u.OfCodeExecutionTool20260521
 	} else if !param.IsOmitted(u.OfMemoryTool20250818) {
 		return u.OfMemoryTool20250818
 	} else if !param.IsOmitted(u.OfTextEditor20250124) {
@@ -3689,6 +3742,8 @@ func (u MessageCountTokensToolUnionParam) GetName() *string {
 		return (*string)(&vt.Name)
 	} else if vt := u.OfCodeExecutionTool20260120; vt != nil {
 		return (*string)(&vt.Name)
+	} else if vt := u.OfCodeExecutionTool20260521; vt != nil {
+		return (*string)(&vt.Name)
 	} else if vt := u.OfMemoryTool20250818; vt != nil {
 		return (*string)(&vt.Name)
 	} else if vt := u.OfTextEditor20250124; vt != nil {
@@ -3726,6 +3781,8 @@ func (u MessageCountTokensToolUnionParam) GetDeferLoading() *bool {
 	} else if vt := u.OfCodeExecutionTool20250825; vt != nil && vt.DeferLoading.Valid() {
 		return &vt.DeferLoading.Value
 	} else if vt := u.OfCodeExecutionTool20260120; vt != nil && vt.DeferLoading.Valid() {
+		return &vt.DeferLoading.Value
+	} else if vt := u.OfCodeExecutionTool20260521; vt != nil && vt.DeferLoading.Valid() {
 		return &vt.DeferLoading.Value
 	} else if vt := u.OfMemoryTool20250818; vt != nil && vt.DeferLoading.Valid() {
 		return &vt.DeferLoading.Value
@@ -3765,6 +3822,8 @@ func (u MessageCountTokensToolUnionParam) GetStrict() *bool {
 		return &vt.Strict.Value
 	} else if vt := u.OfCodeExecutionTool20260120; vt != nil && vt.Strict.Valid() {
 		return &vt.Strict.Value
+	} else if vt := u.OfCodeExecutionTool20260521; vt != nil && vt.Strict.Valid() {
+		return &vt.Strict.Value
 	} else if vt := u.OfMemoryTool20250818; vt != nil && vt.Strict.Valid() {
 		return &vt.Strict.Value
 	} else if vt := u.OfTextEditor20250124; vt != nil && vt.Strict.Valid() {
@@ -3802,6 +3861,8 @@ func (u MessageCountTokensToolUnionParam) GetType() *string {
 	} else if vt := u.OfCodeExecutionTool20250825; vt != nil {
 		return (*string)(&vt.Type)
 	} else if vt := u.OfCodeExecutionTool20260120; vt != nil {
+		return (*string)(&vt.Type)
+	} else if vt := u.OfCodeExecutionTool20260521; vt != nil {
 		return (*string)(&vt.Type)
 	} else if vt := u.OfMemoryTool20250818; vt != nil {
 		return (*string)(&vt.Type)
@@ -3870,6 +3931,8 @@ func (u MessageCountTokensToolUnionParam) GetAllowedCallers() []string {
 		return vt.AllowedCallers
 	} else if vt := u.OfCodeExecutionTool20260120; vt != nil {
 		return vt.AllowedCallers
+	} else if vt := u.OfCodeExecutionTool20260521; vt != nil {
+		return vt.AllowedCallers
 	} else if vt := u.OfMemoryTool20250818; vt != nil {
 		return vt.AllowedCallers
 	} else if vt := u.OfTextEditor20250124; vt != nil {
@@ -3907,6 +3970,8 @@ func (u MessageCountTokensToolUnionParam) GetCacheControl() *CacheControlEphemer
 	} else if vt := u.OfCodeExecutionTool20250825; vt != nil {
 		return &vt.CacheControl
 	} else if vt := u.OfCodeExecutionTool20260120; vt != nil {
+		return &vt.CacheControl
+	} else if vt := u.OfCodeExecutionTool20260521; vt != nil {
 		return &vt.CacheControl
 	} else if vt := u.OfMemoryTool20250818; vt != nil {
 		return &vt.CacheControl
@@ -4152,8 +4217,14 @@ func (r *MidConversationSystemBlockParam) UnmarshalJSON(data []byte) error {
 type Model = string
 
 const (
-	ModelClaudeOpus4_8            Model = "claude-opus-4-8"
-	ModelClaudeOpus4_7            Model = "claude-opus-4-7"
+	ModelClaudeFable5  Model = "claude-fable-5"
+	ModelClaudeMythos5 Model = "claude-mythos-5"
+	ModelClaudeOpus4_8 Model = "claude-opus-4-8"
+	ModelClaudeOpus4_7 Model = "claude-opus-4-7"
+	// Deprecated: Will reach end-of-life on June 30, 2026. Please migrate to
+	// claude-mythos-5. Visit
+	// https://docs.anthropic.com/en/docs/resources/model-deprecations for more
+	// information.
 	ModelClaudeMythosPreview      Model = "claude-mythos-preview"
 	ModelClaudeOpus4_6            Model = "claude-opus-4-6"
 	ModelClaudeSonnet4_6          Model = "claude-sonnet-4-6"
@@ -4171,27 +4242,6 @@ const (
 	// model. Visit https://docs.anthropic.com/en/docs/resources/model-deprecations for
 	// more information.
 	ModelClaudeOpus4_1_20250805 Model = "claude-opus-4-1-20250805"
-	// Deprecated: Will reach end-of-life on June 15th, 2026. Please migrate to a newer
-	// model. Visit https://docs.anthropic.com/en/docs/resources/model-deprecations for
-	// more information.
-	ModelClaudeOpus4_0 Model = "claude-opus-4-0"
-	// Deprecated: Will reach end-of-life on June 15th, 2026. Please migrate to a newer
-	// model. Visit https://docs.anthropic.com/en/docs/resources/model-deprecations for
-	// more information.
-	ModelClaudeOpus4_20250514 Model = "claude-opus-4-20250514"
-	// Deprecated: Will reach end-of-life on June 15th, 2026. Please migrate to a newer
-	// model. Visit https://docs.anthropic.com/en/docs/resources/model-deprecations for
-	// more information.
-	ModelClaudeSonnet4_0 Model = "claude-sonnet-4-0"
-	// Deprecated: Will reach end-of-life on June 15th, 2026. Please migrate to a newer
-	// model. Visit https://docs.anthropic.com/en/docs/resources/model-deprecations for
-	// more information.
-	ModelClaudeSonnet4_20250514 Model = "claude-sonnet-4-20250514"
-	// Deprecated: Will reach end-of-life on April 20th, 2026. Please migrate to
-	// claude-haiku-4-5. Visit
-	// https://docs.anthropic.com/en/docs/resources/model-deprecations for more
-	// information.
-	ModelClaude_3_Haiku_20240307 Model = "claude-3-haiku-20240307"
 )
 
 type OutputConfigParam struct {
@@ -5087,11 +5137,10 @@ func (r *RedactedThinkingBlockParam) UnmarshalJSON(data []byte) error {
 
 // Structured information about a refusal.
 type RefusalStopDetails struct {
-	// The policy category that triggered the refusal.
+	// The policy category that triggered a refusal.
 	//
-	// `null` when the refusal doesn't map to a named category.
-	//
-	// Any of "cyber", "bio".
+	// Any of "cyber", "bio", "frontier_llm", "reasoning_extraction",
+	// "military_weapons".
 	Category RefusalStopDetailsCategory `json:"category" api:"required"`
 	// Human-readable explanation of the refusal.
 	//
@@ -5115,14 +5164,15 @@ func (r *RefusalStopDetails) UnmarshalJSON(data []byte) error {
 	return apijson.UnmarshalRoot(data, r)
 }
 
-// The policy category that triggered the refusal.
-//
-// `null` when the refusal doesn't map to a named category.
+// The policy category that triggered a refusal.
 type RefusalStopDetailsCategory string
 
 const (
-	RefusalStopDetailsCategoryCyber RefusalStopDetailsCategory = "cyber"
-	RefusalStopDetailsCategoryBio   RefusalStopDetailsCategory = "bio"
+	RefusalStopDetailsCategoryCyber               RefusalStopDetailsCategory = "cyber"
+	RefusalStopDetailsCategoryBio                 RefusalStopDetailsCategory = "bio"
+	RefusalStopDetailsCategoryFrontierLLM         RefusalStopDetailsCategory = "frontier_llm"
+	RefusalStopDetailsCategoryReasoningExtraction RefusalStopDetailsCategory = "reasoning_extraction"
+	RefusalStopDetailsCategoryMilitaryWeapons     RefusalStopDetailsCategory = "military_weapons"
 )
 
 // The properties Content, Source, Title, Type are required.
@@ -6605,7 +6655,8 @@ type ToolParam struct {
 	Strict param.Opt[bool] `json:"strict,omitzero"`
 	// Any of "custom".
 	Type ToolType `json:"type,omitzero"`
-	// Any of "direct", "code_execution_20250825", "code_execution_20260120".
+	// Any of "direct", "code_execution_20250825", "code_execution_20260120",
+	// "code_execution_20260521".
 	AllowedCallers []string `json:"allowed_callers,omitzero"`
 	// Create a cache control breakpoint at this content block.
 	CacheControl  CacheControlEphemeralParam `json:"cache_control,omitzero"`
@@ -6657,7 +6708,8 @@ type ToolBash20250124Param struct {
 	DeferLoading param.Opt[bool] `json:"defer_loading,omitzero"`
 	// When true, guarantees schema validation on tool names and inputs
 	Strict param.Opt[bool] `json:"strict,omitzero"`
-	// Any of "direct", "code_execution_20250825", "code_execution_20260120".
+	// Any of "direct", "code_execution_20250825", "code_execution_20260120",
+	// "code_execution_20260521".
 	AllowedCallers []string `json:"allowed_callers,omitzero"`
 	// Create a cache control breakpoint at this content block.
 	CacheControl  CacheControlEphemeralParam `json:"cache_control,omitzero"`
@@ -7165,7 +7217,8 @@ type ToolSearchToolBm25_20251119Param struct {
 	DeferLoading param.Opt[bool] `json:"defer_loading,omitzero"`
 	// When true, guarantees schema validation on tool names and inputs
 	Strict param.Opt[bool] `json:"strict,omitzero"`
-	// Any of "direct", "code_execution_20250825", "code_execution_20260120".
+	// Any of "direct", "code_execution_20250825", "code_execution_20260120",
+	// "code_execution_20260521".
 	AllowedCallers []string `json:"allowed_callers,omitzero"`
 	// Create a cache control breakpoint at this content block.
 	CacheControl CacheControlEphemeralParam `json:"cache_control,omitzero"`
@@ -7203,7 +7256,8 @@ type ToolSearchToolRegex20251119Param struct {
 	DeferLoading param.Opt[bool] `json:"defer_loading,omitzero"`
 	// When true, guarantees schema validation on tool names and inputs
 	Strict param.Opt[bool] `json:"strict,omitzero"`
-	// Any of "direct", "code_execution_20250825", "code_execution_20260120".
+	// Any of "direct", "code_execution_20250825", "code_execution_20260120",
+	// "code_execution_20260521".
 	AllowedCallers []string `json:"allowed_callers,omitzero"`
 	// Create a cache control breakpoint at this content block.
 	CacheControl CacheControlEphemeralParam `json:"cache_control,omitzero"`
@@ -7462,7 +7516,8 @@ type ToolTextEditor20250124Param struct {
 	DeferLoading param.Opt[bool] `json:"defer_loading,omitzero"`
 	// When true, guarantees schema validation on tool names and inputs
 	Strict param.Opt[bool] `json:"strict,omitzero"`
-	// Any of "direct", "code_execution_20250825", "code_execution_20260120".
+	// Any of "direct", "code_execution_20250825", "code_execution_20260120",
+	// "code_execution_20260521".
 	AllowedCallers []string `json:"allowed_callers,omitzero"`
 	// Create a cache control breakpoint at this content block.
 	CacheControl  CacheControlEphemeralParam `json:"cache_control,omitzero"`
@@ -7495,7 +7550,8 @@ type ToolTextEditor20250429Param struct {
 	DeferLoading param.Opt[bool] `json:"defer_loading,omitzero"`
 	// When true, guarantees schema validation on tool names and inputs
 	Strict param.Opt[bool] `json:"strict,omitzero"`
-	// Any of "direct", "code_execution_20250825", "code_execution_20260120".
+	// Any of "direct", "code_execution_20250825", "code_execution_20260120",
+	// "code_execution_20260521".
 	AllowedCallers []string `json:"allowed_callers,omitzero"`
 	// Create a cache control breakpoint at this content block.
 	CacheControl  CacheControlEphemeralParam `json:"cache_control,omitzero"`
@@ -7531,7 +7587,8 @@ type ToolTextEditor20250728Param struct {
 	DeferLoading param.Opt[bool] `json:"defer_loading,omitzero"`
 	// When true, guarantees schema validation on tool names and inputs
 	Strict param.Opt[bool] `json:"strict,omitzero"`
-	// Any of "direct", "code_execution_20250825", "code_execution_20260120".
+	// Any of "direct", "code_execution_20250825", "code_execution_20260120",
+	// "code_execution_20260521".
 	AllowedCallers []string `json:"allowed_callers,omitzero"`
 	// Create a cache control breakpoint at this content block.
 	CacheControl  CacheControlEphemeralParam `json:"cache_control,omitzero"`
@@ -7585,6 +7642,7 @@ type ToolUnionParam struct {
 	OfCodeExecutionTool20250522   *CodeExecutionTool20250522Param   `json:",omitzero,inline"`
 	OfCodeExecutionTool20250825   *CodeExecutionTool20250825Param   `json:",omitzero,inline"`
 	OfCodeExecutionTool20260120   *CodeExecutionTool20260120Param   `json:",omitzero,inline"`
+	OfCodeExecutionTool20260521   *CodeExecutionTool20260521Param   `json:",omitzero,inline"`
 	OfMemoryTool20250818          *MemoryTool20250818Param          `json:",omitzero,inline"`
 	OfTextEditor20250124          *ToolTextEditor20250124Param      `json:",omitzero,inline"`
 	OfTextEditor20250429          *ToolTextEditor20250429Param      `json:",omitzero,inline"`
@@ -7605,6 +7663,7 @@ func (u ToolUnionParam) MarshalJSON() ([]byte, error) {
 		u.OfCodeExecutionTool20250522,
 		u.OfCodeExecutionTool20250825,
 		u.OfCodeExecutionTool20260120,
+		u.OfCodeExecutionTool20260521,
 		u.OfMemoryTool20250818,
 		u.OfTextEditor20250124,
 		u.OfTextEditor20250429,
@@ -7632,6 +7691,8 @@ func (u *ToolUnionParam) asAny() any {
 		return u.OfCodeExecutionTool20250825
 	} else if !param.IsOmitted(u.OfCodeExecutionTool20260120) {
 		return u.OfCodeExecutionTool20260120
+	} else if !param.IsOmitted(u.OfCodeExecutionTool20260521) {
+		return u.OfCodeExecutionTool20260521
 	} else if !param.IsOmitted(u.OfMemoryTool20250818) {
 		return u.OfMemoryTool20250818
 	} else if !param.IsOmitted(u.OfTextEditor20250124) {
@@ -7710,6 +7771,8 @@ func (u ToolUnionParam) GetName() *string {
 		return (*string)(&vt.Name)
 	} else if vt := u.OfCodeExecutionTool20260120; vt != nil {
 		return (*string)(&vt.Name)
+	} else if vt := u.OfCodeExecutionTool20260521; vt != nil {
+		return (*string)(&vt.Name)
 	} else if vt := u.OfMemoryTool20250818; vt != nil {
 		return (*string)(&vt.Name)
 	} else if vt := u.OfTextEditor20250124; vt != nil {
@@ -7747,6 +7810,8 @@ func (u ToolUnionParam) GetDeferLoading() *bool {
 	} else if vt := u.OfCodeExecutionTool20250825; vt != nil && vt.DeferLoading.Valid() {
 		return &vt.DeferLoading.Value
 	} else if vt := u.OfCodeExecutionTool20260120; vt != nil && vt.DeferLoading.Valid() {
+		return &vt.DeferLoading.Value
+	} else if vt := u.OfCodeExecutionTool20260521; vt != nil && vt.DeferLoading.Valid() {
 		return &vt.DeferLoading.Value
 	} else if vt := u.OfMemoryTool20250818; vt != nil && vt.DeferLoading.Valid() {
 		return &vt.DeferLoading.Value
@@ -7786,6 +7851,8 @@ func (u ToolUnionParam) GetStrict() *bool {
 		return &vt.Strict.Value
 	} else if vt := u.OfCodeExecutionTool20260120; vt != nil && vt.Strict.Valid() {
 		return &vt.Strict.Value
+	} else if vt := u.OfCodeExecutionTool20260521; vt != nil && vt.Strict.Valid() {
+		return &vt.Strict.Value
 	} else if vt := u.OfMemoryTool20250818; vt != nil && vt.Strict.Valid() {
 		return &vt.Strict.Value
 	} else if vt := u.OfTextEditor20250124; vt != nil && vt.Strict.Valid() {
@@ -7823,6 +7890,8 @@ func (u ToolUnionParam) GetType() *string {
 	} else if vt := u.OfCodeExecutionTool20250825; vt != nil {
 		return (*string)(&vt.Type)
 	} else if vt := u.OfCodeExecutionTool20260120; vt != nil {
+		return (*string)(&vt.Type)
+	} else if vt := u.OfCodeExecutionTool20260521; vt != nil {
 		return (*string)(&vt.Type)
 	} else if vt := u.OfMemoryTool20250818; vt != nil {
 		return (*string)(&vt.Type)
@@ -7891,6 +7960,8 @@ func (u ToolUnionParam) GetAllowedCallers() []string {
 		return vt.AllowedCallers
 	} else if vt := u.OfCodeExecutionTool20260120; vt != nil {
 		return vt.AllowedCallers
+	} else if vt := u.OfCodeExecutionTool20260521; vt != nil {
+		return vt.AllowedCallers
 	} else if vt := u.OfMemoryTool20250818; vt != nil {
 		return vt.AllowedCallers
 	} else if vt := u.OfTextEditor20250124; vt != nil {
@@ -7928,6 +7999,8 @@ func (u ToolUnionParam) GetCacheControl() *CacheControlEphemeralParam {
 	} else if vt := u.OfCodeExecutionTool20250825; vt != nil {
 		return &vt.CacheControl
 	} else if vt := u.OfCodeExecutionTool20260120; vt != nil {
+		return &vt.CacheControl
+	} else if vt := u.OfCodeExecutionTool20260521; vt != nil {
 		return &vt.CacheControl
 	} else if vt := u.OfMemoryTool20250818; vt != nil {
 		return &vt.CacheControl
@@ -8382,7 +8455,8 @@ type WebFetchTool20250910Param struct {
 	AllowedDomains []string `json:"allowed_domains,omitzero"`
 	// List of domains to block fetching from
 	BlockedDomains []string `json:"blocked_domains,omitzero"`
-	// Any of "direct", "code_execution_20250825", "code_execution_20260120".
+	// Any of "direct", "code_execution_20250825", "code_execution_20260120",
+	// "code_execution_20260521".
 	AllowedCallers []string `json:"allowed_callers,omitzero"`
 	// Create a cache control breakpoint at this content block.
 	CacheControl CacheControlEphemeralParam `json:"cache_control,omitzero"`
@@ -8425,7 +8499,8 @@ type WebFetchTool20260209Param struct {
 	AllowedDomains []string `json:"allowed_domains,omitzero"`
 	// List of domains to block fetching from
 	BlockedDomains []string `json:"blocked_domains,omitzero"`
-	// Any of "direct", "code_execution_20250825", "code_execution_20260120".
+	// Any of "direct", "code_execution_20250825", "code_execution_20260120",
+	// "code_execution_20260521".
 	AllowedCallers []string `json:"allowed_callers,omitzero"`
 	// Create a cache control breakpoint at this content block.
 	CacheControl CacheControlEphemeralParam `json:"cache_control,omitzero"`
@@ -8474,7 +8549,8 @@ type WebFetchTool20260309Param struct {
 	AllowedDomains []string `json:"allowed_domains,omitzero"`
 	// List of domains to block fetching from
 	BlockedDomains []string `json:"blocked_domains,omitzero"`
-	// Any of "direct", "code_execution_20250825", "code_execution_20260120".
+	// Any of "direct", "code_execution_20250825", "code_execution_20260120",
+	// "code_execution_20260521".
 	AllowedCallers []string `json:"allowed_callers,omitzero"`
 	// Create a cache control breakpoint at this content block.
 	CacheControl CacheControlEphemeralParam `json:"cache_control,omitzero"`
@@ -8899,7 +8975,8 @@ type WebSearchTool20250305Param struct {
 	// If provided, these domains will never appear in results. Cannot be used
 	// alongside `allowed_domains`.
 	BlockedDomains []string `json:"blocked_domains,omitzero"`
-	// Any of "direct", "code_execution_20250825", "code_execution_20260120".
+	// Any of "direct", "code_execution_20250825", "code_execution_20260120",
+	// "code_execution_20260521".
 	AllowedCallers []string `json:"allowed_callers,omitzero"`
 	// Create a cache control breakpoint at this content block.
 	CacheControl CacheControlEphemeralParam `json:"cache_control,omitzero"`
@@ -8941,7 +9018,8 @@ type WebSearchTool20260209Param struct {
 	// If provided, these domains will never appear in results. Cannot be used
 	// alongside `allowed_domains`.
 	BlockedDomains []string `json:"blocked_domains,omitzero"`
-	// Any of "direct", "code_execution_20250825", "code_execution_20260120".
+	// Any of "direct", "code_execution_20250825", "code_execution_20260120",
+	// "code_execution_20260521".
 	AllowedCallers []string `json:"allowed_callers,omitzero"`
 	// Create a cache control breakpoint at this content block.
 	CacheControl CacheControlEphemeralParam `json:"cache_control,omitzero"`
@@ -9382,6 +9460,9 @@ type MessageNewParams struct {
 	//
 	// Recommended for advanced use cases only.
 	TopP param.Opt[float64] `json:"top_p,omitzero"`
+	// The user profile ID to attribute this request to. Use when acting on behalf of a
+	// party other than your organization. Requires the `user-profiles` beta header.
+	UserProfileID param.Opt[string] `header:"anthropic-user-profile-id,omitzero" json:"-"`
 	// Top-level cache control automatically applies a cache_control marker to the last
 	// cacheable block in the request.
 	CacheControl CacheControlEphemeralParam `json:"cache_control,omitzero"`

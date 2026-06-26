@@ -63,10 +63,7 @@ func (r *ResponseFormat) Validate(body string) Validation {
 	return v
 }
 
-var (
-	cjkRe      = regexp.MustCompile(`[\p{Han}\p{Hiragana}\p{Katakana}]`)
-	cyrillicRe = regexp.MustCompile(`[\p{Cyrillic}]`)
-)
+var cjkRe = regexp.MustCompile(`[\p{Han}\p{Hiragana}\p{Katakana}]`)
 
 // looksLikePlayerOutput returns true if the body is mostly latin —
 // i.e. safe to persist without transliteration. Cyrillic is fine
@@ -114,10 +111,4 @@ func wordCount(s string) int {
 	parts := strings.Fields(remaining)
 
 	return len(parts) + len(cjk)
-}
-
-// ForbidNonLatinPath reports if any path in body looks cyrillic.
-// Used by the maintenance check to catch leaked cyrillic filenames.
-func ForbidNonLatinPath(body string) bool {
-	return cyrillicRe.MatchString(body)
 }

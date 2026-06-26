@@ -290,10 +290,10 @@ func (s *Staging) Render(characterName string) string {
 
 	var b strings.Builder
 	b.WriteString("### Сюжетная стадия\n")
-	fmt.Fprintf(&b, "**%s — %s**\n", s.Current.ID, s.Current.Name)
+	appendf(&b, "**%s — %s**\n", s.Current.ID, s.Current.Name)
 
 	if s.Next != "" {
-		fmt.Fprintf(&b, "(завершается) → %s\n", s.Next)
+		appendf(&b, "(завершается) → %s\n", s.Next)
 	}
 
 	b.WriteString("\n")
@@ -317,7 +317,7 @@ func (s *Staging) Render(characterName string) string {
 				prefix = "[>]"
 			}
 
-			fmt.Fprintf(&b, "%s %s: %s\n", prefix, p.Days, p.Info)
+			appendf(&b, "%s %s: %s\n", prefix, p.Days, p.Info)
 		}
 
 		b.WriteString("\n")
@@ -328,7 +328,7 @@ func (s *Staging) Render(characterName string) string {
 
 		for _, t := range s.Current.Next {
 			reqs := strings.Join(t.Requirements, "; ")
-			fmt.Fprintf(&b, "- → %s, если: %s\n", t.ID, reqs)
+			appendf(&b, "- → %s, если: %s\n", t.ID, reqs)
 		}
 	}
 
@@ -341,6 +341,14 @@ func (s *Staging) Render(characterName string) string {
 }
 
 // --- helpers ---
+
+// appendf writes a formatted string to b and discards the
+// (always-nil) error from fmt.Fprintf. strings.Builder.Write
+// is the only Write call here, so the error cannot occur at
+// runtime; this keeps the call sites single-line.
+func appendf(b *strings.Builder, format string, args ...any) {
+	_, _ = fmt.Fprintf(b, format, args...)
+}
 
 func stagingPath(world string) string {
 	return "worlds/" + world + "/staging.yaml"
