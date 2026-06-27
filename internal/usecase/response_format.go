@@ -3,6 +3,8 @@ package usecase
 import (
 	"regexp"
 	"strings"
+
+	"github.com/bestxp/narrative-ai-agent/internal/structured"
 )
 
 // ResponseFormat enforces the "RESPONSE FORMAT" section of the skill.
@@ -39,12 +41,7 @@ type Validation struct {
 // Validate checks structural compliance. It is intentionally lenient:
 // "over limit" only reports a warning unless caller asks to enforce.
 // The four block markers correspond to the four sections of the
-// "RESPONSE FORMAT" rule in prompts/narrative.md:
-//
-//	**диалоги и действия**      — narrative prose
-//	**КОНТЕКСТ И ИЗМЕНЕНИЯ**     — what files were touched
-//	**БУДУЩЕЕ**                  — 1-2 lines from plan.md
-//	**ВАЛИДАЦИЯ ПРАВИЛ**         — self-check
+// "RESPONSE FORMAT" rule in prompts/narrative.md.
 func (r *ResponseFormat) Validate(body string) Validation {
 	v := Validation{
 		WordCount: wordCount(body),
@@ -54,10 +51,10 @@ func (r *ResponseFormat) Validate(body string) Validation {
 		v.OverLimit = true
 	}
 
-	v.HasDialogue = containsBlock(body, "**диалоги и действия**")
-	v.HasContextBlock = containsBlock(body, "**КОНТЕКСТ И ИЗМЕНЕНИЯ**")
-	v.HasFutureBlock = containsBlock(body, "**БУДУЩЕЕ**")
-	v.HasValidationBlk = containsBlock(body, "**ВАЛИДАЦИЯ ПРАВИЛ**")
+	v.HasDialogue = containsBlock(body, structured.HeaderDialogue)
+	v.HasContextBlock = containsBlock(body, structured.HeaderContext)
+	v.HasFutureBlock = containsBlock(body, structured.HeaderFuture)
+	v.HasValidationBlk = containsBlock(body, structured.HeaderValidation)
 	v.ForbiddenForms = scanForbiddenForms(body)
 
 	return v

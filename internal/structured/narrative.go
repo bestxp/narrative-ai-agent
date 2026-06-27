@@ -17,9 +17,21 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"regexp"
 	"strings"
 
 	"github.com/kaptinlin/jsonrepair"
+)
+
+// Section header constants used in the rendered markdown
+// output. These are the canonical Russian headers that
+// appear in every GM reply, regardless of whether the
+// response arrived as JSON or plain-text sections.
+const (
+	HeaderDialogue   = "**ДИАЛОГИ И ДЕЙСТВИЯ**"
+	HeaderContext    = "**КОНТЕКСТ И ИЗМЕНЕНИЯ**"
+	HeaderFuture     = "**БУДУЩЕЕ**"
+	HeaderValidation = "**ВАЛИДАЦИЯ ПРАВИЛ**"
 )
 
 // Narrative is the canonical 4-field shape the model
@@ -378,6 +390,43 @@ func (n *Narrative) MissingFields() []string {
 	return missing
 }
 
+// RenderPartial renders only the sections that have already
+// received non-empty content. This is meant for live streaming
+// UIs where empty placeholder sections would otherwise flash
+// in the interface while the response is still being generated.
+func (n *Narrative) RenderPartial() string {
+	var b strings.Builder
+	first := true
+
+	writeSection := func(header, body string) {
+		if strings.TrimSpace(body) == "" {
+			return
+		}
+
+		if !first {
+			b.WriteString("\n\n")
+		}
+		first = false
+
+		b.WriteString(header)
+		b.WriteByte('\n')
+		b.WriteString(strings.TrimSpace(body))
+	}
+
+	writeSection(HeaderDialogue, n.Narration)
+	writeSection(HeaderContext, n.Context)
+	writeSection(HeaderFuture, n.Future)
+	writeSection(HeaderValidation, n.Validation)
+
+	if b.Len() == 0 {
+		return ""
+	}
+
+	b.WriteByte('\n')
+
+	return b.String()
+}
+
 // Render converts a parsed Narrative into the 4-block
 // markdown the legacy path emits. The output is byte-
 // for-byte identical to what a well-behaved markdown
@@ -391,35 +440,153 @@ func (n *Narrative) MissingFields() []string {
 // ВАЛИДАЦИЯ ПРАВИЛ visibility, etc.) are applied
 // downstream by main.go's stripRules helper, the
 // same way they are applied to the markdown path.
+// section marker names as they appear inside "------ ... ------".
+const (
+	sectionNarrative = "NARRATIVE"
+	sectionContext   = "CONTEXT"
+	sectionFuture    = "FUTURE"
+	sectionSystem    = "SYSTEM"
+	sectionEnd       = "END"
+)
+
+// markerRe matches a "------ NAME ------" section marker anywhere in
+// the text. It tolerates whitespace around the name and captures
+// the name (group 1) so it can be normalised and dispatched. Markers
+// may appear on their own line or inline after section text.
+var markerRe = regexp.MustCompile(`(?i)------\s*([A-Za-z][A-Za-z0-9_\-]*)\s*------`)
+
+// ParsePlain extracts a Narrative from a section-delimited
+// plain-text response. The format is:
+//
+//	------ NARRATIVE ------
+//	...narration text...
+//	------ CONTEXT ------
+//	...context text...
+//	------ FUTURE ------
+//	...future text...
+//	------ SYSTEM ------
+//	...validation text...
+//	------ END ------
+//
+// Section markers are case-insensitive and tolerate leading/trailing
+// whitespace. They may also appear on the same line as the preceding
+// section text. Text between markers is trimmed. Missing sections
+// default to empty strings. The function is idempotent: calling it
+// on a partial stream returns whatever sections have been fully
+// received so far.
+func ParsePlain(text string) (*Narrative, error) {
+	return parseSectionPlain(text)
+}
+
+// RenderAny normalizes either a JSON or a plain section-delimited
+// response into the canonical bold Russian headers. It tries JSON
+// first; if that fails it tries plain markers; if both fail it
+// returns the raw text untouched. This is the single function every
+// transport should use for final replies so the user sees the same
+// format regardless of the LLM output mode.
+func RenderAny(text string) string {
+	clean := StripThinkingTags(text)
+	if LooksLikeJSON(clean) {
+		n, err := Parse(clean)
+		if err == nil {
+			return n.Render()
+		}
+	}
+
+	n, err := ParsePlain(clean)
+	if err == nil {
+		return n.Render()
+	}
+
+	return clean
+}
+
+// RenderAnyPartial is the streaming equivalent of RenderAny: it
+// renders only the sections that have already received content,
+// omitting empty placeholders. Use it in live-update callbacks
+// (OnDelta / streaming Append) so the player does not see four
+// blank sections while the response is still being generated.
+func RenderAnyPartial(text string) string {
+	clean := StripThinkingTags(text)
+	if LooksLikeJSON(clean) {
+		n, err := Parse(clean)
+		if err == nil {
+			return n.RenderPartial()
+		}
+	}
+
+	n, err := ParsePlain(clean)
+	if err == nil {
+		return n.RenderPartial()
+	}
+
+	return clean
+}
+
+// parseSectionPlain is the raw section-marker parser used by ParsePlain.
+func parseSectionPlain(text string) (*Narrative, error) {
+	var n Narrative
+
+	// Find all markers in order. We split the text into slices
+	// between markers, preserving any trailing text after the last
+	// marker seen so far.
+	matches := markerRe.FindAllStringSubmatchIndex(text, -1)
+	if len(matches) == 0 {
+		return &n, nil
+	}
+
+	for i, m := range matches {
+		name := strings.ToUpper(strings.TrimSpace(text[m[2]:m[3]]))
+		start := m[1] // content starts after the matched marker
+
+		var end int
+		if i+1 < len(matches) {
+			end = matches[i+1][0] // next marker begins here
+		} else {
+			end = len(text) // no more markers, take rest of text
+		}
+
+		val := strings.TrimSpace(text[start:end])
+
+		switch name {
+		case sectionNarrative:
+			n.Narration = val
+		case sectionContext:
+			n.Context = val
+		case sectionFuture:
+			n.Future = val
+		case sectionSystem:
+			n.Validation = val
+		case sectionEnd:
+			return &n, nil
+		}
+	}
+
+	return &n, nil
+}
+
 func (n *Narrative) Render() string {
 	var b strings.Builder
-	// Block 1: narration under the bold "диалоги и
-	// действия" header. The model uses this exact
-	// Russian phrasing in markdown mode too; we keep
-	// it identical so the player sees the same
-	// visual block whether the reply arrived as
-	// JSON or markdown.
-	b.WriteString("**диалоги и действия**\n")
+
+	b.WriteString(HeaderDialogue)
+	b.WriteByte('\n')
 	b.WriteString(strings.TrimSpace(n.Narration))
 	b.WriteString("\n\n")
-	// Block 2: context. Legacy uses the header
-	// "КОНТЕКСТ И ИЗМЕНЕНИЯ" with a bulleted list
-	// of file updates. The JSON mode gives us
-	// free-form text — we drop the leading "- "
-	// because there is no list to render, and the
-	// model already wrote prose.
-	b.WriteString("**КОНТЕКСТ И ИЗМЕНЕНИЯ**\n")
+
+	b.WriteString(HeaderContext)
+	b.WriteByte('\n')
 	b.WriteString(strings.TrimSpace(n.Context))
 	b.WriteString("\n\n")
-	// Block 3: future.
-	b.WriteString("**БУДУЩЕЕ**\n")
+
+	b.WriteString(HeaderFuture)
+	b.WriteByte('\n')
 	b.WriteString(strings.TrimSpace(n.Future))
 	b.WriteString("\n\n")
-	// Block 4: validation. Same shape as legacy —
-	// 1-2 lines, model-controlled.
-	b.WriteString("**ВАЛИДАЦИЯ ПРАВИЛ**\n")
+
+	b.WriteString(HeaderValidation)
+	b.WriteByte('\n')
 	b.WriteString(strings.TrimSpace(n.Validation))
-	b.WriteString("\n")
+	b.WriteByte('\n')
 
 	return b.String()
 }

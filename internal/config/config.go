@@ -225,6 +225,12 @@ type NarrativeConfig struct {
 	// Language is the GM's output language. Currently "ru" only;
 	// future multilingual support can branch on this.
 	Language string `yaml:"language"`
+	// Mode switches the GM response format.
+	// "json" (default) — JSON object with 4 fields.
+	// "plain" — section-delimited text block (see narrative.md.tmpl).
+	// Plain mode streams each section to the player as it arrives,
+	// without waiting for the full response.
+	Mode string `yaml:"mode"`
 	// RulesCheckBlock controls whether the LLM-generated
 	// "**ВАЛИДАЦИЯ ПРАВИЛ**" block (word count, NPC-isolation
 	// confirmation, file-update list, etc.) is actually shown
@@ -749,6 +755,10 @@ func (c *Config) applyDefaults() {
 
 	if c.Narrative.Language == "" {
 		c.Narrative.Language = "ru"
+	}
+
+	if c.Narrative.Mode == "" {
+		c.Narrative.Mode = "json"
 	}
 
 	c.LLM.DefaultTimeoutSeconds = nonZero(c.LLM.DefaultTimeoutSeconds, 120)

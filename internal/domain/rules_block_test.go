@@ -5,13 +5,14 @@ import (
 	"testing"
 
 	"github.com/bestxp/narrative-ai-agent/internal/domain"
+	"github.com/bestxp/narrative-ai-agent/internal/structured"
 	"github.com/stretchr/testify/assert"
 )
 
 func TestStripRulesBlock_NoBlock(t *testing.T) {
 	t.Parallel()
 
-	in := "**диалоги**\nПривет.\n\n**КОНТЕКСТ И ИЗМЕНЕНИЯ**\nstate: момент обновлён."
+	in := "**диалоги**\nПривет.\n\n" + structured.HeaderContext + "\nstate: момент обновлён."
 	assert.Equal(t, in, domain.StripRulesBlock(in))
 }
 
@@ -19,13 +20,13 @@ func TestStripRulesBlock_RemovesTrailingBlock(t *testing.T) {
 	t.Parallel()
 
 	in := strings.Join([]string{
-		"**диалоги и действия**",
+		structured.HeaderDialogue,
 		"Аньбу чуть наклонила голову.",
 		"",
-		"**КОНТЕКСТ И ИЗМЕНЕНИЯ**",
+		structured.HeaderContext,
 		"state.md: допрос.",
 		"",
-		"**ВАЛИДАЦИЯ ПРАВИЛ**",
+		structured.HeaderValidation,
 		"- Лимит слов: 171 / 350",
 		"- Управлял персонажем игрока: нет",
 		"- NPC знал только то, что должен: да",
@@ -33,8 +34,8 @@ func TestStripRulesBlock_RemovesTrailingBlock(t *testing.T) {
 	out := domain.StripRulesBlock(in)
 	assert.NotContains(t, out, "ВАЛИДАЦИЯ ПРАВИЛ")
 	assert.NotContains(t, out, "Лимит слов")
-	assert.Contains(t, out, "**диалоги и действия**")
-	assert.Contains(t, out, "**КОНТЕКСТ И ИЗМЕНЕНИЯ**")
+	assert.Contains(t, out, structured.HeaderDialogue)
+	assert.Contains(t, out, structured.HeaderContext)
 }
 
 func TestStripRulesBlock_CollapsesTrailingBlankLines(t *testing.T) {

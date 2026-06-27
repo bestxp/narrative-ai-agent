@@ -242,6 +242,14 @@ func (h *Handler) sendFinalReply(
 	replyToID int,
 ) {
 	final := finalReplyText(state, rulesCheckBlock)
+
+	// The sections were already streamed via Append; Final just
+	// needs to close the stream with the last rendered text (or
+	// the full RenderAny output if nothing was sent).
+	if state.lastSentRender != "" {
+		final = state.lastSentRender
+	}
+
 	if state.session == nil {
 		if err := c.Send(ctx, messaging.OutgoingMessage{
 			ChatID:           chatID,
@@ -295,6 +303,10 @@ func (h *Handler) buildCallbacks(
 		OnDelta: func(s string) error {
 			state.textSeen = true
 			state.replyBuf.WriteString(s)
+
+			if state.session != nil {
+				state.streamPlainSections(ctx, h.log)
+			}
 
 			return nil
 		},
@@ -505,7 +517,7 @@ type messageState struct {
 	lastTok          usecase.TokenUsage
 	tokMu            sync.Mutex
 	textSeen         bool
-	jsonMode         bool
+	lastSentRender   string
 	stripRules       func(string) string
 	postStreamRender func() string
 	session          messaging.StreamSession
@@ -515,7 +527,7 @@ type messageState struct {
 // state value. The closures close over `state` so they
 // have to be assigned after the struct exists.
 func newMessageState(log zerolog.Logger, includeTokens bool) *messageState {
-	s := &messageState{log: log}
+	s := &messageState{log: log, lastSentRender: ""}
 
 	s.stripRules = func(text string) string {
 		if !includeTokens || text == "" {
@@ -526,25 +538,32 @@ func newMessageState(log zerolog.Logger, includeTokens bool) *messageState {
 	}
 
 	s.postStreamRender = func() string {
-		raw := structured.StripThinkingTags(s.replyBuf.String())
-		if s.jsonMode {
-			n, err := structured.Parse(raw)
-			if err != nil {
-				// Fallback: surface the raw content so the
-				// player still sees something. The slowlog
-				// already records the parse failure.
-				s.log.Warn().Err(err).Int("chars", len(raw)).Msg("json parse failed; sending raw")
-
-				return raw
-			}
-
-			return n.Render()
-		}
-
-		return raw
+		return structured.RenderAny(s.replyBuf.String())
 	}
 
 	return s
+}
+
+// streamPlainSections parses the current reply buffer and sends
+// any newly-completed sections to the player via Append. Called
+// from OnDelta on every text fragment in plain mode so the
+// player sees sections appear one by one rather than waiting
+// for the full response.
+func (s *messageState) streamPlainSections(ctx context.Context, log zerolog.Logger) {
+	raw := s.replyBuf.String()
+
+	// Use the partial renderer during the live stream so the user
+	// sees only the sections that have actually arrived. Empty
+	// placeholder sections are suppressed until content is produced.
+	rendered := structured.RenderAnyPartial(raw)
+	if rendered == "" || rendered == s.lastSentRender {
+		return
+	}
+
+	s.lastSentRender = rendered
+	if err := s.session.Append(ctx, rendered); err != nil {
+		log.Warn().Err(err).Msg("plain section append failed")
+	}
 }
 
 // receiver type-erases the per-client Recv() channel via a

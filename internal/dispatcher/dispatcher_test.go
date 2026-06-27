@@ -14,6 +14,7 @@ import (
 	"github.com/bestxp/narrative-ai-agent/internal/repository/api"
 	"github.com/bestxp/narrative-ai-agent/internal/slowlog"
 	yamlfs "github.com/bestxp/narrative-ai-agent/internal/storage/fs"
+	"github.com/bestxp/narrative-ai-agent/internal/structured"
 	"github.com/bestxp/narrative-ai-agent/internal/usecase"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
@@ -145,7 +146,7 @@ func TestDispatcher_FreeformValidates(t *testing.T) {
 	d, _ := setup(t)
 	rep, err := d.Handle(context.Background(), messaging.IncomingMessage{Text: "ты усмехнулся"})
 	require.NoError(t, err)
-	assert.Contains(t, rep, "**ВАЛИДАЦИЯ ПРАВИЛ**")
+	assert.Contains(t, rep, structured.HeaderValidation)
 	assert.Contains(t, rep, "ты усмехнулся")
 }
 

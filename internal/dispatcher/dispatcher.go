@@ -17,6 +17,7 @@ import (
 	"github.com/bestxp/narrative-ai-agent/internal/domain"
 	"github.com/bestxp/narrative-ai-agent/internal/messaging"
 	"github.com/bestxp/narrative-ai-agent/internal/slowlog"
+	"github.com/bestxp/narrative-ai-agent/internal/structured"
 	"github.com/bestxp/narrative-ai-agent/internal/usecase"
 	"github.com/rs/zerolog"
 )
@@ -154,9 +155,9 @@ func (d *Dispatcher) HandleStream(ctx context.Context, msg messaging.IncomingMes
 		v := d.rf.Validate(msg.Text)
 
 		reply := fmt.Sprintf(
-			"**диалоги и действия**\n%s\n\n"+
-				"**КОНТЕКСТ И ИЗМЕНЕНИЯ**\nбез изменений\n\n"+
-				"**ВАЛИДАЦИЯ ПРАВИЛ**\n"+
+			structured.HeaderDialogue+"\n%s\n\n"+
+				structured.HeaderContext+"\nбез изменений\n\n"+
+				structured.HeaderValidation+"\n"+
 				"- Лимит слов: %d\n"+
 				"- Слов в ответе: %d\n"+
 				"- Превышен: %v\n"+

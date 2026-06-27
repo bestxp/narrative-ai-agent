@@ -13,6 +13,7 @@ import (
 	"github.com/bestxp/narrative-ai-agent/internal/repository/api"
 	"github.com/bestxp/narrative-ai-agent/internal/slowlog"
 	yamlfs "github.com/bestxp/narrative-ai-agent/internal/storage/fs"
+	"github.com/bestxp/narrative-ai-agent/internal/structured"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -74,9 +75,9 @@ func TestGM_StreamsReplyIntoCallback(t *testing.T) {
 	g, _, fake := newGMTestEnv(t)
 	fake.rounds = [][]FakeChunk{
 		{
-			{Content: "**диалоги и действия**\nПривет, "},
-			{Content: "путник.\n\n**КОНТЕКСТ И ИЗМЕНЕНИЯ**\nбез изменений\n\n" +
-				"**БУДУЩЕЕ**\n- продолжение\n\n**ВАЛИДАЦИЯ ПРАВИЛ**\n- ok"},
+			{Content: structured.HeaderDialogue + "\nПривет, "},
+			{Content: "путник.\n\n" + structured.HeaderContext + "\nбез изменений\n\n" +
+				structured.HeaderFuture + "\n- продолжение\n\n" + structured.HeaderValidation + "\n- ok"},
 			{Finish: "stop"},
 		},
 	}
@@ -94,9 +95,9 @@ func TestGM_ToolRound_EndDay(t *testing.T) {
 	t.Skip("pending gm.go migration to repository pattern — see research_repository_pattern.md")
 	chatID := "chat-" + t.Name()
 	g, fs, fake := newGMTestEnv(t)
-	dayRecordedContent := " День записан.\n\n**диалоги и действия**\nАрхивирую день. " +
-		"День записан.\n\n**КОНТЕКСТ И ИЗМЕНЕНИЯ**\nmemorise.md обновлён\n\n" +
-		"**БУДУЩЕЕ**\n- продолжение\n\n**ВАЛИДАЦИЯ ПРАВИЛ**\n- ok"
+	dayRecordedContent := " День записан.\n\n" + structured.HeaderDialogue + "\nАрхивирую день. " +
+		"День записан.\n\n" + structured.HeaderContext + "\nmemorise.md обновлён\n\n" +
+		structured.HeaderFuture + "\n- продолжение\n\n" + structured.HeaderValidation + "\n- ok"
 	fake.rounds = [][]FakeChunk{
 		{
 			{Content: "Архивирую день."},
@@ -132,9 +133,9 @@ func TestGM_ToolRound_UpdateState(t *testing.T) {
 			},
 		},
 		{{
-			Content: " ок.\n\n**диалоги и действия**\nобновляю ок.\n\n" +
-				"**КОНТЕКСТ И ИЗМЕНЕНИЯ**\nstate.md обновлён\n\n" +
-				"**БУДУЩЕЕ**\n- продолжение\n\n**ВАЛИДАЦИЯ ПРАВИЛ**\n- ok",
+			Content: " ок.\n\n" + structured.HeaderDialogue + "\nобновляю ок.\n\n" +
+				structured.HeaderContext + "\nstate.md обновлён\n\n" +
+				structured.HeaderFuture + "\n- продолжение\n\n" + structured.HeaderValidation + "\n- ok",
 			Finish: "stop",
 		}},
 	}
@@ -158,9 +159,9 @@ func TestGM_ToolRound_RotatePlan_RejectsBadRange(t *testing.T) {
 				ToolArgs: `{"events":["a","b"]}`, Finish: "tool_calls",
 			},
 		},
-		{{Content: "не вышло\n\n**диалоги и действия**\nне вышло" +
-			"\n\n**КОНТЕКСТ И ИЗМЕНЕНИЯ**\nбез изменений\n\n**БУДУЩЕЕ**" +
-			"\n- продолжение\n\n**ВАЛИДАЦИЯ ПРАВИЛ**\n- ok", Finish: "stop"}},
+		{{Content: "не вышло\n\n" + structured.HeaderDialogue + "\nне вышло" +
+			"\n\n" + structured.HeaderContext + "\nбез изменений\n\n" + structured.HeaderFuture +
+			"\n- продолжение\n\n" + structured.HeaderValidation + "\n- ok", Finish: "stop"}},
 	}
 	_, err := g.Reply(context.Background(), chatID, "x", Callbacks{})
 	require.NoError(t, err)
@@ -207,9 +208,9 @@ func TestGM_StuckGuard_InjectsNudge(t *testing.T) {
 			Finish:   "tool_calls",
 		}},
 		{{
-			Content: "**диалоги и действия**\nок\n\n" +
-				"**КОНТЕКСТ И ИЗМЕНЕНИЯ**\nбез изменений\n\n" +
-				"**БУДУЩЕЕ**\n- продолжение\n\n**ВАЛИДАЦИЯ ПРАВИЛ**\n- ok",
+			Content: structured.HeaderDialogue + "\nок\n\n" +
+				structured.HeaderContext + "\nбез изменений\n\n" +
+				structured.HeaderFuture + "\n- продолжение\n\n" + structured.HeaderValidation + "\n- ok",
 			Finish: "stop",
 		}},
 	}
@@ -217,6 +218,7 @@ func TestGM_StuckGuard_InjectsNudge(t *testing.T) {
 	require.NoError(t, err)
 
 	conv := g.GetConversation(chatID)
+	conv.mu.Lock()
 
 	var foundNudge bool
 
@@ -225,6 +227,8 @@ func TestGM_StuckGuard_InjectsNudge(t *testing.T) {
 			foundNudge = true
 		}
 	}
+
+	conv.mu.Unlock()
 
 	assert.True(t, foundNudge, "stuck guard should inject nudge after 3 consecutive tool-only rounds")
 }
@@ -260,9 +264,9 @@ func TestGM_BuildsContextWithNPCs(t *testing.T) {
 		captured = req
 
 		return onChunk(llm.Chunk{
-			Content: "**диалоги и действия**\nok\n\n" +
-				"**КОНТЕКСТ И ИЗМЕНЕНИЯ**\nбез изменений\n\n" +
-				"**БУДУЩЕЕ**\n- продолжение\n\n**ВАЛИДАЦИЯ ПРАВИЛ**\n- ok",
+			Content: structured.HeaderDialogue + "\nok\n\n" +
+				structured.HeaderContext + "\nбез изменений\n\n" +
+				structured.HeaderFuture + "\n- продолжение\n\n" + structured.HeaderValidation + "\n- ok",
 			Finish: "stop",
 		})
 	}}
@@ -370,9 +374,9 @@ func TestGM_CompactionFiresOnLongHistory(t *testing.T) {
 	conv.mu.Unlock()
 
 	fake.rounds = [][]FakeChunk{{{
-		Content: "**диалоги и действия**\nfinal\n\n" +
-			"**КОНТЕКСТ И ИЗМЕНЕНИЯ**\nбез изменений\n\n" +
-			"**БУДУЩЕЕ**\n- продолжение\n\n**ВАЛИДАЦИЯ ПРАВИЛ**\n- ok",
+		Content: structured.HeaderDialogue + "\nfinal\n\n" +
+			structured.HeaderContext + "\nбез изменений\n\n" +
+			structured.HeaderFuture + "\n- продолжение\n\n" + structured.HeaderValidation + "\n- ok",
 		Finish: "stop",
 	}}}
 

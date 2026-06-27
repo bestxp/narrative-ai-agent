@@ -6,6 +6,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/bestxp/narrative-ai-agent/internal/messaging/telegram"
+	"github.com/bestxp/narrative-ai-agent/internal/structured"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -37,9 +38,9 @@ func TestMarkdownToHTML_Link(t *testing.T) {
 func TestMarkdownToHTML_BlockHeaders(t *testing.T) {
 	t.Parallel()
 
-	in := "**диалоги и действия**\n- Hi\n\n**КОНТЕКСТ И ИЗМЕНЕНИЯ**\nok"
+	in := structured.HeaderDialogue + "\n- Hi\n\n" + structured.HeaderContext + "\nok"
 	out := telegram.MarkdownToHTML(in)
-	assert.Contains(t, out, "<b>диалоги и действия</b>")
+	assert.Contains(t, out, "<b>ДИАЛОГИ И ДЕЙСТВИЯ</b>")
 	assert.Contains(t, out, "<b>КОНТЕКСТ И ИЗМЕНЕНИЯ</b>")
 }
 

@@ -3,6 +3,7 @@ package usecase_test
 import (
 	"testing"
 
+	"github.com/bestxp/narrative-ai-agent/internal/structured"
 	"github.com/bestxp/narrative-ai-agent/internal/usecase"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -11,14 +12,14 @@ import (
 func TestExtractContextCommands_Markdown_UpdateNpc(t *testing.T) {
 	t.Parallel()
 
-	body := `**диалоги и действия**
+	body := structured.HeaderDialogue + `
 Хината вздрогнула.
 
-**КОНТЕКСТ И ИЗМЕНЕНИЯ**
+` + structured.HeaderContext + `
 ⦁ update_npc: Хината — статус: смущена
 ⦁ update_npc: Наруто — статус: ведёт в Ичираку
 
-**БУДУЩЕЕ**
+` + structured.HeaderFuture + `
 - Обед`
 	cmds := usecase.ExtractContextCommands(body)
 	require.Len(t, cmds, 2)
@@ -34,10 +35,10 @@ func TestExtractContextCommands_Markdown_UpdateNpc(t *testing.T) {
 func TestExtractContextCommands_Markdown_Lore(t *testing.T) {
 	t.Parallel()
 
-	body := `**КОНТЕКСТ И ИЗМЕНЕНИЯ**
+	body := structured.HeaderContext + `
 ⦁ lore: День 5 — Саске простил Итахи, они помирились
 
-**БУДУЩЕЕ**
+` + structured.HeaderFuture + `
 - Тренировка`
 	cmds := usecase.ExtractContextCommands(body)
 	require.Len(t, cmds, 1)
@@ -49,10 +50,10 @@ func TestExtractContextCommands_Markdown_Lore(t *testing.T) {
 func TestExtractContextCommands_Markdown_UpdateState(t *testing.T) {
 	t.Parallel()
 
-	body := `**КОНТЕКСТ И ИЗМЕНЕНИЯ**
+	body := structured.HeaderContext + `
 ⦁ update_state: moment=у ворот Конохи; npcs=Наруто, Хината; events=вышли к воротам; in_flight=true
 
-**БУДУЩЕЕ**
+` + structured.HeaderFuture + `
 - Обед`
 	cmds := usecase.ExtractContextCommands(body)
 	require.Len(t, cmds, 1)
@@ -64,7 +65,7 @@ func TestExtractContextCommands_Markdown_UpdateState(t *testing.T) {
 func TestExtractContextCommands_Markdown_NpcShortForm(t *testing.T) {
 	t.Parallel()
 
-	body := `**КОНТЕКСТ И ИЗМЕНЕНИЯ**
+	body := structured.HeaderContext + `
 ⦁ npc: Хината — личная память: оговорилась про «не думала о Наруто»`
 	cmds := usecase.ExtractContextCommands(body)
 	require.Len(t, cmds, 1)
@@ -94,10 +95,10 @@ func TestExtractContextCommands_JSON(t *testing.T) {
 func TestExtractContextCommands_NoContextBlock(t *testing.T) {
 	t.Parallel()
 
-	body := `**диалоги и действия**
+	body := structured.HeaderDialogue + `
 Хината вздрогнула, отступила.
 
-**БУДУЩЕЕ**
+` + structured.HeaderFuture + `
 - Обед`
 	cmds := usecase.ExtractContextCommands(body)
 	assert.Empty(t, cmds)
@@ -106,7 +107,7 @@ func TestExtractContextCommands_NoContextBlock(t *testing.T) {
 func TestExtractContextCommands_MultipleBullets(t *testing.T) {
 	t.Parallel()
 
-	body := `**КОНТЕКСТ И ИЗМЕНЕНИЯ**
+	body := structured.HeaderContext + `
 - update_npc: Хината — статус: смущена
 • update_npc: Наруто — способности: рамен-ная техника
 * lore: День 5 — Хината улыбнулась впервые
@@ -124,7 +125,7 @@ func TestExtractContextCommands_MultipleBullets(t *testing.T) {
 func TestExtractContextCommands_UnknownLineIgnored(t *testing.T) {
 	t.Parallel()
 
-	body := `**КОНТЕКСТ И ИЗМЕНЕНИЯ**
+	body := structured.HeaderContext + `
 ⦁ state.md: момент обновлён
 ⦁ memory.md: добавлена запись
 ⦁ update_npc: Хината — статус: смущена`
@@ -138,11 +139,11 @@ func TestExtractContextCommands_UnknownLineIgnored(t *testing.T) {
 func TestExtractContextCommands_QuotedNPCLineNotMistakenForDirective(t *testing.T) {
 	t.Parallel()
 
-	body := `**диалоги и действия**
+	body := structured.HeaderDialogue + `
 — update_npc: Хината — сказал Наруто
 — Тренируйся усерднее
 
-**КОНТЕКСТ И ИЗМЕНЕНИЯ**
+` + structured.HeaderContext + `
 ⦁ update_npc: Хината — статус: смущена`
 	cmds := usecase.ExtractContextCommands(body)
 	require.Len(t, cmds, 1)
@@ -193,7 +194,7 @@ func TestParseBoolArg(t *testing.T) {
 func TestExtractContextCommands_AppendLoreShortForm(t *testing.T) {
 	t.Parallel()
 
-	body := `**КОНТЕКСТ И ИЗМЕНЕНИЯ**
+	body := structured.HeaderContext + `
 ⦁ append_lore: header=День 7, bullet=Маркус приземлился в Конохе`
 	cmds := usecase.ExtractContextCommands(body)
 	require.Len(t, cmds, 1)
@@ -209,7 +210,7 @@ func TestExtractContextCommands_AppendLoreShortForm(t *testing.T) {
 func TestExtractContextCommands_UpdateSoul(t *testing.T) {
 	t.Parallel()
 
-	body := `**КОНТЕКСТ И ИЗМЕНЕНИЯ**
+	body := structured.HeaderContext + `
 ⦁ update_soul: section=Легенда для прикрытия, append=сирота с другого континента, кораблекрушение`
 	cmds := usecase.ExtractContextCommands(body)
 	require.Len(t, cmds, 1)
@@ -223,7 +224,7 @@ func TestExtractContextCommands_UpdateSoul(t *testing.T) {
 func TestExtractContextCommands_UpdateSkill(t *testing.T) {
 	t.Parallel()
 
-	body := `**КОНТЕКСТ И ИЗМЕНЕНИЯ**
+	body := structured.HeaderContext + `
 ⦁ update_skill: section=Оружие, append=Кунай — 3 шт.`
 	cmds := usecase.ExtractContextCommands(body)
 	require.Len(t, cmds, 1)
@@ -240,7 +241,7 @@ func TestExtractContextCommands_UpdateSkill(t *testing.T) {
 func TestExtractContextCommands_UpdateMemory(t *testing.T) {
 	t.Parallel()
 
-	body := `**КОНТЕКСТ И ИЗМЕНЕНИЯ**
+	body := structured.HeaderContext + `
 ⦁ update_memory: section=Яркие моменты, append=первый поцелуй с Ино на вечерней прогулке по Конохе`
 	cmds := usecase.ExtractContextCommands(body)
 	require.Len(t, cmds, 1)
@@ -255,7 +256,7 @@ func TestExtractContextCommands_UpdateMemory(t *testing.T) {
 func TestExtractContextCommands_UpdateInventory(t *testing.T) {
 	t.Parallel()
 
-	body := `**КОНТЕКСТ И ИЗМЕНЕНИЯ**
+	body := structured.HeaderContext + `
 ⦁ update_inventory: name=Кунай, type=weapon, description=стандартный клинок Конохи, equip=false, special=нет`
 	cmds := usecase.ExtractContextCommands(body)
 	require.Len(t, cmds, 1)
@@ -274,7 +275,7 @@ func TestExtractContextCommands_UpdateInventory(t *testing.T) {
 func TestExtractContextCommands_InventoryAndCurrency(t *testing.T) {
 	t.Parallel()
 
-	body := `**КОНТЕКСТ И ИЗМЕНЕНИЯ**
+	body := structured.HeaderContext + `
 ⦁ update_inventory: name=Пилюля, type=consumable, description=восстанавливает чакру
 ⦁ remove_inventory_item: name=Пилюля
 ⦁ set_currency: name=Рё, count=4200
@@ -300,7 +301,7 @@ func TestExtractContextCommands_InventoryAndCurrency(t *testing.T) {
 func TestExtractContextCommands_UpdateCharacterRejected(t *testing.T) {
 	t.Parallel()
 
-	body := `**КОНТЕКСТ И ИЗМЕНЕНИЯ**
+	body := structured.HeaderContext + `
 ⦁ update_character: file=SOUL, section=Легенда, append=...`
 	cmds := usecase.ExtractContextCommands(body)
 	assert.Empty(t, cmds, "legacy update_character must NOT be parsed as update_soul etc.")
@@ -309,7 +310,7 @@ func TestExtractContextCommands_UpdateCharacterRejected(t *testing.T) {
 func TestExtractContextCommands_RawPreserved(t *testing.T) {
 	t.Parallel()
 
-	body := `**КОНТЕКСТ И ИЗМЕНЕНИЯ**
+	body := structured.HeaderContext + `
 ⦁ update_npc: Хината — статус: смущена`
 	cmds := usecase.ExtractContextCommands(body)
 	require.Len(t, cmds, 1)

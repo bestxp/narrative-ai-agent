@@ -5,16 +5,16 @@ import (
 	"strings"
 )
 
-// rulesBlockRe matches the LLM-generated "**ВАЛИДАЦИЯ ПРАВИЛ**"
-// header on its own line. The match is line-anchored at the
+// rulesBlockRe matches the LLM-generated validation header
+// on its own line. The match is line-anchored at the
 // start, so the phrase inside a quoted NPC line ("— сказал
 // ВАЛИДАЦИЯ ПРАВИЛ ...") is not caught. We then drop everything
 // from the match offset to end of string.
 var rulesBlockRe = regexp.MustCompile(`(?m)^\*\*ВАЛИДАЦИЯ ПРАВИЛ\*\*\s*$`)
 
-// StripRulesBlock removes the trailing "**ВАЛИДАЦИЯ ПРАВИЛ**"
+// StripRulesBlock removes the trailing validation
 // block from an LLM reply. The block is the last segment of the
-// GM's reply (after **диалоги** and **КОНТЕКСТ И ИЗМЕНЕНИЯ**),
+// GM's reply (after dialogue and context blocks),
 // so truncating at the rules header is enough — the bullet list
 // that follows is dropped along with any further headers the
 // LLM might have appended.

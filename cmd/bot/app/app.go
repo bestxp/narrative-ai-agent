@@ -317,6 +317,7 @@ func bootNarrativePrompts(cfg *config.Config) (string, *promptpkg.NarrativeConfi
 		RulesCheckBlock:         cfg.Narrative.RulesCheckBlock,
 		CompactionNotify:        cfg.Narrative.CompactionNotify,
 		CompactionNotifyVerbose: cfg.Narrative.CompactionNotifyVerbose,
+		Mode:                    cfg.Narrative.Mode,
 	}
 
 	systemPrompt, err := promptpkg.RenderNarrative(role.SystemPromptPath, *snap)

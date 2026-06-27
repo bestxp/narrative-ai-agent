@@ -235,12 +235,17 @@ func (s *wsSession) accumulateDelta(delta string) {
 	s.bufMtx.Unlock()
 }
 
-// currentText returns the full accumulated assistant buffer.
+// currentText returns the accumulated assistant buffer rendered
+// for live streaming. We use RenderAnyPartial so the WebSocket
+// client sees only the sections that have already received content,
+// not four empty placeholder blocks while the response is still
+// being generated.
 func (s *wsSession) currentText() string {
 	s.bufMtx.Lock()
-	defer s.bufMtx.Unlock()
+	raw := s.buf.String()
+	s.bufMtx.Unlock()
 
-	return s.buf.String()
+	return structured.RenderAnyPartial(raw)
 }
 
 // isJSONMode reports whether the current turn switched to silent
@@ -263,20 +268,13 @@ func (s *wsSession) hasText() bool {
 
 // finalText renders the accumulated assistant buffer for the
 // just-completed turn. Called by the server after the LLM stream
-// finishes. Strips thinking tags and applies the JSON-mode render.
+// finishes. Strips thinking tags and normalises both JSON and
+// plain section-delimited responses into the canonical bold
+// Russian headers via structured.RenderAny.
 func (s *wsSession) finalText() string {
 	s.bufMtx.Lock()
 	raw := s.buf.String()
-	jsonMode := s.jsonMode
 	s.bufMtx.Unlock()
 
-	raw = structured.StripThinkingTags(raw)
-	if jsonMode {
-		n, err := structured.Parse(raw)
-		if err == nil {
-			return n.Render()
-		}
-	}
-
-	return raw
+	return structured.RenderAny(raw)
 }

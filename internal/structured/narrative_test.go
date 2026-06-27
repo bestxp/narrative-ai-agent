@@ -48,7 +48,7 @@ func TestParse_StripsFenceNoLang(t *testing.T) {
 func TestParse_NotJSON(t *testing.T) {
 	t.Parallel()
 
-	_, err := structured.Parse("**диалоги и действия**\n— Хината вздрогнула...")
+	_, err := structured.Parse(structured.HeaderDialogue + "\n— Хината вздрогнула...")
 	assert.ErrorIs(t, err, structured.ErrNotJSON)
 }
 
@@ -150,16 +150,16 @@ func TestRender_4Blocks(t *testing.T) {
 	out := n.Render()
 	// Must contain all 4 expected headers.
 	for _, h := range []string{
-		"**диалоги и действия**",
-		"**КОНТЕКСТ И ИЗМЕНЕНИЯ**",
-		"**БУДУЩЕЕ**",
-		"**ВАЛИДАЦИЯ ПРАВИЛ**",
+		structured.HeaderDialogue,
+		structured.HeaderContext,
+		structured.HeaderFuture,
+		structured.HeaderValidation,
 	} {
 		assert.Contains(t, out, h, "missing header %q in:\n%s", h, out)
 	}
 	// Order matters — block 1 must precede block 4.
-	idx1 := strings.Index(out, "**диалоги и действия**")
-	idx4 := strings.Index(out, "**ВАЛИДАЦИЯ ПРАВИЛ**")
+	idx1 := strings.Index(out, structured.HeaderDialogue)
+	idx4 := strings.Index(out, structured.HeaderValidation)
 	assert.Less(t, idx1, idx4, "block order broken")
 	// All four narratives must be present.
 	assert.Contains(t, out, "Хината вздрогнула, отступила.")
@@ -184,7 +184,7 @@ func TestRender_TrimsTrailingWhitespace(t *testing.T) {
 	// canonical clean form: "сцена." (the trailing
 	// double space inside the string is collapsed by
 	// TrimSpace, which is fine for our purposes).
-	assert.True(t, strings.HasPrefix(out, "**диалоги и действия**\nсцена."),
+	assert.True(t, strings.HasPrefix(out, structured.HeaderDialogue+"\nсцена."),
 		"got: %q", out)
 	// No trailing whitespace on the last line.
 	assert.False(t, strings.HasSuffix(out, " \n"), "got: %q", out)

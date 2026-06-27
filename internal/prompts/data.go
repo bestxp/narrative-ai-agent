@@ -101,6 +101,7 @@ type NarrativeData struct {
 	WordLimit               int
 	WordLimitFloor          int
 	Language                string
+	Mode                    string
 	RulesCheckBlock         bool
 	CompactionNotify        bool
 	CompactionNotifyVerbose bool
@@ -295,6 +296,8 @@ type NarrativeConfigSnapshot struct {
 	RulesCheckBlock         bool
 	CompactionNotify        bool
 	CompactionNotifyVerbose bool
+	// Mode is the narrative response format: "json" or "plain".
+	Mode string
 
 	// Compaction knobs (zero = use Go-side default).
 	NPCPersonalMemoryLimit     int
@@ -330,6 +333,7 @@ func NewPromptData(
 			WordLimit:               narrative.WordLimit,
 			WordLimitFloor:          limits.NarrativeWordLimitFloor,
 			Language:                narrative.Language,
+			Mode:                    narrative.Mode,
 			RulesCheckBlock:         narrative.RulesCheckBlock,
 			CompactionNotify:        narrative.CompactionNotify,
 			CompactionNotifyVerbose: narrative.CompactionNotifyVerbose,
