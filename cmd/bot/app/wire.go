@@ -1,15 +1,16 @@
-package main
+package app
 
 import (
 	"context"
 	"path/filepath"
-	"sync/atomic"
 
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/gitops"
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/llm"
 	llmanthropic "github.com/bestxp/narrative-ai-agent/internal/adapter/llm/anthropic"
 	llmopenai "github.com/bestxp/narrative-ai-agent/internal/adapter/llm/openai"
+	"github.com/bestxp/narrative-ai-agent/internal/adapter/llmclient"
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
+	"github.com/bestxp/narrative-ai-agent/internal/adapter/summarizertools"
 	"github.com/bestxp/narrative-ai-agent/internal/config"
 	"github.com/bestxp/narrative-ai-agent/internal/dispatcher"
 	"github.com/bestxp/narrative-ai-agent/internal/messaging"
@@ -21,14 +22,13 @@ import (
 	"github.com/bestxp/narrative-ai-agent/internal/slowlog"
 	yamlfs "github.com/bestxp/narrative-ai-agent/internal/storage/fs"
 	"github.com/bestxp/narrative-ai-agent/internal/usecase"
-	"github.com/bestxp/narrative-ai-agent/internal/usecase/tools"
 	files "github.com/bestxp/narrative-ai-agent/internal/usecase/tools/files"
 	"github.com/rs/zerolog"
 )
 
-// buildStorage opens the FileStore at the configured
-// data root and returns the absolute path so the YAML
-// repository layer can construct its own backend.
+// buildStorage opens the FileStore at the configured data
+// root and returns the absolute path so the YAML repository
+// layer can construct its own backend.
 func buildStorage(cfg *config.Config, log zerolog.Logger) (*storage.FileStore, string) {
 	absData, err := filepath.Abs(cfg.Paths.DataRoot)
 	if err != nil {
@@ -43,9 +43,8 @@ func buildStorage(cfg *config.Config, log zerolog.Logger) (*storage.FileStore, s
 	return fs, absData
 }
 
-// buildGit wires the git operator. When cfg.Git.Disabled
-// is true the operator stays nil and commits/pushes
-// no-op.
+// buildGit wires the git operator. When cfg.Git.Disabled is
+// true the operator stays nil and commits/pushes no-op.
 func buildGit(cfg *config.Config, log zerolog.Logger) *gitops.Operator {
 	if cfg.Git.Disabled {
 		log.Info().Msg("git disabled (config: git.disabled=true)")
@@ -63,8 +62,8 @@ func buildGit(cfg *config.Config, log zerolog.Logger) *gitops.Operator {
 // buildLLMDriver selects the LLM driver (openai or anthropic)
 // per the role's referenced provider.Driver. The provider's
 // URL/key/driver are the single source of truth for endpoint
-// configuration; llm.RoleConfig (the runtime snapshot) is filled
-// from the provider here.
+// configuration; llm.RoleConfig (the runtime snapshot) is
+// filled from the provider here.
 //
 //nolint:ireturn // driver interface is the intended return type
 func buildLLMDriver(
@@ -72,7 +71,7 @@ func buildLLMDriver(
 	prov config.ProviderConfig,
 	slow *slowlog.Logger,
 	log zerolog.Logger,
-) (llm.Driver, driverClient) {
+) (llm.Driver, *llmclient.Driver) {
 	rc := llm.RoleConfig{
 		APIURL:                   prov.APIURL,
 		APIKey:                   prov.APIKey,
@@ -100,7 +99,7 @@ func buildLLMDriver(
 		log.Fatal().Str("driver", prov.Driver).Msg("unknown provider.driver; expected openai|anthropic")
 	}
 
-	return driver, driverClient{driver: driver}
+	return driver, llmclient.New(driver)
 }
 
 // buildSummarizer wires the dedicated summary role when
@@ -139,7 +138,7 @@ func buildSummarizer( //nolint:funlen // complex function; splitting would harm 
 		}
 		sumProv = sumProvCfg
 
-		p, err := renderSummarizerPrompt("summary.md.tmpl", snap)
+		p, err := promptpkg.RenderSummarizer("summary.md.tmpl", snap)
 		if err != nil {
 			log.Warn().Err(err).Str("path", sumRoleCfg.SystemPromptPath).Msg("summary prompt unreadable; dropping to fallback")
 		} else {
@@ -164,7 +163,7 @@ func buildSummarizer( //nolint:funlen // complex function; splitting would harm 
 		}
 		sumProv = prov
 
-		p, err := renderSummarizerPrompt("summary.md.tmpl", snap)
+		p, err := promptpkg.RenderSummarizer("summary.md.tmpl", snap)
 		if err != nil || p == "" {
 			log.Warn().Err(err).Msg("fallback summary prompt unreadable; compaction will be drop-only")
 		} else {
@@ -231,7 +230,7 @@ func wireSummarizerPrompt(
 	setter func(string), warnReason string,
 	log zerolog.Logger,
 ) {
-	p, err := renderSummarizerPrompt(name, snap)
+	p, err := promptpkg.RenderSummarizer(name, snap)
 	if err != nil || p == "" {
 		log.Warn().Err(err).Str("template", name).Msg(warnReason)
 
@@ -241,48 +240,43 @@ func wireSummarizerPrompt(
 	setter(p)
 }
 
-// summarizerAdapterSlots builds the four tools.*
-// summarizer interfaces from a single *usecase.Summarizer
-// so NPC, Lore, Chronicle and CharacterMemory compaction
-// all share the same LLM role.
-type summarizerAdapterSlots struct {
-	npc       tools.NPCSummarizer
-	lore      tools.LoreSummarizer
-	chronicle tools.ChronicleSummarizer
-	charMem   tools.CharacterMemorySummarizer
+// buildSummarizerPipeline is the summarizer slot assembly
+// line. It builds the cheap LLM-side summarizer (or returns
+// nil when the operator chose to skip the compaction path)
+// and the summarizertools.Slots bag that the file toolset
+// consumes (NPC, Lore, Chronicle, CharacterMemory). All four
+// slots share the same underlying *usecase.Summarizer; the
+// adapter is what makes the API surface match the per-tool
+// type.
+func buildSummarizerPipeline(
+	cfg *config.Config,
+	role config.LLMRoleConfig,
+	prov config.ProviderConfig,
+	snap promptpkg.NarrativeConfigSnapshot,
+	slow *slowlog.Logger,
+	log zerolog.Logger,
+) (*usecase.Summarizer, summarizertools.Slots) {
+	sum := buildSummarizer(cfg, role, prov, snap, slow, log)
+
+	return sum, summarizertools.BuildSlots(sum)
 }
 
-func buildSummarizerSlots(s *usecase.Summarizer) summarizerAdapterSlots {
-	var slots summarizerAdapterSlots
-	if s == nil {
-		return slots
-	}
-
-	adapter := summarizerAdapter{s: s}
-	slots.npc = adapter
-	slots.lore = adapter
-	slots.chronicle = adapter
-	slots.charMem = adapter
-
-	return slots
-}
-
-// buildFileToolset constructs the repository-backed
-// toolset that implements tools.Tool: state, memory,
-// npc, world, stage, character. The repos handle is
-// returned alongside the toolset so buildGM can wire
-// it into FirstLaunch (planning/0001: state.yaml is
-// the single runtime snapshot file; world seed must
-// run through WorldStateRepository.EnsureExists so the
-// `stage:` block is present from the first turn).
+// buildFileToolset constructs the repository-backed toolset
+// that implements tools.Tool: state, memory, npc, world,
+// stage, character. The repos handle is returned alongside
+// the toolset so buildGM can wire it into FirstLaunch
+// (planning/0001: state.yaml is the single runtime snapshot
+// file; world seed must run through
+// WorldStateRepository.EnsureExists so the `stage:` block is
+// present from the first turn).
 func buildFileToolset(
 	fs *storage.FileStore, absData string,
-	slots summarizerAdapterSlots,
+	slots summarizertools.Slots,
 	slow *slowlog.Logger, log zerolog.Logger,
 ) (*files.Toolset, *api.Repositories) {
 	yamlStore, _ := yamlfs.New(absData)
 	repos := api.NewYamlRepositories(yamlStore)
-	ft := usecase.NewFileToolset(fs, repos, log, slow, slots.npc, slots.lore, slots.chronicle, slots.charMem)
+	ft := usecase.NewFileToolset(fs, repos, log, slow, slots.NPC, slots.Lore, slots.Chronicle, slots.CharacterMem)
 	log.Info().Str("source", ft.Source()).Msg("file-backed toolset ready")
 
 	return ft, repos
@@ -297,7 +291,7 @@ func buildFileToolset(
 func buildGM(
 	cfg *config.Config, role config.LLMRoleConfig, prov config.ProviderConfig,
 	systemPrompt string,
-	fs *storage.FileStore, llmCli driverClient,
+	fs *storage.FileStore, llmCli *llmclient.Driver,
 	fileTools *files.Toolset, repos *api.Repositories,
 	summarizer *usecase.Summarizer,
 	slow *slowlog.Logger, log zerolog.Logger,
@@ -311,6 +305,8 @@ func buildGM(
 			MaxTokens:                role.MaxTokens,
 			UsePrefillBracket:        role.UsePrefillBracket,
 			Temperature:              role.Temperature,
+			DisableThinking:          role.DisableThinking,
+			ReasoningEffort:          role.ReasoningEffort,
 			MaxEmptyRetries:          role.MaxEmptyRetries,
 			EmptyRetryTimeoutSeconds: role.EmptyRetryTimeoutSeconds,
 		},
@@ -326,8 +322,8 @@ func buildGM(
 	return gm, sysSt
 }
 
-// buildDispatcher wires the operator command dispatcher
-// on top of the file toolset.
+// buildDispatcher wires the operator command dispatcher on
+// top of the file toolset.
 func buildDispatcher(
 	cfg *config.Config, fs *storage.FileStore,
 	gitOp *gitops.Operator, fileTools *files.Toolset,
@@ -393,45 +389,4 @@ func buildMessagingPool(
 	}
 
 	return messaging.NewMultiClient(clients...), clients
-}
-
-// autoSaveState holds the per-process reply counter and
-// threshold used to trigger periodic git auto-saves. sysSt
-// is the optional system_state.md writer — when non-nil,
-// every successful save is recorded there (last_hash,
-// total_saves counter) so the operator can confirm via a
-// single file read what the bot has done.
-type autoSaveState struct {
-	count     atomic.Int64
-	threshold int
-	sysSt     *usecase.SystemState
-}
-
-func newAutoSaveState(cfg *config.Config, sysSt *usecase.SystemState) *autoSaveState {
-	return &autoSaveState{
-		threshold: max(cfg.Git.AutoSave.AfterMessages, 0),
-		sysSt:     sysSt,
-	}
-}
-
-// maybeAutoSave increments the counter on every freeform
-// reply (commands are excluded) and runs a git commit +
-// push when the threshold is reached. Returns the
-// notify text (empty when no save ran).
-func (a *autoSaveState) maybeAutoSave(
-	ctx context.Context,
-	log zerolog.Logger,
-	gitOp *gitops.Operator,
-	chatID string,
-	verbose bool,
-) string {
-	if a.threshold <= 0 || gitOp == nil {
-		return ""
-	}
-
-	if n := a.count.Add(1); int(n)%a.threshold != 0 {
-		return ""
-	}
-
-	return runAutoSave(ctx, log, gitOp, a.sysSt, chatID, verbose)
 }

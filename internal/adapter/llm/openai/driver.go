@@ -288,8 +288,25 @@ func (d *Driver) buildParams(req llm.ChatRequest) (openaisdk.ChatCompletionNewPa
 		params.MaxCompletionTokens = openaisdk.Opt(int64(req.MaxTokens))
 	}
 
-	if req.ReasoningEffort != "" {
-		params.ReasoningEffort = shared.ReasoningEffort(req.ReasoningEffort)
+	// Per-role disable_thinking / reasoning_effort — when the operator
+	// opted in at the role level (DisableThinking=true or
+	// ReasoningEffort="none") but the per-request
+	// ChatRequest did not override it, propagate the
+	// role-level value so OpenAI-compatible providers
+	// (Ollama Cloud, xAI Grok, OpenRouter) skip the
+	// chain-of-thought trace. Anthropic handles the same
+	// flag in its own buildParams.
+	effort := req.ReasoningEffort
+	if effort == "" {
+		if d.role.DisableThinking || d.role.ReasoningEffort == "none" {
+			effort = "none"
+		} else {
+			effort = d.role.ReasoningEffort
+		}
+	}
+
+	if effort != "" {
+		params.ReasoningEffort = shared.ReasoningEffort(effort)
 	}
 
 	return params, nil

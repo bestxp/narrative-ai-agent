@@ -180,8 +180,11 @@ func (d *Dispatcher) HandleStream(ctx context.Context, msg messaging.IncomingMes
 	}
 
 	_, err := d.gm.Reply(ctx, msg.ChatID, msg.Text, cb)
+	if err != nil {
+		return fmt.Errorf("handle_stream: Reply failed: %w", err)
+	}
 
-	return fmt.Errorf("handle_stream: Reply failed: %w", err)
+	return nil
 }
 
 // ResendLast re-runs the GM on the last user message of the given
@@ -222,26 +225,6 @@ func (d *Dispatcher) EditLast(ctx context.Context, chatID, newText string, cb us
 	}
 
 	return nil
-}
-
-// itoa avoids importing strconv for one place. The bot never
-// logs numbers larger than a few thousand, so the inline loop is
-// cheaper than pulling in a stdlib import.
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-
-	var buf [20]byte
-
-	i := len(buf)
-	for n > 0 {
-		i--
-		buf[i] = byte('0' + n%10)
-		n /= 10
-	}
-
-	return string(buf[i:])
 }
 
 // Commands returns the canonical command set with short
@@ -439,7 +422,7 @@ func (d *Dispatcher) formatCommitResult(res gitops.CommitResult, verbose bool) s
 		b.WriteString("✅ сохранено: commit ")
 		b.WriteString(res.Hash)
 		b.WriteString("\n  файлов: ")
-		b.WriteString(itoa(len(res.FilesChanged)))
+		b.WriteString(strconv.Itoa(len(res.FilesChanged)))
 		b.WriteString("\n")
 
 		for _, f := range res.FilesChanged {

@@ -3,6 +3,7 @@ package files_test
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"testing"
 
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
@@ -39,27 +40,12 @@ func writeLongNPC(t *testing.T, fs *storage.FileStore, world, slug, display stri
 
 	p := npcprofile.Profile{DisplayName: display, FileSlug: slug}
 	for i := range 50 {
-		p.PersonalMemory = append(p.PersonalMemory, "факт "+itoa(i))
+		p.PersonalMemory = append(p.PersonalMemory, "факт "+strconv.Itoa(i))
 	}
 
 	body, err := p.Save()
 	require.NoError(t, err)
 	require.NoError(t, fs.WriteRawAtomic("worlds/"+world+"/characters/"+slug+".yaml", body))
-}
-
-// itoa is a tiny stdlib-free int-to-string helper.
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-
-	var b []byte
-	for n > 0 {
-		b = append([]byte{byte('0' + n%10)}, b...)
-		n /= 10
-	}
-
-	return string(b)
 }
 
 // --- AppendLore ---
@@ -111,7 +97,7 @@ func TestChronicleCompressWindow_Basic30Days(t *testing.T) {
 
 	m, _ := NewMemoryTestEnv(t)
 	for i := 1; i <= 30; i++ {
-		require.NoError(t, appendDay(t, m, i, "день "+itoa(i)))
+		require.NoError(t, appendDay(t, m, i, "день "+strconv.Itoa(i)))
 	}
 
 	stub := &stubChronicleSummarizer{returnedMemory: "выжимка 30 дней"}
@@ -135,7 +121,7 @@ func TestChronicleCompressWindow_NoSummarizerSkips(t *testing.T) {
 
 	m, _ := NewMemoryTestEnv(t)
 	for i := 1; i <= 30; i++ {
-		require.NoError(t, appendDay(t, m, i, "день "+itoa(i)))
+		require.NoError(t, appendDay(t, m, i, "день "+strconv.Itoa(i)))
 	}
 
 	ok, err := m.ChronicleCompressWindow(context.Background(), "naruto", 1, 30)
@@ -148,7 +134,7 @@ func TestChronicleCompressWindow_BadOutputSkips(t *testing.T) {
 
 	m, _ := NewMemoryTestEnv(t)
 	for i := 1; i <= 30; i++ {
-		require.NoError(t, appendDay(t, m, i, "день "+itoa(i)))
+		require.NoError(t, appendDay(t, m, i, "день "+strconv.Itoa(i)))
 	}
 
 	stub := &stubChronicleSummarizer{skipOutput: true}
@@ -190,7 +176,7 @@ func TestChronicleCompressWindow_KeepsEarlierSummaries(t *testing.T) {
 		Days: map[int]string{},
 	}
 	for i := 31; i <= 60; i++ {
-		c.AppendDay(i, "день "+itoa(i))
+		c.AppendDay(i, "день "+strconv.Itoa(i))
 	}
 
 	require.NoError(t, m.Repos.Chronicle.Save("naruto", c))

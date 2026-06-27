@@ -187,7 +187,7 @@ linters:
       # `package usecase` so they can see private API directly.
       - linters:
           - testpackage
-        path: internal/usecase/(gm_test|end_of_day_maintain_test|sessionstart_test|summarizer_test|systemstate_test)\.go
+        path: internal/usecase/(gm_test|end_of_day_maintain_test|reason_effort_test|sessionstart_test|summarizer_test|systemstate_test)\.go
         text: "package should be"
     paths:
       - third_party$

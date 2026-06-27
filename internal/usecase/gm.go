@@ -449,6 +449,31 @@ func lastUserIndex(msgs []llm.Message) int {
 // multiple NPC files and still produce a narrative response.
 const maxToolRounds = 10
 
+// reasonEffort returns the reasoning_effort string for an
+// outgoing ChatRequest. The role is the canonical source of
+// truth: the operator sets DisableThinking=true to skip
+// chain-of-thought outright, or ReasoningEffort to pin a
+// level ("none" | "low" | "medium" | "high"). Empty string
+// is returned when neither is set — drivers fall back to
+// their role-level fields in that case.
+//
+// Pre-fill "none" here when DisableThinking is on and the
+// operator did not pin a level: most OpenAI-compatible
+// providers (Ollama Cloud, xAI Grok, OpenRouter) default
+// to extended thinking on reasoning-capable models, so
+// "none" must be sent explicitly.
+func reasonEffort(role llm.RoleConfig) string {
+	if role.ReasoningEffort != "" {
+		return role.ReasoningEffort
+	}
+
+	if role.DisableThinking {
+		return "none"
+	}
+
+	return ""
+}
+
 func (g *GM) Reply(ctx context.Context, chatID, userText string, cb Callbacks) (TokenUsage, error) {
 	var totals TokenUsage
 	if g.Tracking == "" || g.Tracking == "off" {
@@ -897,6 +922,12 @@ func (g *GM) runConversation(ctx context.Context, chatID string, cb Callbacks) (
 			Tools:       g.toolSpecs,
 			Temperature: g.role.Temperature,
 			MaxTokens:   g.role.MaxTokens,
+			// reasoning_effort propagation: empty string lets the
+			// driver fall back to its role-level DisableThinking
+			// / ReasoningEffort, which is the canonical source of
+			// truth. Pre-fill "none" here when DisableThinking is
+			// on and the operator did not pin a level.
+			ReasoningEffort: reasonEffort(g.role),
 		}, func(ch llm.Chunk) error {
 			// Always grab the most recent raw trace so the
 			// slowlog event below can include it on empty

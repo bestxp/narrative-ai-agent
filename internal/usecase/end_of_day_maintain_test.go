@@ -2,6 +2,7 @@ package usecase
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -105,7 +106,7 @@ temperament: "спокойный"
 
 	for i := 1; i <= 50; i++ {
 		longProfile.PersonalMemory = append(longProfile.PersonalMemory,
-			"Факт номер "+itoaE2E(i))
+			"Факт номер "+strconv.Itoa(i))
 	}
 
 	longBody, err := longProfile.Save()
@@ -216,22 +217,6 @@ func (a summarizerAdapterForTest) SummarizeCharacterMemory(
 	}
 
 	return res.Body, nil
-}
-
-// itoaE2E is a tiny strconv shim used in test fixtures
-// (avoids importing "strconv" just for digit-to-string).
-func itoaE2E(n int) string {
-	if n == 0 {
-		return "0"
-	}
-
-	var b []byte
-	for n > 0 {
-		b = append([]byte{byte('0' + n%10)}, b...)
-		n /= 10
-	}
-
-	return string(b)
 }
 
 // errE2ETest is a small synthetic error used by
