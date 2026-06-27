@@ -46,9 +46,6 @@
 
 {{ if .World.Stage }}{{ .World.Stage }}
 {{ end }}
-{{ if and .Narrative.IncludeSystemStateInPrompt .Display.SystemStateSummary }}### system state
-{{ .Display.SystemStateSummary }}
-{{ end }}
 {{ end }}
 
 {{ if .World.ActiveNPCs }}## Активные NPC

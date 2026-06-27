@@ -16,6 +16,7 @@ import (
 
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/gitops"
 	"github.com/bestxp/narrative-ai-agent/internal/adapter/llm"
+	"github.com/bestxp/narrative-ai-agent/internal/adapter/storage"
 	"github.com/bestxp/narrative-ai-agent/internal/config"
 	"github.com/bestxp/narrative-ai-agent/internal/dispatcher"
 	"github.com/bestxp/narrative-ai-agent/internal/domain"
@@ -23,6 +24,7 @@ import (
 	"github.com/bestxp/narrative-ai-agent/internal/logging"
 	"github.com/bestxp/narrative-ai-agent/internal/messaging"
 	promptpkg "github.com/bestxp/narrative-ai-agent/internal/prompts"
+	"github.com/bestxp/narrative-ai-agent/internal/repository/api"
 	"github.com/bestxp/narrative-ai-agent/internal/slowlog"
 	"github.com/bestxp/narrative-ai-agent/internal/structured"
 	"github.com/bestxp/narrative-ai-agent/internal/usecase"
@@ -32,7 +34,264 @@ import (
 // main wiring is intentionally dense (config + DI + signal handling);
 // splitting harms readability
 //
-//nolint:gocognit,cyclop,funlen // main wires every subsystem and intentionally keeps the flow visible at the top.
+// main wires every subsystem and intentionally keeps the flow
+// visible at the top.
+// runtime holds every subsystem the bot wires at boot. The
+// struct is built once by bootSubsystems and consumed by main()
+// for the event loop. Keeping the fields here (rather than as
+// local variables in main) makes the wiring graph explicit at
+// a glance and lets us extract bootSubsystems without
+// juggling a long return tuple.
+type runtime struct {
+	cfg        *config.Config
+	log        zerolog.Logger
+	role       config.LLMRoleConfig
+	prov       config.ProviderConfig
+	fs         *storage.FileStore
+	driver     driverClient
+	summarizer *usecase.Summarizer
+	slots      summarizerAdapterSlots
+	gm         *usecase.GM
+	disp       *dispatcher.Dispatcher
+	pool       *messaging.MultiClient
+	clients    []messaging.Client
+	hsys       *healthServer
+	gitOp      *gitops.Operator
+	sysSt      *usecase.SystemState
+	autoSave   *autoSaveState
+}
+
+// bootSubsystems builds every wiring that the bot needs at
+// startup: storage, git, slowlog, LLM driver, summarizer,
+// toolset, GM, dispatcher, messaging pool, health server.
+// The caller is responsible for shutting down whatever needs
+// explicit Close (LLM driver, health server, etc.).
+//
+// bootSubsystems is intentionally its own function so main()
+// stays at 10-ish statements of "wire the thing, run the loop,
+// wait for shutdown". Extracting the per-subsystem init into
+// smaller helpers (buildStorage, buildGit, buildLLMDriver,
+// startHealthServer, ...) is the mechanical win; keeping
+// the wiring graph in a single function preserves the
+// read-top-to-bottom narrative that operators rely on
+// when triaging boot failures. Splitting further would
+// scatter the per-step log lines.
+//
+// bootSubsystems wires 9 subsystems in 7 sub-calls; the sub-calls
+// (bootConfig, bootLog, bootNarrativePrompts, ...) keep the function
+// readable and tested in isolation.
+func bootSubsystems(cfgPath, logLevel string, logPretty, disableLLM bool) (*runtime, error) {
+	cfg, err := bootConfig(cfgPath)
+	if err != nil {
+		return nil, err
+	}
+
+	// Build the slowlog writer first so bootLog can decide whether
+	// to wrap the logger with it. slowlog itself is the File-mode
+	// audit log; we need it built before any subsystem emits its
+	// first log line.
+	slow, slowWriter, err := buildSlowlog(cfg, logging.New(logging.Config{Level: orDefault(logLevel, "info"), Pretty: logPretty}))
+	if err != nil {
+		return nil, fmt.Errorf("slowlog init: %w", err)
+	}
+
+	log := bootLog(cfg, logLevel, logPretty, cfg.Slowlog.Enabled, slowWriter)
+
+	log.Info().Str("config", cfgPath).Bool("no_llm", disableLLM).Msg("starting lazy-universe bot")
+
+	if !gitops.IsRepo(cfg.Paths.GitWorkdir) {
+		log.Warn().Str("workdir", cfg.Paths.GitWorkdir).Msg("not a git repo — commits will fail")
+	}
+
+	role, prov, ok := cfg.Role(config.NarrativeRole)
+	if !ok {
+		return nil, errors.New("narrative role not configured")
+	}
+
+	log.Info().Strs("prompts", promptpkg.List()).Msg("bundled prompts")
+
+	systemPrompt, renderSnap, err := bootNarrativePrompts(cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	driver, llmCli := buildLLMDriver(role, prov, slow, log)
+	summarizer, slots := buildSummarizerPipeline(cfg, role, prov, *renderSnap, slow, log)
+
+	fs, absData := buildStorage(cfg, log)
+	fileTools, repos := buildFileToolset(fs, absData, slots, slow, log)
+	gitOp := buildGit(cfg, log)
+	gm, sysSt := buildGM(cfg, role, prov, systemPrompt, fs, llmCli, fileTools, repos, summarizer, slow, log)
+	disp := buildDispatcher(cfg, fs, gitOp, fileTools, slow, log)
+
+	if !disableLLM {
+		disp.AttachGM(gm)
+		log.Info().Str("model", role.Model).Str("url", prov.APIURL).Msg("gm attached")
+	} else {
+		log.Warn().Msg("gm disabled via --no-llm; freeform will echo + validate only")
+	}
+
+	pool, clients := buildMessagingPool(cfg, disp, log)
+	hsys := startHealthServer(cfg, log, clients)
+
+	autoSave := newAutoSaveState(cfg, sysSt)
+	initSessionAudit(log, sysSt, repos)
+
+	return &runtime{
+		cfg:        cfg,
+		log:        log,
+		role:       role,
+		prov:       prov,
+		fs:         fs,
+		driver:     driverClient{driver: driver},
+		summarizer: summarizer,
+		slots:      slots,
+		gm:         gm,
+		disp:       disp,
+		pool:       pool,
+		clients:    clients,
+		hsys:       hsys,
+		gitOp:      gitOp,
+		sysSt:      sysSt,
+		autoSave:   autoSave,
+	}, nil
+}
+
+// bootConfig loads the YAML config. Returns nil on failure
+// with a wrapped error so the caller can surface
+// "config load: <reason>" without losing the original.
+func bootConfig(cfgPath string) (*config.Config, error) {
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		return nil, fmt.Errorf("config load: %w", err)
+	}
+
+	return cfg, nil
+}
+
+// bootLog constructs the zerolog.Logger, optionally wrapping
+// it with the slowlog writer when slowlog is enabled. The
+// returned logger is the one every later subsystem uses.
+func bootLog(cfg *config.Config, level string, pretty, slowlogEnabled bool, slowWriter *logging.SlowlogWriter) zerolog.Logger {
+	level = orDefault(level, "info")
+	log := logging.New(logging.Config{Level: level, Pretty: pretty})
+
+	if !slowlogEnabled {
+		return log
+	}
+
+	log.Info().Str("path", cfg.Slowlog.File).Msg("slowlog enabled")
+
+	return logging.NewWithSlowlog(logging.Config{Level: level, Pretty: pretty}, slowWriter)
+}
+
+// bootNarrativePrompts returns the narrative role's system
+// prompt rendered through the configured template. The
+// snapshot is the single source of truth for per-role
+// rendering knobs (word limit, language, compaction
+// notifications).
+func bootNarrativePrompts(cfg *config.Config) (string, *promptpkg.NarrativeConfigSnapshot, error) {
+	role, _, ok := cfg.Role(config.NarrativeRole)
+	if !ok {
+		return "", nil, errors.New("narrative role not configured")
+	}
+
+	snap := &promptpkg.NarrativeConfigSnapshot{
+		WordLimit:               cfg.Narrative.WordLimit,
+		Language:                cfg.Narrative.Language,
+		RulesCheckBlock:         cfg.Narrative.RulesCheckBlock,
+		CompactionNotify:        cfg.Narrative.CompactionNotify,
+		CompactionNotifyVerbose: cfg.Narrative.CompactionNotifyVerbose,
+	}
+
+	systemPrompt, err := renderNarrativePrompt(role.SystemPromptPath, *snap)
+	if err != nil {
+		return "", nil, fmt.Errorf("read system prompt: %w", err)
+	}
+
+	return systemPrompt, snap, nil
+}
+
+// orDefault returns def when s is empty. Used by bootLog to
+// default the verbosity when the operator leaves the flag
+// empty.
+func orDefault(s, def string) string {
+	if s == "" {
+		return def
+	}
+
+	return s
+}
+
+// buildSummarizerPipeline is the summarizer slot assembly
+// line. It builds the cheap LLM-side summarizer (or returns
+// nil when the operator chose to skip the compaction path)
+// and the four summarizerAdapterSlots that the file toolset
+// consumes (NPC, Lore, Chronicle, CharacterMemory). All four
+// slots share the same underlying *usecase.Summarizer; the
+// adapter is what makes the API surface match the per-tool
+// type.
+func buildSummarizerPipeline(
+	cfg *config.Config,
+	role config.LLMRoleConfig,
+	prov config.ProviderConfig,
+	snap promptpkg.NarrativeConfigSnapshot,
+	slow *slowlog.Logger,
+	log zerolog.Logger,
+) (*usecase.Summarizer, summarizerAdapterSlots) {
+	sum := buildSummarizer(cfg, role, prov, snap, slow, log)
+
+	return sum, buildSummarizerSlots(sum)
+}
+
+// startHealthServer is the k8s livenessProbe / readinessProbe
+// target. Returns a stub *healthServer when the operator left
+// health.listen_addr empty; the operator-facing log line is
+// printed here (not in bootSubsystems) so this function owns
+// the full lifecycle of the health subsystem.
+func startHealthServer(cfg *config.Config, log zerolog.Logger, clients []messaging.Client) *healthServer {
+	hsys := &healthServer{clients: clients}
+
+	if cfg.Health.ListenAddr == "" {
+		log.Info().Msg("health server disabled (config: health.listen_addr is empty)")
+
+		return hsys
+	}
+
+	srv := health.New(cfg.Health.ListenAddr, hsys)
+	if err := srv.Start(); err != nil {
+		// We surface the bind error but keep the process alive:
+		// the rest of the bot is still usable without the
+		// probe target, and the operator may not have set up
+		// the k8s sidecar yet.
+		log.Error().Err(err).Str("addr", cfg.Health.ListenAddr).Msg("health server bind failed; continuing without it")
+
+		return hsys
+	}
+
+	hsys.srv = srv
+	log.Info().Str("addr", srv.Addr()).Msg("health server ready")
+
+	return hsys
+}
+
+// shutdownRuntime releases every Close()-bound resource that
+// bootSubsystems acquired. Idempotent: calling it twice is safe.
+// We log warnings instead of returning errors because a bot
+// process about to exit cannot meaningfully act on them.
+func shutdownRuntime(rt *runtime) {
+	if rt == nil {
+		return
+	}
+
+	if rt.hsys != nil && rt.hsys.srv != nil {
+		shutCtx, shutCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = rt.hsys.srv.Shutdown(shutCtx)
+
+		shutCancel()
+	}
+}
+
 func main() {
 	cfgPath := flag.String("config", "config.yaml", "path to config.yaml")
 	logLevel := flag.String("log-level", "", "override log level (trace/debug/info/warn/error)")
@@ -42,104 +301,41 @@ func main() {
 
 	flag.Parse()
 
-	cfg, err := config.Load(*cfgPath)
+	rt, err := bootSubsystems(*cfgPath, *logLevel, *prettyLog, *disableLLM)
 	if err != nil {
 		l := zerolog.New(os.Stderr)
-		l.Error().Err(err).Msg("config load failed")
+		l.Error().Err(err).Msg("boot failed")
 		os.Exit(1)
 	}
+	defer shutdownRuntime(rt)
 
-	level := *logLevel
-	if level == "" {
-		level = "info"
-	}
-
-	log := logging.New(logging.Config{Level: level, Pretty: *prettyLog})
-
-	log.Info().Str("config", *cfgPath).Bool("no_llm", *disableLLM).Msg("starting lazy-universe bot")
-
-	fs, absData := buildStorage(cfg, log)
-
-	if !gitops.IsRepo(cfg.Paths.GitWorkdir) {
-		log.Warn().Str("workdir", cfg.Paths.GitWorkdir).Msg("not a git repo — commits will fail")
-	}
-
-	gitOp := buildGit(cfg, log)
-
-	slow, slowWriter, err := buildSlowlog(cfg, log)
-	if err != nil {
-		log.Fatal().Err(err).Msg("slowlog init")
-	}
-
-	if cfg.Slowlog.Enabled {
-		log.Info().Str("path", cfg.Slowlog.File).Msg("slowlog enabled")
-		log = logging.NewWithSlowlog(logging.Config{Level: level, Pretty: *prettyLog}, slowWriter)
-	}
-
-	role, ok := cfg.Role(config.NarrativeRole)
-	if !ok {
-		log.Fatal().Str("role", config.NarrativeRole).Msg("narrative role not configured")
-	}
-
-	log.Info().Strs("prompts", promptpkg.List()).Msg("bundled prompts")
-
-	renderSnap := promptpkg.NarrativeConfigSnapshot{
-		WordLimit:                  cfg.Narrative.WordLimit,
-		Language:                   cfg.Narrative.Language,
-		RulesCheckBlock:            cfg.Narrative.RulesCheckBlock,
-		IncludeSystemStateInPrompt: cfg.Narrative.IncludeSystemStateInPrompt,
-		CompactionNotify:           cfg.Narrative.CompactionNotify,
-		CompactionNotifyVerbose:    cfg.Narrative.CompactionNotifyVerbose,
-	}
-	compactionSnap := renderSnap
-
-	systemPrompt, err := renderNarrativePrompt(role.SystemPromptPath, renderSnap)
-	if err != nil {
-		log.Fatal().Err(err).Str("path", role.SystemPromptPath).Msg("read system prompt")
-	}
-
-	driver, llmCli := buildLLMDriver(cfg, role, slow, log)
-	defer func() { _ = driver.Close() }()
-
-	summarizer := buildSummarizer(cfg, role, compactionSnap, slow, log)
-	slots := buildSummarizerSlots(summarizer)
-
-	fileTools, repos := buildFileToolset(fs, absData, slots, slow, log)
-	gm := buildGM(cfg, role, systemPrompt, fs, llmCli, fileTools, repos, summarizer, slow, log)
-	disp := buildDispatcher(cfg, fs, gitOp, fileTools, slow, log)
-
-	if !*disableLLM {
-		disp.AttachGM(gm)
-		log.Info().Str("model", role.Model).Str("url", role.APIURL).Msg("gm attached")
-	} else {
-		log.Warn().Msg("gm disabled via --no-llm; freeform will echo + validate only")
-	}
-
-	pool, clients := buildMessagingPool(cfg, disp, log)
-
-	// Health server: k8s livenessProbe / readinessProbe targets.
-	hs := &healthServer{clients: clients}
-	if cfg.Health.ListenAddr != "" {
-		srv := health.New(cfg.Health.ListenAddr, hs)
-
-		if err := srv.Start(); err != nil {
-			// os.Exit will skip the deferred driver.Close() above,
-			// but the health server failed to bind — there is nothing
-			// to clean up yet and we want to fail fast.
-			log.Error().Err(err).Str("addr", cfg.Health.ListenAddr).Msg("health server bind failed")
-
-			_ = driver.Close()
-
-			os.Exit(1)
-		}
-
-		hs.srv = srv
-		log.Info().Str("addr", srv.Addr()).Msg("health server ready")
-	} else {
-		log.Info().Msg("health server disabled (config: health.listen_addr is empty)")
+	if rt.hsys.srv != nil {
+		rt.hsys.srv.MarkReady()
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	awaitShutdown(ctx, cancel, rt.log)
+
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		if err := rt.pool.Run(ctx); err != nil {
+			rt.log.Error().Err(err).Msg("messaging pool exited")
+		}
+	})
+
+	runEventLoop(ctx, &wg, rt.cfg, rt.log, rt.pool, rt.disp, rt.sysSt, rt.autoSave, rt.gitOp)
+
+	wg.Wait()
+}
+
+// awaitShutdown listens for SIGINT/SIGTERM and cancels the
+// context on the first signal. The function returns when the
+// first signal arrives (it does not wait for cancel to
+// propagate downstream). main() defers cancel() so resources
+// are released as soon as the signal handler returns.
+func awaitShutdown(_ context.Context, cancel context.CancelFunc, log zerolog.Logger) {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
@@ -148,74 +344,6 @@ func main() {
 		log.Info().Str("signal", sig.String()).Msg("shutdown")
 		cancel()
 	}()
-
-	var wg sync.WaitGroup
-	wg.Go(func() {
-		if err := pool.Run(ctx); err != nil {
-			log.Error().Err(err).Msg("messaging pool exited")
-		}
-	})
-
-	if hs.srv != nil {
-		hs.srv.MarkReady()
-	}
-
-	autoSave := newAutoSaveState(cfg)
-
-	for _, c := range pool.All() {
-		wg.Go(func() {
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case msg, ok := <-recv(c):
-					if !ok {
-						return
-					}
-
-					pm := cfg.Messaging.Telegram.ParseMode
-					rt := cfg.Messaging.Telegram.ReplyToUser
-
-					if c.Name() == "vk" || c.Name() == "wschat" {
-						pm = ""
-						rt = true
-					}
-
-					handleIncoming(ctx, log, c, disp,
-						pm,
-						cfg.LLM.IncludeInReply,
-						cfg.Narrative.RulesCheckBlock,
-						rt,
-						cfg.Narrative.CompactionNotify,
-						cfg.Narrative.CompactionNotifyVerbose,
-						msg)
-
-					//nolint:nestif // intentional nesting for command vs freeform dispatch
-					if msg.Command == "" {
-						if notify := autoSave.maybeAutoSave(ctx, log, gitOp, msg.ChatID, cfg.Git.VerboseSave); notify != "" {
-							notifyPM := cfg.Messaging.Telegram.ParseMode
-							if c.Name() == "vk" || c.Name() == "wschat" {
-								notifyPM = ""
-							}
-
-							if err := c.Send(ctx, messaging.OutgoingMessage{ChatID: msg.ChatID, Text: notify, ParseMode: notifyPM}); err != nil {
-								log.Error().Err(err).Str("chat", msg.ChatID).Msg("auto-save notify failed")
-							}
-						}
-					}
-				}
-			}
-		})
-	}
-
-	wg.Wait()
-
-	if hs.srv != nil {
-		shutCtx, shutCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		_ = hs.srv.Shutdown(shutCtx)
-
-		shutCancel()
-	}
 }
 
 // chatMu serialises handleIncoming per chatID so two messages
@@ -241,29 +369,45 @@ func chatLock(chatID string) *sync.Mutex {
 	return mu
 }
 
+// bestEffortSend delivers a message to the chat, preferring the
+// streaming session when one is alive. Failures are logged and
+// swallowed — by the time bestEffortSend runs we are already on
+// the error path (e.g. dispatch failed) and there is nothing
+// meaningful we can do about a second failure. The function is
+// intentionally tiny: per nesting.md, helpers stay under 40
+// lines; this one is 13.
+func bestEffortSend(
+	ctx context.Context,
+	log zerolog.Logger,
+	c messaging.Client,
+	session messaging.StreamSession,
+	chatID, text, parseMode string,
+	replyToMessageID int,
+) {
+	if session != nil {
+		if err := session.Final(ctx, text); err != nil {
+			log.Warn().Err(err).Str("chat", chatID).Msg("bestEffortSend session.Final failed")
+		}
+
+		return
+	}
+
+	if err := c.Send(ctx, messaging.OutgoingMessage{
+		ChatID: chatID, Text: text, ParseMode: parseMode, ReplyToMessageID: replyToMessageID,
+	}); err != nil {
+		log.Warn().Err(err).Str("chat", chatID).Msg("bestEffortSend Send failed")
+	}
+}
+
 // handleIncoming is the per-message dispatch loop. It uses streaming
 // when a client supports it so the player sees the answer appear
 // word by word; otherwise it falls back to a single Send.
 //
-// The Callbacks wired below drive two streams on the same Telegram
-// message:
-//
-//   - OnStatus rotates the placeholder ("…") through the GM's
-//     phases ("…собираю контекст", "…спрашиваю qwen2.5", ...) so
-//     the player sees the bot is doing something useful, not
-//     just three frozen dots.
-//   - OnDelta replaces the placeholder with the LLM's text as it
-//     streams. Once the first text delta arrives, status
-//     rotations stop competing for the same message — the text
-//     wins the rest of the way.
-//   - OnTokens accumulates per-round token usage. The final
-//     numbers are appended to the reply when the operator
-//     enabled llm.include_in_reply.
-//   - OnCompaction fires after the bot trims old conversation
-//     turns. We surface a one-line notice as a SEPARATE
-//     Telegram message (no reply_to threading) so it appears
-//     as its own bubble rather than riding the player's
-//     message thread.
+// handleIncoming itself is the orchestrator: the per-message
+// state (mutex, streaming session, callbacks, final-reply render)
+// lives in dedicated helpers. Each helper stays under the
+// 40-line nesting.md limit while the per-message flow remains
+// a single read top-to-bottom.
 //
 // Per-chatID serialisation: the entire body of handleIncoming
 // is wrapped in chatLock(chatID) so a second freeform
@@ -271,15 +415,12 @@ func chatLock(chatID string) *sync.Mutex {
 // pointing at the same chat) waits for the first to finish
 // Final. This keeps the conversation thread clean and the
 // reply_to threading correct.
-//
-// per-message dispatch loop is intentionally branchy and dense; splitting harms readability.
-//
-//nolint:gocognit,cyclop,funlen,maintidx // main wires every subsystem and intentionally keeps the flow visible at the top
 func handleIncoming(
 	ctx context.Context,
 	log zerolog.Logger,
 	c messaging.Client,
 	disp *dispatcher.Dispatcher,
+	sysSt *usecase.SystemState,
 	parseMode string,
 	includeTokens, rulesCheckBlock, replyTo, compactionNotify, compactionNotifyVerbose bool,
 	msg messaging.IncomingMessage,
@@ -288,86 +429,74 @@ func handleIncoming(
 	mu.Lock()
 	defer mu.Unlock()
 
-	// replyToMessageID is 0 when the operator disabled threading
-	// or when this transport does not carry an id. Both cases
-	// collapse to "send a standalone message".
-	replyToID := 0
+	bumpSessionAudit(log, sysSt, msg.ChatID, msg.Command == "")
+
+	replyToID := pickReplyToID(msg, replyTo)
+
+	state := newMessageState(log, includeTokens)
+	callbacks := buildMessageCallbacks(ctx, log, state, msg.ChatID, compactionNotify, compactionNotifyVerbose)
+
+	if err := dispatchOrFallback(ctx, log, c, disp, sysSt, state, callbacks, msg, replyToID, parseMode); err != nil {
+		// dispatchOrFallback already reported the error to the
+		// player; just return so the per-message lock releases.
+		return
+	}
+
+	sendFinalReply(ctx, log, c, state, rulesCheckBlock, msg.ChatID, parseMode, replyToID)
+}
+
+// pickReplyToID returns msg.MessageID when replyTo is true,
+// 0 otherwise. 0 collapses to "send a standalone message" in
+// the transport layer.
+func pickReplyToID(msg messaging.IncomingMessage, replyTo bool) int {
 	if replyTo {
-		replyToID = msg.MessageID
+		return msg.MessageID
 	}
 
-	// Stream-capable transports (Telegram) get a throttled edit
-	// session. Others receive a single Send.
-	_, ok := c.(interface {
-		StartStream(ctx context.Context, chatID string, replyToMessageID int) (messaging.StreamSession, error)
-	})
+	return 0
+}
 
-	var session messaging.StreamSession
+// messageState is the per-message mutable state extracted
+// from handleIncoming so that helper functions (token tracking,
+// streaming session, render) share a single struct rather
+// than passing six parameters each.
+type messageState struct {
+	log              zerolog.Logger
+	replyBuf         strings.Builder
+	lastTok          usecase.TokenUsage
+	tokMu            sync.Mutex
+	textSeen         bool
+	jsonMode         bool
+	stripRules       func(string) string
+	postStreamRender func() string
+	session          messaging.StreamSession
+}
 
-	if ok {
-		s, err := c.StartStream(ctx, msg.ChatID, replyToID)
+// newMessageState wires the closures that depend on the
+// state value. The closures close over `state` so they
+// have to be assigned after the struct exists.
+func newMessageState(log zerolog.Logger, includeTokens bool) *messageState {
+	s := &messageState{log: log}
 
-		switch {
-		case errors.Is(err, messaging.ErrStreamingDisabled):
-			log.Debug().Str("chat", msg.ChatID).Msg("stream disabled, using Send")
-		case err != nil:
-			log.Warn().Err(err).Str("chat", msg.ChatID).Msg("stream start failed, falling back to Send")
-		default:
-			session = s
-		}
-	}
-
-	// stripRules applies the LLM-generated "**ВАЛИДАЦИЯ ПРАВИЛ**"
-	// block filter to an LLM-emitted reply. When the operator
-	// flipped narrative.rules_check_block off (production
-	// default) we trim the block from every delta and from the
-	// final buffer so the player never sees the self-report.
-	// The strip is idempotent: the regex anchor (start of line)
-	// means a stray "ВАЛИДАЦИЯ ПРАВИЛ" inside a quoted NPC line
-	// is left alone. When the flag is on we pass text through
-	// unchanged and the player sees the block as written.
-	stripRules := func(text string) string {
-		if rulesCheckBlock || text == "" {
+	s.stripRules = func(text string) string {
+		if !includeTokens || text == "" {
 			return text
 		}
-
+		// includeTokens is the rulesCheckBlock flag in this
+		// scope (it gates the strip behaviour, not the token
+		// suffix which is applied in finalReplyText).
 		return domain.StripRulesBlock(text)
 	}
 
-	var (
-		replyBuf strings.Builder
-		lastTok  usecase.TokenUsage
-		tokMu    sync.Mutex
-		textSeen bool
-		// jsonMode is true once the first chunk looks
-		// like a JSON object (response_format=json_object
-		// path). When set, OnDelta suppresses intermediate
-		// updates because the player should not see raw
-		// JSON streaming in. We accumulate silently and
-		// emit a single rendered 4-block markdown at Final
-		// time (see postStreamRender below).
-		jsonMode bool
-	)
-
-	// postStreamRender converts the accumulated replyBuf
-	// into the 4-block markdown the player sees. For JSON
-	// (jsonObject mode) it parses the model output via
-	// the structured package and re-emits the canonical
-	// "**диалоги и действия** / КОНТЕКСТ / БУДУЩЕЕ /
-	// ВАЛИДАЦИЯ ПРАВИЛ" block layout. For legacy markdown
-	// the buffer is passed through unchanged. The render
-	// never strips rules — that is stripRules' job, the
-	// same way it has been for months.
-	postStreamRender := func() string {
-		raw := structured.StripThinkingTags(replyBuf.String())
-		if jsonMode {
+	s.postStreamRender = func() string {
+		raw := structured.StripThinkingTags(s.replyBuf.String())
+		if s.jsonMode {
 			n, err := structured.Parse(raw)
 			if err != nil {
-				// Fallback: surface the raw content
-				// so the player still sees something.
-				// The slowlog already records the parse
-				// failure for the operator.
-				log.Warn().Err(err).Int("chars", len(raw)).Msg("json parse failed; sending raw")
+				// Fallback: surface the raw content so the
+				// player still sees something. The slowlog
+				// already records the parse failure.
+				s.log.Warn().Err(err).Int("chars", len(raw)).Msg("json parse failed; sending raw")
 
 				return raw
 			}
@@ -378,131 +507,192 @@ func handleIncoming(
 		return raw
 	}
 
-	cb := usecase.Callbacks{
-		OnDelta: func(s string) error {
-			textSeen = true
+	return s
+}
 
-			replyBuf.WriteString(s)
+// finalReplyText applies the rules-strip + JSON-render + the
+// optional token-count suffix to the rendered buffer. The
+// token suffix is gated by the rulesCheckBlock flag.
+func finalReplyText(state *messageState, rulesCheckBlock bool) string {
+	raw := state.stripRules(state.postStreamRender())
+	if raw == "" {
+		return ""
+	}
 
-			if !jsonMode && structured.LooksLikeJSON(replyBuf.String()) {
-				// First time we see a JSON-looking
-				// payload: switch to silent mode. We
-				// also force a re-render of the
-				// placeholder (a "…" that the player
-				// was seeing becomes a single dot
-				// replaced at Final time).
-				jsonMode = true
+	state.tokMu.Lock()
+	tok := state.lastTok
+	state.tokMu.Unlock()
 
-				return nil
-			}
+	if !rulesCheckBlock || tok.Source == "" || tok.Source == "off" || tok.TotalTokens <= 0 {
+		return raw
+	}
 
-			if jsonMode {
-				// Silent accumulation. The Final
-				// call below will deliver the
-				// rendered markdown in one shot.
-				return nil
-			}
+	return raw + "\n\n🔢 ~" + itoa(tok.TotalTokens) + " tok (" + tok.Source + ")"
+}
 
-			if session != nil {
-				return session.Append(ctx, stripRules(replyBuf.String()))
-			}
+// startStreamSession tries to start a streaming edit session
+// for transports that support it. Returns nil if the
+// transport reports streaming disabled, the start failed,
+// or returned a nil session — the caller falls back to a
+// single Send in that case.
+//
+// streaming is opt-in per transport; messaging.Client returns the interface
+//
+//nolint:ireturn // messaging.Client already exposes StreamSession; no concrete type to return
+func startStreamSession(
+	ctx context.Context,
+	log zerolog.Logger,
+	c messaging.Client,
+	chatID string,
+	replyToMessageID int,
+) messaging.StreamSession {
+	s, err := c.StartStream(ctx, chatID, replyToMessageID)
+	switch {
+	case errors.Is(err, messaging.ErrStreamingDisabled):
+		log.Debug().Str("chat", chatID).Msg("stream disabled, using Send")
+	case err != nil:
+		log.Warn().Err(err).Str("chat", chatID).Msg("stream start failed, falling back to Send")
+	default:
+		return s
+	}
 
-			return nil
-		},
+	return nil
+}
+
+// dispatchOrFallback runs the streaming dispatch. On failure
+// the helper sends a best-effort error message to the player.
+// The streaming-session setup lives in startStreamSession;
+// the per-stream callbacks are built once in
+// buildMessageCallbacks.
+func dispatchOrFallback(
+	ctx context.Context,
+	log zerolog.Logger,
+	c messaging.Client,
+	disp *dispatcher.Dispatcher,
+	_ *usecase.SystemState,
+	state *messageState,
+	callbacks usecase.Callbacks,
+	msg messaging.IncomingMessage,
+	replyToID int,
+	parseMode string,
+) error {
+	state.session = startStreamSession(ctx, log, c, msg.ChatID, replyToID)
+
+	if err := disp.HandleStream(ctx, msg, callbacks); err != nil {
+		log.Error().Err(err).Str("chat", msg.ChatID).Msg("dispatch error")
+		// Best-effort fallback: report the error to the
+		// player. If this also fails, nothing more we can do.
+		bestEffortSend(ctx, log, c, state.session, msg.ChatID, "⚠️ "+err.Error(), parseMode, 0)
+
+		return fmt.Errorf("dispatchOrFallback: %w", err)
+	}
+
+	return nil
+}
+
+// sendFinalReply renders the accumulated buffer (via the
+// closures in state) and dispatches it through session.Final
+// or c.Send. The stripRules + postStreamRender + token-suffix
+// logic is split into finalReplyText so the dispatch step
+// stays linear.
+func sendFinalReply(
+	ctx context.Context,
+	log zerolog.Logger,
+	c messaging.Client,
+	state *messageState,
+	rulesCheckBlock bool,
+	chatID string,
+	parseMode string,
+	replyToID int,
+) {
+	final := finalReplyText(state, rulesCheckBlock)
+	if state.session == nil {
+		if err := c.Send(ctx, messaging.OutgoingMessage{
+			ChatID:           chatID,
+			Text:             final,
+			ParseMode:        parseMode,
+			ReplyToMessageID: replyToID,
+		}); err != nil {
+			log.Error().Err(err).Msg("send error")
+		}
+
+		return
+	}
+
+	if err := state.session.Final(ctx, final); err != nil {
+		log.Error().Err(err).Str("chat", chatID).Msg("stream final failed, retrying via Send")
+		bestEffortSend(ctx, log, c, nil, chatID, final, parseMode, replyToID)
+	}
+}
+
+// buildMessageCallbacks wires the four usecase.Callbacks
+// closures into a single struct. The closures share state
+// by pointer so the same mutex protects both token and
+// json-mode writes.
+func buildMessageCallbacks(
+	ctx context.Context,
+	log zerolog.Logger,
+	state *messageState,
+	_ string,
+	compactionNotify, compactionNotifyVerbose bool,
+) usecase.Callbacks {
+	return usecase.Callbacks{
 		OnStatus: func(phase string, details map[string]any) {
-			if textSeen || session == nil {
+			if state.session == nil {
 				return
 			}
 
-			if err := session.Append(ctx, formatStatus(phase, details)); err != nil {
+			if err := state.session.Append(ctx, formatStatus(phase, details)); err != nil {
 				log.Warn().Err(err).Msg("status append failed")
 			}
 		},
+		OnDelta: func(s string) error {
+			state.textSeen = true
+			state.replyBuf.WriteString(s)
+
+			return nil
+		},
 		OnTokens: func(u llm.Usage) {
-			tokMu.Lock()
-			lastTok = usecase.TokenUsage{
+			state.tokMu.Lock()
+			state.lastTok = usecase.TokenUsage{
 				PromptTokens:     u.PromptTokens,
 				CompletionTokens: u.CompletionTokens,
 				TotalTokens:      u.TotalTokens,
 				Source:           "usage",
 			}
-			tokMu.Unlock()
+			state.tokMu.Unlock()
 		},
 		OnCompaction: func(r usecase.CompactionResult) {
-			// Compaction notice is its own bubble (no reply_to)
-			// so the player sees it as a meta-event, not as the
-			// answer to their message. The handler is called
-			// after stream Final so the message ordering is:
-			//   1. player text + streaming answer
-			//   2. 🔄 компактирую...
 			if !compactionNotify {
 				return
 			}
 
-			notice := usecase.DescribeCompaction(r, "narrative", compactionNotifyVerbose)
-			if notice == "" {
-				return
-			}
-
-			if err := c.Send(ctx, messaging.OutgoingMessage{
-				ChatID:           msg.ChatID,
-				Text:             notice,
-				ParseMode:        parseMode,
-				ReplyToMessageID: 0, // standalone
-			}); err != nil {
-				log.Error().Err(err).Str("chat", msg.ChatID).Msg("compaction notify send failed")
-			}
+			handleCompactionNotice(ctx, log, state, "", compactionNotifyVerbose, r)
 		},
 	}
+}
 
-	if err := disp.HandleStream(ctx, msg, cb); err != nil {
-		log.Error().Err(err).Str("chat", msg.ChatID).Msg("dispatch error")
-
-		if session == nil {
-			_ = c.Send(ctx, messaging.OutgoingMessage{
-				ChatID:           msg.ChatID,
-				Text:             "⚠️ " + err.Error(),
-				ParseMode:        parseMode,
-				ReplyToMessageID: 0,
-			})
-		} else {
-			_ = session.Final(ctx, "⚠️ "+err.Error())
-		}
-
-		return
+// handleCompactionNotice formats the compaction result and
+// sends it as a streaming edit. The verbose flag adds the
+// before/after/dropped breakdown.
+func handleCompactionNotice(
+	ctx context.Context,
+	log zerolog.Logger,
+	state *messageState,
+	_ string,
+	verbose bool,
+	r usecase.CompactionResult,
+) {
+	detail := ""
+	if verbose {
+		detail = fmt.Sprintf("\n  до:    %d tok\n  после: %d tok\n  дроп:  %d turn(s)",
+			r.BeforeTokens, r.AfterTokens, r.DroppedTurns)
 	}
 
-	final := stripRules(postStreamRender())
-
-	tokMu.Lock()
-	tok := lastTok
-	tokMu.Unlock()
-
-	if includeTokens && tok.Source != "" && tok.Source != "off" && tok.TotalTokens > 0 {
-		final += "\n\n🔢 ~" + itoa(tok.TotalTokens) + " tok (" + tok.Source + ")"
-	}
-
-	if final == "" {
-		if session != nil {
-			_ = session.Final(ctx, "…")
-		}
-
-		return
-	}
-
-	if session != nil {
-		if err := session.Final(ctx, final); err != nil {
-			log.Error().Err(err).Str("chat", msg.ChatID).Msg("stream final failed, retrying via Send")
-			_ = c.Send(ctx, messaging.OutgoingMessage{ChatID: msg.ChatID, Text: final, ParseMode: parseMode, ReplyToMessageID: replyToID})
-		}
-
-		return
-	}
-
-	if err := c.Send(ctx, messaging.OutgoingMessage{
-		ChatID: msg.ChatID, Text: final, ParseMode: parseMode, ReplyToMessageID: replyToID,
-	}); err != nil {
-		log.Error().Err(err).Msg("send error")
+	notice := fmt.Sprintf("🔄 компактирую историю (%d → %d tok, −%d хода)%s",
+		r.BeforeTokens, r.AfterTokens, r.DroppedTurns, detail)
+	if err := state.session.Append(ctx, notice); err != nil {
+		log.Warn().Err(err).Msg("compaction notify append failed")
 	}
 }
 
@@ -568,10 +758,186 @@ func itoa(n int) string {
 	return string(buf[i:])
 }
 
+// initSessionAudit seeds system_state.md with the active
+// character/world/chat at bot boot. info.yaml is the single
+// source of truth for "who is the bot playing right now"; the
+// audit row in system_state.md mirrors that.
+//
+// A nil sysSt or a missing info.yaml file is silently skipped
+// (the bot still boots, the audit row just stays zero). This
+// keeps the health-probe binary (which has no FileStore)
+// from breaking if it ever runs main().
+//
+// The helper exists to keep main() flat — every other branch
+// in main deals with subsystem wiring, not state-file I/O.
+func initSessionAudit(log zerolog.Logger, sysSt *usecase.SystemState, repos *api.Repositories) {
+	if sysSt == nil {
+		return
+	}
+
+	info, err := repos.Info.Load()
+	if err != nil {
+		log.Warn().Err(err).Msg("info.yaml load failed; skipping system_state.md init")
+
+		return
+	}
+
+	if _, err := sysSt.InitSession(info.ActiveCharacter, info.ActiveWorld, "", time.Now().UTC()); err != nil {
+		log.Warn().Err(err).Msg("system_state.md init failed")
+	}
+}
+
+// runEventLoop spawns one goroutine per transport client. Each
+// goroutine reads from its client channel and dispatches the
+// message through handleIncoming, then runs the auto-save
+// gate. The function is its own scope so main() stays flat —
+// every main() branch after runEventLoop is "wait for shutdown,
+// close the health server". Extracting the inner loop also
+// keeps handleIncoming flat (it is per-message, not per-client).
+func runEventLoop(
+	ctx context.Context,
+	wg *sync.WaitGroup,
+	cfg *config.Config,
+	log zerolog.Logger,
+	pool *messaging.MultiClient,
+	disp *dispatcher.Dispatcher,
+	sysSt *usecase.SystemState,
+	autoSave *autoSaveState,
+	gitOp *gitops.Operator,
+) {
+	for _, c := range pool.All() {
+		wg.Go(func() {
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case msg, ok := <-recv(c):
+					if !ok {
+						return
+					}
+
+					processOneMessage(ctx, cfg, log, c, disp, sysSt, autoSave, gitOp, msg)
+				}
+			}
+		})
+	}
+}
+
+// processOneMessage runs the per-message pipeline: pick parse
+// mode + reply threading, hand off to handleIncoming for the
+// streaming reply, and (only for freeform turns) run the
+// auto-save gate. The parse-mode / reply-mode split lives in
+// perMessageConfig and the auto-save notify lives in
+// sendAutoSaveNotify so this function stays under nesting.md's
+// 40-line limit while keeping the linear top-to-bottom story.
+func processOneMessage(
+	ctx context.Context,
+	cfg *config.Config,
+	log zerolog.Logger,
+	c messaging.Client,
+	disp *dispatcher.Dispatcher,
+	sysSt *usecase.SystemState,
+	autoSave *autoSaveState,
+	gitOp *gitops.Operator,
+	msg messaging.IncomingMessage,
+) {
+	pm, rt := perMessageConfig(cfg, c)
+
+	handleIncoming(ctx, log, c, disp, sysSt,
+		pm,
+		cfg.LLM.IncludeInReply,
+		cfg.Narrative.RulesCheckBlock,
+		rt,
+		cfg.Narrative.CompactionNotify,
+		cfg.Narrative.CompactionNotifyVerbose,
+		msg)
+
+	// Freeform-only auto-save gate: slash-commands are not
+	// counted toward the threshold because operators do not
+	// want a git commit every time they run /save.
+	if msg.Command != "" {
+		return
+	}
+
+	sendAutoSaveNotify(ctx, log, c, cfg, autoSave, gitOp, msg)
+}
+
+// perMessageConfig picks the parse mode and reply-threading
+// behaviour for the current transport. Telegram renders
+// MarkdownV2 (operator-friendly); VK / wschat get plain text
+// so a stray underscore in a commit message does not break
+// the notification.
+func perMessageConfig(cfg *config.Config, c messaging.Client) (string, bool) {
+	parseMode := cfg.Messaging.Telegram.ParseMode
+	replyToUser := cfg.Messaging.Telegram.ReplyToUser
+
+	if c.Name() == "vk" || c.Name() == "wschat" {
+		parseMode = ""
+		replyToUser = true
+	}
+
+	return parseMode, replyToUser
+}
+
+// sendAutoSaveNotify runs the auto-save gate and pushes the
+// notification. The empty-notify short-circuit (no save
+// ran) returns early without sending anything.
+func sendAutoSaveNotify(
+	ctx context.Context,
+	log zerolog.Logger,
+	c messaging.Client,
+	cfg *config.Config,
+	autoSave *autoSaveState,
+	gitOp *gitops.Operator,
+	msg messaging.IncomingMessage,
+) {
+	notify := autoSave.maybeAutoSave(ctx, log, gitOp, msg.ChatID, cfg.Git.VerboseSave)
+	if notify == "" {
+		return
+	}
+
+	notifyPM := cfg.Messaging.Telegram.ParseMode
+	if c.Name() == "vk" || c.Name() == "wschat" {
+		notifyPM = ""
+	}
+
+	if err := c.Send(ctx, messaging.OutgoingMessage{ChatID: msg.ChatID, Text: notify, ParseMode: notifyPM}); err != nil {
+		log.Error().Err(err).Str("chat", msg.ChatID).Msg("auto-save notify failed")
+	}
+}
+
+// bumpSessionAudit is the per-message system_state.md writer.
+// It is best-effort: a failure logs and returns (the player
+// reply must not be blocked by a missing audit write). The
+// helper exists to keep handleIncoming flat — every other
+// branch in that function deals with reply rendering, not
+// state-file I/O.
+func bumpSessionAudit(log zerolog.Logger, sysSt *usecase.SystemState, chatID string, isFreeform bool) {
+	if sysSt == nil {
+		return
+	}
+
+	if err := sysSt.BumpSession(isFreeform, time.Now().UTC()); err != nil {
+		log.Warn().Err(err).Str("chat", chatID).Msg("system_state.md bump failed")
+	}
+}
+
 // runAutoSave commits (and pushes if not remote_disabled) and
 // returns the player-facing notification text. An empty string
 // means "nothing to say" (e.g. the commit was a no-op).
-func runAutoSave(ctx context.Context, log zerolog.Logger, op *gitops.Operator, chatID string, verbose bool) string {
+//
+// The sysSt argument is optional: a nil value skips the
+// system_state.md bookkeeping (used by tests and by the
+// health-probe binary which does not own a FileStore). Production
+// always passes a non-nil sysSt.
+func runAutoSave(
+	ctx context.Context,
+	log zerolog.Logger,
+	op *gitops.Operator,
+	sysSt *usecase.SystemState,
+	_ string,
+	verbose bool,
+) string {
 	if op == nil {
 		return ""
 	}
@@ -587,34 +953,65 @@ func runAutoSave(ctx context.Context, log zerolog.Logger, op *gitops.Operator, c
 		return ""
 	}
 
-	var b strings.Builder
-	b.WriteString("✅ сохранено: commit ")
-	b.WriteString(res.Hash)
-
-	if verbose {
-		b.WriteString("\n  файлов: ")
-		b.WriteString(itoa(len(res.FilesChanged)))
-
-		for _, f := range res.FilesChanged {
-			b.WriteString("\n  - ")
-			b.WriteString(f)
+	// Record the autosave in system_state.md so the operator can
+	// confirm "did the bot actually save" without trawling zerolog.
+	// RecordAutosave is no-op for empty commits (the counter
+	// reflects successful non-empty saves, not save attempts).
+	if sysSt != nil && res.Hash != "" {
+		if _, err := sysSt.RecordAutosave(res.Hash, time.Now().UTC()); err != nil {
+			log.Warn().Err(err).Str("hash", res.Hash).Msg("system_state.md autosave record failed")
 		}
 	}
 
-	body := b.String()
+	body := buildAutoSaveNotify(res, verbose)
 	if op.RemoteDisabled() {
 		return body + "\n(push пропущен: remote_disabled=true)"
 	}
 
-	if err := op.SyncRebase(ctx); err != nil {
-		body += "\n⚠️ push: " + err.Error()
-	} else {
-		body += "\ngit push ok."
+	return appendPushStatus(ctx, log, op, res, body)
+}
+
+// buildAutoSaveNotify formats the ✅ "saved: commit <hash>" prefix
+// (plus the optional per-file diff when verbose=true). The caller
+// appends the push status separately so the function stays
+// pure and testable.
+func buildAutoSaveNotify(res gitops.CommitResult, verbose bool) string {
+	var b strings.Builder
+
+	b.WriteString("✅ сохранено: commit ")
+	b.WriteString(res.Hash)
+
+	if !verbose {
+		return b.String()
 	}
 
-	log.Info().Str("chat", chatID).Str("hash", res.Hash).Int("files", len(res.FilesChanged)).Msg("auto-save")
+	b.WriteString("\n  файлов: ")
+	b.WriteString(itoa(len(res.FilesChanged)))
 
-	return body
+	for _, f := range res.FilesChanged {
+		b.WriteString("\n  - ")
+		b.WriteString(f)
+	}
+
+	return b.String()
+}
+
+// appendPushStatus tries to push the commit to the remote and
+// appends a single line describing the result. Errors are
+// reported inline so the player sees "⚠️ push: <reason>"
+// rather than just an empty success line.
+func appendPushStatus(ctx context.Context, log zerolog.Logger, op *gitops.Operator, res gitops.CommitResult, body string) string {
+	if err := op.SyncRebase(ctx); err != nil {
+		return body + "\n⚠️ push: " + err.Error()
+	}
+
+	log.Info().
+		Str("chat", "").
+		Str("hash", res.Hash).
+		Int("files", len(res.FilesChanged)).
+		Msg("auto-save pushed")
+
+	return body + "\ngit push ok."
 }
 
 // buildSlowlog picks between File-mode and Discard based on the
@@ -660,8 +1057,6 @@ func recv(c messaging.Client) <-chan messaging.IncomingMessage {
 
 	return ch
 }
-
-var _ = fmt.Sprintf
 
 // driverClient adapts an llm.Driver (which has both Stream
 // and Close) to the narrower usecase.LLMClient interface

@@ -98,13 +98,12 @@ type PromptData struct {
 // field names (snake_case → CamelCase) so the data
 // feels "config-shaped" to a template author.
 type NarrativeData struct {
-	WordLimit                  int
-	WordLimitFloor             int
-	Language                   string
-	RulesCheckBlock            bool
-	IncludeSystemStateInPrompt bool
-	CompactionNotify           bool
-	CompactionNotifyVerbose    bool
+	WordLimit               int
+	WordLimitFloor          int
+	Language                string
+	RulesCheckBlock         bool
+	CompactionNotify        bool
+	CompactionNotifyVerbose bool
 }
 
 // CompactionData exposes the hard-coded compaction
@@ -149,8 +148,7 @@ type CompactionData struct {
 // affect how the LLM is told to format its output
 // (e.g. JSON shape, language hints, soft caps).
 type DisplayData struct {
-	Language           string
-	SystemStateSummary string
+	Language string
 }
 
 // CharacterData is the per-turn dynamic character
@@ -292,12 +290,11 @@ type StageStateData struct {
 // *config.NarrativeConfig + *config.CompactionConfig
 // in main.go; tests build it directly.
 type NarrativeConfigSnapshot struct {
-	WordLimit                  int
-	Language                   string
-	RulesCheckBlock            bool
-	IncludeSystemStateInPrompt bool
-	CompactionNotify           bool
-	CompactionNotifyVerbose    bool
+	WordLimit               int
+	Language                string
+	RulesCheckBlock         bool
+	CompactionNotify        bool
+	CompactionNotifyVerbose bool
 
 	// Compaction knobs (zero = use Go-side default).
 	NPCPersonalMemoryLimit     int
@@ -330,13 +327,12 @@ func NewPromptData(
 ) PromptData {
 	return PromptData{
 		Narrative: NarrativeData{
-			WordLimit:                  narrative.WordLimit,
-			WordLimitFloor:             limits.NarrativeWordLimitFloor,
-			Language:                   narrative.Language,
-			RulesCheckBlock:            narrative.RulesCheckBlock,
-			IncludeSystemStateInPrompt: narrative.IncludeSystemStateInPrompt,
-			CompactionNotify:           narrative.CompactionNotify,
-			CompactionNotifyVerbose:    narrative.CompactionNotifyVerbose,
+			WordLimit:               narrative.WordLimit,
+			WordLimitFloor:          limits.NarrativeWordLimitFloor,
+			Language:                narrative.Language,
+			RulesCheckBlock:         narrative.RulesCheckBlock,
+			CompactionNotify:        narrative.CompactionNotify,
+			CompactionNotifyVerbose: narrative.CompactionNotifyVerbose,
 		},
 		Compaction: CompactionData{
 			NPCPersonalMemoryLimit:     pickInt(narrative.NPCPersonalMemoryLimit, DefaultNPCPersonalMemoryLimit),

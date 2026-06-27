@@ -60,20 +60,22 @@ func buildGit(cfg *config.Config, log zerolog.Logger) *gitops.Operator {
 	)
 }
 
-// buildLLMDriver selects the primary LLM driver (openai
-// or anthropic) per cfg.LLM.Driver and wires the
-// narrative role's config.
+// buildLLMDriver selects the LLM driver (openai or anthropic)
+// per the role's referenced provider.Driver. The provider's
+// URL/key/driver are the single source of truth for endpoint
+// configuration; llm.RoleConfig (the runtime snapshot) is filled
+// from the provider here.
 //
 //nolint:ireturn // driver interface is the intended return type
 func buildLLMDriver(
-	cfg *config.Config,
 	role config.LLMRoleConfig,
+	prov config.ProviderConfig,
 	slow *slowlog.Logger,
 	log zerolog.Logger,
 ) (llm.Driver, driverClient) {
 	rc := llm.RoleConfig{
-		APIURL:                   role.APIURL,
-		APIKey:                   role.APIKey,
+		APIURL:                   prov.APIURL,
+		APIKey:                   prov.APIKey,
 		Model:                    role.Model,
 		MaxTokens:                role.MaxTokens,
 		UsePrefillBracket:        role.UsePrefillBracket,
@@ -87,7 +89,7 @@ func buildLLMDriver(
 
 	var driver llm.Driver
 
-	switch cfg.LLM.Driver {
+	switch prov.Driver {
 	case "", "openai":
 		driver = llmopenai.New(rc, log)
 		log.Info().Str("driver", "openai").Str("model", role.Model).Msg("llm driver ready")
@@ -95,7 +97,7 @@ func buildLLMDriver(
 		driver = llmanthropic.NewWithSlowlog(rc, log, slow)
 		log.Info().Str("driver", "anthropic").Str("model", role.Model).Msg("llm driver ready")
 	default:
-		log.Fatal().Str("driver", cfg.LLM.Driver).Msg("unknown llm.driver; expected openai|anthropic")
+		log.Fatal().Str("driver", prov.Driver).Msg("unknown provider.driver; expected openai|anthropic")
 	}
 
 	return driver, driverClient{driver: driver}
@@ -112,19 +114,20 @@ func buildLLMDriver(
 // so the user-message templates can reference
 // {{ .Compaction.* }} instead of hard-coded numbers.
 func buildSummarizer( //nolint:funlen // complex function; splitting would harm readability.
-	cfg *config.Config, role config.LLMRoleConfig,
+	cfg *config.Config, role config.LLMRoleConfig, prov config.ProviderConfig,
 	snap promptpkg.NarrativeConfigSnapshot, slow *slowlog.Logger, log zerolog.Logger,
 ) *usecase.Summarizer {
 	var (
 		sumRole   llm.RoleConfig
+		sumProv   config.ProviderConfig
 		sumPrompt string
 		ok        bool
 	)
 
-	if sumRoleCfg, hasSummary := cfg.Role("summary"); hasSummary {
+	if sumRoleCfg, sumProvCfg, hasSummary := cfg.Role("summary"); hasSummary {
 		sumRole = llm.RoleConfig{
-			APIURL:                   sumRoleCfg.APIURL,
-			APIKey:                   sumRoleCfg.APIKey,
+			APIURL:                   sumProvCfg.APIURL,
+			APIKey:                   sumProvCfg.APIKey,
 			Model:                    sumRoleCfg.Model,
 			MaxTokens:                sumRoleCfg.MaxTokens,
 			Temperature:              sumRoleCfg.Temperature,
@@ -134,6 +137,7 @@ func buildSummarizer( //nolint:funlen // complex function; splitting would harm 
 			MaxEmptyRetries:          sumRoleCfg.MaxEmptyRetries,
 			EmptyRetryTimeoutSeconds: sumRoleCfg.EmptyRetryTimeoutSeconds,
 		}
+		sumProv = sumProvCfg
 
 		p, err := renderSummarizerPrompt("summary.md.tmpl", snap)
 		if err != nil {
@@ -147,15 +151,18 @@ func buildSummarizer( //nolint:funlen // complex function; splitting would harm 
 
 	if !ok {
 		sumRole = llm.RoleConfig{
-			APIURL:                role.APIURL,
-			APIKey:                role.APIKey,
-			Model:                 role.Model,
-			MaxTokens:             role.MaxTokens,
-			Temperature:           role.Temperature,
-			RequestTimeoutSeconds: role.RequestTimeoutSeconds,
-			DisableThinking:       role.DisableThinking,
-			ReasoningEffort:       role.ReasoningEffort,
+			APIURL:                   prov.APIURL,
+			APIKey:                   prov.APIKey,
+			Model:                    role.Model,
+			MaxTokens:                role.MaxTokens,
+			Temperature:              role.Temperature,
+			RequestTimeoutSeconds:    role.RequestTimeoutSeconds,
+			DisableThinking:          role.DisableThinking,
+			ReasoningEffort:          role.ReasoningEffort,
+			MaxEmptyRetries:          role.MaxEmptyRetries,
+			EmptyRetryTimeoutSeconds: role.EmptyRetryTimeoutSeconds,
 		}
+		sumProv = prov
 
 		p, err := renderSummarizerPrompt("summary.md.tmpl", snap)
 		if err != nil || p == "" {
@@ -173,7 +180,7 @@ func buildSummarizer( //nolint:funlen // complex function; splitting would harm 
 
 	var sumLLM llm.Driver
 
-	switch cfg.LLM.Driver {
+	switch sumProv.Driver {
 	case "anthropic":
 		sumLLM = llmanthropic.New(sumRole, log)
 	default:
@@ -181,8 +188,9 @@ func buildSummarizer( //nolint:funlen // complex function; splitting would harm 
 	}
 
 	var summarizer *usecase.Summarizer
-	if _, hasSummary := cfg.Role("summary"); hasSummary {
+	if sumRoleCfg, _, hasSummary := cfg.Role("summary"); hasSummary {
 		summarizer = usecase.NewSummarizer(sumLLM, sumRole, sumPrompt, slow, log)
+		_ = sumRoleCfg
 	} else {
 		summarizer = usecase.NewFallbackSummarizer(sumLLM, sumRole, sumPrompt, slow, log)
 	}
@@ -281,15 +289,19 @@ func buildFileToolset(
 }
 
 // buildGM constructs the Game Master with its compaction
-// config and wires the worldStateInvalidate hook.
+// config, wires the worldStateInvalidate hook and returns
+// both the *usecase.GM and the *usecase.SystemState it
+// constructed. The system_state.md writer is returned so
+// the caller can reuse the same instance from auto-save
+// without spinning up a second FileStore handle.
 func buildGM(
-	cfg *config.Config, role config.LLMRoleConfig,
+	cfg *config.Config, role config.LLMRoleConfig, prov config.ProviderConfig,
 	systemPrompt string,
 	fs *storage.FileStore, llmCli driverClient,
 	fileTools *files.Toolset, repos *api.Repositories,
 	summarizer *usecase.Summarizer,
 	slow *slowlog.Logger, log zerolog.Logger,
-) *usecase.GM {
+) (*usecase.GM, *usecase.SystemState) {
 	ss := usecase.NewSessionStartWithLogger(fs, log)
 	fl := usecase.NewFirstLaunchWithLogger(fs, repos.WorldState, log)
 	sysSt := usecase.NewSystemState(fs, log, slow)
@@ -304,14 +316,14 @@ func buildGM(
 		},
 		SystemPrompt: systemPrompt,
 		Compaction: usecase.CompactionConfig{
-			ContextWindow: role.ContextWindow,
+			ContextWindow: prov.ContextWindow,
 			Threshold:     role.CompactionThreshold,
 			KeepRecent:    role.CompactionKeepRecent,
 		},
 	}, fs, llmCli, ss, fl, fileTools, summarizer, sysSt, slow, cfg.LLM.TokenTracking, cfg.LLM.IncludeInReply, log)
 	fileTools.SetWorldStateInvalidate(gm.InvalidateWorldState)
 
-	return gm
+	return gm, sysSt
 }
 
 // buildDispatcher wires the operator command dispatcher
@@ -384,14 +396,22 @@ func buildMessagingPool(
 }
 
 // autoSaveState holds the per-process reply counter and
-// threshold used to trigger periodic git auto-saves.
+// threshold used to trigger periodic git auto-saves. sysSt
+// is the optional system_state.md writer — when non-nil,
+// every successful save is recorded there (last_hash,
+// total_saves counter) so the operator can confirm via a
+// single file read what the bot has done.
 type autoSaveState struct {
 	count     atomic.Int64
 	threshold int
+	sysSt     *usecase.SystemState
 }
 
-func newAutoSaveState(cfg *config.Config) *autoSaveState {
-	return &autoSaveState{threshold: max(cfg.Git.AutoSave.AfterMessages, 0)}
+func newAutoSaveState(cfg *config.Config, sysSt *usecase.SystemState) *autoSaveState {
+	return &autoSaveState{
+		threshold: max(cfg.Git.AutoSave.AfterMessages, 0),
+		sysSt:     sysSt,
+	}
 }
 
 // maybeAutoSave increments the counter on every freeform
@@ -413,5 +433,5 @@ func (a *autoSaveState) maybeAutoSave(
 		return ""
 	}
 
-	return runAutoSave(ctx, log, gitOp, chatID, verbose)
+	return runAutoSave(ctx, log, gitOp, a.sysSt, chatID, verbose)
 }

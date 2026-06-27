@@ -98,6 +98,61 @@ func (s *SystemState) SetSessionContext(state *domain.SystemState, character, wo
 	state.Session.ChatID = chatID
 }
 
+// InitSession is a one-shot helper that loads the current
+// system_state.md, calls SetSessionContext with the supplied
+// (character, world, chatID) and writes the file back.
+// Designed for cmd/bot/main.go to call once at startup.
+// Returns the post-write SystemState so the caller can
+// inspect the counters it just initialised.
+func (s *SystemState) InitSession(character, world, chatID string, now time.Time) (domain.SystemState, error) {
+	if s == nil {
+		return domain.SystemState{}, nil
+	}
+
+	state, err := s.Load()
+	if err != nil {
+		return domain.SystemState{}, err
+	}
+
+	s.SetSessionContext(&state, character, world, chatID, now)
+
+	if err := s.Save(state); err != nil {
+		return domain.SystemState{}, err
+	}
+
+	return state, nil
+}
+
+// BumpSession is a per-message helper that loads the file,
+// calls TouchSession and writes the file back. The isFreeform
+// flag distinguishes freeform player turns from /-prefixed
+// commands: only freeform turns count toward the
+// FreeformTurnCount total (TurnCount counts every
+// IncomingMessage).
+//
+// BumpSession is best-effort: a failure to read or write
+// system_state.md logs a warning and returns nil. The
+// player sees nothing — losing one audit row is much
+// better than failing a chat reply.
+func (s *SystemState) BumpSession(isFreeform bool, now time.Time) error {
+	if s == nil {
+		return nil
+	}
+
+	state, err := s.Load()
+	if err != nil {
+		return fmt.Errorf("bump_session: load: %w", err)
+	}
+
+	s.TouchSession(&state, isFreeform, now)
+
+	if err := s.Save(state); err != nil {
+		return fmt.Errorf("bump_session: save: %w", err)
+	}
+
+	return nil
+}
+
 // AppendCompaction is the canonical entry point for the
 // compaction log. It loads the current file, appends the
 // event (with the eviction logic in domain.CompactionLog),

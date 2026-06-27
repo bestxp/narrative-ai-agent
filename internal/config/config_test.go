@@ -21,17 +21,45 @@ func writeTempConfig(t *testing.T, body string) string {
 
 // minimalValidYAML is the smallest config that passes Validate():
 // messaging.telegram configured, access list non-empty, llm.narrative
-// present. Other sections use defaults.
+// present and pointing at a defined provider. Other sections use
+// defaults.
 const minimalValidYAML = `
 messaging:
   telegram:
     token: "ABC:XYZ"
     allowed_user_ids: [1]
 llm:
+  providers:
+    local_ollama:
+      driver: "openai"
+      api_url: "http://localhost:11434/v1"
+      api_key: "ollama"
+      context_window: 32000
   roles:
     narrative:
+      provider: local_ollama
       model: "qwen2.5:7b-instruct"
 `
+
+// llmWithProvider returns a YAML fragment with a single
+// "local_ollama" provider + one role (default narrative) pointing
+// at it. Helper for tests that need a body and want to focus on
+// the section under test, not the LLM plumbing.
+func llmWithProvider(extraRole string) string {
+	return `
+llm:
+  providers:
+    local_ollama:
+      driver: "openai"
+      api_url: "http://localhost:11434/v1"
+      api_key: "ollama"
+      context_window: 32000
+  roles:
+    narrative:
+      provider: local_ollama
+      model: "qwen2.5:7b-instruct"
+` + extraRole
+}
 
 func TestLoad_OK(t *testing.T) {
 	t.Parallel()
@@ -54,8 +82,15 @@ narrative:
   language: "ru"
 llm:
   default_timeout_seconds: 90
+  providers:
+    local_ollama:
+      driver: "openai"
+      api_url: "http://localhost:11434/v1"
+      api_key: "ollama"
+      context_window: 32000
   roles:
     narrative:
+      provider: local_ollama
       model: "qwen2.5:7b-instruct"
       temperature: 0.4
 `
@@ -76,10 +111,7 @@ messaging:
   telegram:
     token: "REPLACE_WITH_BOTFATHER_TOKEN"
     allowed_user_ids: [1]
-llm:
-  roles:
-    narrative: { model: "x" }
-`
+` + llmWithProvider("")
 	_, err := config.Load(writeTempConfig(t, body))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "messaging.telegram.token")
@@ -93,10 +125,7 @@ messaging:
   telegram:
     token: "ABC:XYZ"
     allowed_user_ids: []
-llm:
-  roles:
-    narrative: { model: "x" }
-`
+` + llmWithProvider("")
 	_, err := config.Load(writeTempConfig(t, body))
 	require.Error(t, err)
 }
@@ -109,10 +138,7 @@ func TestLoad_RejectsMissingToken(t *testing.T) {
 messaging:
   telegram:
     allowed_user_ids: [1]
-llm:
-  roles:
-    narrative: { model: "x" }
-`
+` + llmWithProvider("")
 	_, err := config.Load(writeTempConfig(t, body))
 	require.Error(t, err)
 }
@@ -125,10 +151,10 @@ func TestLoad_AppliesDefaults(t *testing.T) {
 	assert.Equal(t, "origin", cfg.Git.Remote)
 	assert.Equal(t, 150, cfg.Narrative.WordLimit)
 	assert.Equal(t, 120, cfg.LLM.DefaultTimeoutSeconds)
-	role, ok := cfg.Role(config.NarrativeRole)
+	role, prov, ok := cfg.Role(config.NarrativeRole)
 	require.True(t, ok)
 	assert.Equal(t, "qwen2.5:7b-instruct", role.Model)
-	assert.Equal(t, "http://localhost:11434/v1", role.APIURL)
+	assert.Equal(t, "http://localhost:11434/v1", prov.APIURL)
 	assert.InDelta(t, 0.8, role.Temperature, 1e-9)
 	assert.Equal(t, 2500, role.MaxTokens)
 	assert.Equal(t, 120, role.RequestTimeoutSeconds)
@@ -147,11 +173,19 @@ messaging:
     allowed_user_ids: [1]
 llm:
   default_timeout_seconds: 60
+  providers:
+    local_ollama:
+      driver: "openai"
+      api_url: "http://localhost:11434/v1"
+      api_key: "ollama"
+      context_window: 32000
   roles:
     narrative:
+      provider: local_ollama
       model: "qwen2.5:7b-instruct"
       temperature: 0.8
     summary:
+      provider: local_ollama
       model: "qwen2.5:1.5b-instruct"
       temperature: 0.2
       max_tokens: 400
@@ -160,11 +194,11 @@ llm:
 	cfg, err := config.Load(writeTempConfig(t, body))
 	require.NoError(t, err)
 	assert.Len(t, cfg.LLM.Roles, 2)
-	narr, ok := cfg.Role("narrative")
+	narr, _, ok := cfg.Role("narrative")
 	require.True(t, ok)
 	assert.InDelta(t, 0.8, narr.Temperature, 1e-9)
 
-	sum, ok := cfg.Role("summary")
+	sum, _, ok := cfg.Role("summary")
 	require.True(t, ok)
 	assert.InDelta(t, 0.2, sum.Temperature, 1e-9)
 	assert.Equal(t, 400, sum.MaxTokens)
@@ -180,17 +214,14 @@ messaging:
   telegram:
     token: "ABC"
     allowed_user_ids: [1]
-llm:
-  roles:
-    narrative:
-      model: "x"
-`
+` + llmWithProvider(`
+      temperature: 0.3`)
 	cfg, err := config.Load(writeTempConfig(t, body))
 	require.NoError(t, err)
 
-	role, ok := cfg.Role(config.NarrativeRole)
+	role, _, ok := cfg.Role(config.NarrativeRole)
 	require.True(t, ok)
-	assert.InDelta(t, 0.8, role.Temperature, 1e-9)
+	assert.InDelta(t, 0.3, role.Temperature, 1e-9)
 	assert.Equal(t, 2500, role.MaxTokens)
 	// system_prompt_path is empty by default — main.go will fall
 	// back to the embed.FS copy in internal/prompts/narrative.md.
@@ -202,7 +233,7 @@ func TestRole_UnknownReturnsFalse(t *testing.T) {
 	cfg, err := config.Load(writeTempConfig(t, minimalValidYAML))
 	require.NoError(t, err)
 
-	_, ok := cfg.Role("does-not-exist")
+	_, _, ok := cfg.Role("does-not-exist")
 	assert.False(t, ok)
 }
 
@@ -215,16 +246,12 @@ messaging:
   telegram:
     token: "ABC"
     allowed_user_ids: [1]
-llm:
-  roles:
-    narrative: { model: "" }
-`
-	cfg, err := config.Load(writeTempConfig(t, body))
+` + llmWithProvider(`
+      model: ""`)
+	_, err := config.Load(writeTempConfig(t, body))
 	// Validate() rejects empty model: the bot refuses to start with
 	// a half-configured narrative role.
 	require.Error(t, err)
-
-	_ = cfg
 }
 
 func TestMustRole_PanicsOnMissing(t *testing.T) {
@@ -269,10 +296,7 @@ messaging:
     allowed_user_ids: [1]
 git:
   remote_disabled: true
-llm:
-  roles:
-    narrative: { model: "x" }
-`
+` + llmWithProvider("")
 	cfg, err := config.Load(writeTempConfig(t, body))
 	require.NoError(t, err)
 	assert.True(t, cfg.Git.RemoteDisabled)

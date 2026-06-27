@@ -234,14 +234,6 @@ type NarrativeConfig struct {
 	// production play (default off) vs. debugging (turn on to
 	// see what the model is reporting about itself).
 	RulesCheckBlock bool `yaml:"rules_check_block"`
-	// IncludeSystemStateInPrompt, when true, includes a small
-	// summary of system_state.md (last compaction, session
-	// metrics) in the LLM system prompt. Off by default — the
-	// file is intended as an operator-facing diagnostic and
-	// shipping it to the LLM wastes tokens. Turn on only if a
-	// specific bug requires the model to know about its own
-	// context-window pressure.
-	IncludeSystemStateInPrompt bool `yaml:"include_system_state_in_prompt"`
 	// CompactionNotify, when true, sends a Telegram message to
 	// the player whenever the bot drops old conversation turns
 	// to stay under the configured context window. The default
@@ -285,7 +277,20 @@ type HealthConfig struct {
 // cheap local model that condenses NPC files, a classifier that
 // picks the right tool, and so on. Each role has its own model,
 // prompt and parameters.
+//
+// LLMConfig.Providers carries the SDK + endpoint configuration
+// (driver, api_url, api_key, context_window). Roles reference
+// providers by name via the "provider" key. A single provider can
+// back many roles (e.g. one Ollama URL for narrative + summary +
+// classification) and one role can override its provider's model
+// if the operator wants different weights on the same endpoint.
 type LLMConfig struct {
+	// Providers is a name -> configuration map. At least one
+	// provider is mandatory (the narrative role points to one).
+	// Multiple providers are useful when the operator wants to
+	// mix endpoints (local Ollama + cloud OpenRouter + direct
+	// Anthropic) without duplicating api_url/api_key per role.
+	Providers map[string]ProviderConfig `yaml:"providers"`
 	// Roles is a name -> configuration map. The "narrative" key is
 	// mandatory and powers the GM. Other keys (e.g. "summary",
 	// "classification") are wired as the bot grows.
@@ -310,22 +315,45 @@ type LLMConfig struct {
 	// tok"). Operators who only want the number in slowlog can
 	// flip this off without turning the count itself off.
 	IncludeInReply bool `yaml:"include_in_reply"`
-	// Driver selects the LLM SDK. The h4-by-default wire
-	// surface (json_object + 8 tools + tool_choice=auto +
-	// strict_tools=true on openai; system-prompt + 8 tools +
-	// tool_choice=auto + strict on anthropic) is hardcoded
-	// inside each driver — there are no per-call overrides.
+}
+
+// ProviderConfig describes a single LLM endpoint. Multiple roles
+// can share one provider; a role overrides only what differs (model,
+// disable_thinking, etc.).
+type ProviderConfig struct {
+	// Driver selects the LLM SDK. The h4-by-default wire surface
+	// (json_object + 8 tools + tool_choice=auto + strict_tools=true
+	// on openai; system-prompt + 8 tools + tool_choice=auto +
+	// strict on anthropic) is hardcoded inside each driver —
+	// there are no per-call overrides.
 	//
-	//   "" (default) and "openai" use github.com/openai/openai-go/v3
-	//     over /v1/chat/completions (Ollama, OpenAI, OpenRouter,
+	//   "openai" use github.com/openai/openai-go/v3 over
+	//     /v1/chat/completions (Ollama, OpenAI, OpenRouter,
 	//     routerai.ru, etc.).
 	//   "anthropic" uses github.com/anthropics/anthropic-sdk-go
 	//     over /v1/messages (Ollama, OpenRouter, Anthropic
-	//     direct). The driver auto-detects which auth header
-	//     to use based on the API URL: ollama.com takes
+	//     direct). The driver auto-detects which auth header to
+	//     use based on the API URL: ollama.com takes
 	//     "Authorization: Bearer", everyone else takes the
 	//     standard "x-api-key" header.
 	Driver string `yaml:"driver"`
+	// APIURL is the OpenAI-compatible chat completions endpoint.
+	// Defaults to the local Ollama URL. Override to point at
+	// OpenRouter, vLLM, LM-Studio, etc.
+	APIURL string `yaml:"api_url"`
+	// APIKey is the bearer token. Ollama ignores this; OpenAI and
+	// OpenRouter require a real one. Treat as a secret.
+	APIKey string `yaml:"api_key"`
+	// ContextWindow is the soft cap on the input side of a single
+	// chat-completion request. When the accumulated history plus
+	// the static system prompt grows past CompactionThreshold *
+	// ContextWindow tokens, the bot triggers a compaction: it
+	// drops the oldest conversation turns down to
+	// CompactionKeepRecent and reissues the request. Set 0 to
+	// disable compaction entirely; the bot will then refuse to
+	// issue requests larger than ContextWindow as a hard cap to
+	// avoid runaway cost.
+	ContextWindow int `yaml:"context_window"`
 }
 
 // TokenTrackingOff / Estimate / Usage are the canonical modes for
@@ -339,18 +367,19 @@ const (
 
 // LLMRoleConfig describes one named LLM role.
 type LLMRoleConfig struct {
+	// Provider is the name of the LLMConfig.Providers entry this
+	// role routes through. Mandatory — a role without a provider
+	// reference is a misconfiguration (the bot cannot fabricate
+	// an endpoint).
+	Provider string `yaml:"provider"`
 	// Model is the model identifier passed verbatim to the API
 	// (e.g. "qwen2.5:7b-instruct", "gpt-4o-mini",
-	// "anthropic/claude-3.5-sonnet"). For Ollama this is the tag you
-	// `ollama pull`-ed.
+	// "anthropic/claude-3.5-sonnet"). For Ollama this is the tag
+	// you `ollama pull`-ed. Empty means "use the default model
+	// declared on the provider" (LLMConfig.Providers[name].Model
+	// is reserved for future use; today the role Model is
+	// mandatory and the provider has no default of its own).
 	Model string `yaml:"model"`
-	// APIURL is the OpenAI-compatible chat completions endpoint.
-	// Defaults to the local Ollama URL. Override to point at
-	// OpenRouter, vLLM, LM-Studio, etc.
-	APIURL string `yaml:"api_url"`
-	// APIKey is the bearer token. Ollama ignores this; OpenAI and
-	// OpenRouter require a real one. Treat as a secret.
-	APIKey string `yaml:"api_key"`
 	// SystemPromptPath is the file containing the role's system
 	// prompt. The bot reads it on startup and sends it as the
 	// "system" message of every chat completion call.
@@ -371,17 +400,7 @@ type LLMRoleConfig struct {
 	// RequestTimeoutSeconds is the HTTP timeout for this role's
 	// calls. Falls back to LLMConfig.DefaultTimeoutSeconds when 0.
 	RequestTimeoutSeconds int `yaml:"request_timeout_seconds"`
-	// ContextWindow is the soft cap on the input side of a
-	// single chat-completion request for this role. When the
-	// accumulated history plus the static system prompt grows
-	// past CompactionThreshold * ContextWindow tokens, the bot
-	// triggers a compaction: it drops the oldest conversation
-	// turns down to CompactionKeepRecent and reissues the
-	// request. Set 0 to disable compaction entirely; the bot
-	// will then refuse to issue requests larger than
-	// ContextWindow as a hard cap to avoid runaway cost.
-	ContextWindow int `yaml:"context_window"`
-	// CompactionThreshold is the fraction of ContextWindow at
+	// CompactionThreshold is the fraction of ProviderConfig.ContextWindow at
 	// which compaction is triggered. 0.7 means "compact when
 	// the prompt reaches 70% of the cap"; 1.0 means "compact
 	// only when we hit the cap" (more aggressive, but the
@@ -451,24 +470,45 @@ type SlowlogConfig struct {
 // (summary, classification, ...) use their own keys.
 const NarrativeRole = "narrative"
 
-// Role returns the configuration for a named role. The bool is false
-// if the key is missing or has no model configured. Callers should
-// handle the false case explicitly — there is no implicit fallback to
-// the narrative role, because using a 70B model for compaction would
+// Role returns the (role, provider) pair for a named role. The
+// bool is false if the key is missing, has no model, or
+// references an undefined provider. Callers should handle the
+// false case explicitly — there is no implicit fallback to the
+// narrative role, because using a 70B model for compaction would
 // be wasteful and a 7B model for narration would be lossy.
-func (c *Config) Role(name string) (LLMRoleConfig, bool) {
-	if r, ok := c.LLM.Roles[name]; ok && r.Model != "" {
-		return r, true
+func (c *Config) Role(name string) (LLMRoleConfig, ProviderConfig, bool) {
+	r, ok := c.LLM.Roles[name]
+	if !ok || r.Model == "" {
+		return LLMRoleConfig{}, ProviderConfig{}, false
 	}
 
-	return LLMRoleConfig{}, false
+	prov, ok := c.LLM.Providers[r.Provider]
+	if !ok {
+		return LLMRoleConfig{}, ProviderConfig{}, false
+	}
+
+	return r, prov, true
+}
+
+// ProviderByName returns the configuration for a named provider.
+// The bool is false if the key is missing. The provider
+// resolution path is the single source of truth for endpoint
+// configuration; everywhere else (buildLLMDriver,
+// buildSummarizer, buildGM) gets its url/key/driver through
+// this lookup.
+func (c *Config) ProviderByName(name string) (ProviderConfig, bool) {
+	if p, ok := c.LLM.Providers[name]; ok {
+		return p, true
+	}
+
+	return ProviderConfig{}, false
 }
 
 // MustRole is a convenience for tests and main wiring: it returns
 // the role and panics if it is missing. Production callers should
 // use Role() and handle the bool.
 func (c *Config) MustRole(name string) LLMRoleConfig {
-	r, ok := c.Role(name)
+	r, _, ok := c.Role(name)
 	if !ok {
 		panic("llm: role " + name + " is not configured")
 	}
@@ -503,133 +543,28 @@ func Load(path string) (*Config, error) {
 // section come first so the operator can fix config.yaml quickly.
 //
 // config validation traverses every nested section (messaging, llm, prompts, storage);
-// flattening into helpers would scatter the per-section invariants
-//
-//nolint:gocognit,cyclop,funlen // config validation traverses every nested section; flattening scatters invariants.
+// Validate checks every section of the config (messaging, paths,
+// git, narrative, llm.providers, llm.roles) and applies default
+// values. The order is meaningful: messaging invariants come
+// first so the operator sees the offending transport before any
+// LLM-shaped error message. Per-section helpers keep each
+// validator small.
 func (c *Config) Validate() error {
-	// At least one transport must be configured.
-	tgOK := c.Messaging.Telegram.IsConfigured()
-	vkOK := c.Messaging.VK.IsConfigured()
-
-	wsOK := c.Messaging.WSChat.IsConfigured()
-	if !tgOK && !vkOK && !wsOK {
-		return errors.New("at least one messaging transport must be configured (telegram, vk or wschat)")
+	if err := c.validateMessaging(); err != nil {
+		return err
 	}
 
-	if tgOK {
-		if c.Messaging.Telegram.Token == "REPLACE_WITH_BOTFATHER_TOKEN" {
-			return errors.New("messaging.telegram.token must be set to a real bot token")
-		}
+	c.applyDefaults()
 
-		if len(c.Messaging.Telegram.AllowedUserIDs) == 0 {
-			return errors.New("messaging.telegram.allowed_user_ids must contain at least one user id")
-		}
+	if err := c.validateProviders(); err != nil {
+		return err
 	}
 
-	if vkOK {
-		if len(c.Messaging.VK.AllowedUserIDs) == 0 {
-			return errors.New("messaging.vk.allowed_user_ids must contain at least one user id")
-		}
-
-		if c.Messaging.VK.PollingWait == 0 {
-			c.Messaging.VK.PollingWait = 25
-		}
+	if err := c.validateRoles(); err != nil {
+		return err
 	}
 
-	if wsOK {
-		if c.Messaging.WSChat.DevToken == "" && len(c.Messaging.WSChat.AllowedTokens) == 0 {
-			return errors.New("messaging.wschat.dev_token (or allowed_tokens) must be set when wschat is enabled")
-		}
-
-		if c.Messaging.WSChat.ChatID == "" {
-			c.Messaging.WSChat.ChatID = "dev"
-		}
-	}
-
-	if c.Paths.DataRoot == "" {
-		c.Paths.DataRoot = "game-data"
-	}
-
-	if c.Paths.GitWorkdir == "" {
-		c.Paths.GitWorkdir = "."
-	}
-	// Slowlog.File defaults to ./slow.log so an operator who only
-	// flips `slowlog.enabled: true` gets a sensible path.
-	if c.Slowlog.Enabled && c.Slowlog.File == "" {
-		c.Slowlog.File = "slow.log"
-	}
-	// TokenTracking defaults to "off" — most operators do not need
-	// the per-reply line, and the estimate mode adds a final chunk
-	// of work after every response. Flip to "estimate" in
-	// config.yaml to enable.
-	if c.LLM.TokenTracking == "" {
-		c.LLM.TokenTracking = TokenTrackingOff
-	}
-
-	switch c.LLM.TokenTracking {
-	case TokenTrackingOff, TokenTrackingEstimate, TokenTrackingUsage:
-		// ok
-	default:
-		return fmt.Errorf("llm.token_tracking must be one of off|estimate|usage, got %q", c.LLM.TokenTracking)
-	}
-
-	if c.Git.Remote == "" {
-		c.Git.Remote = "origin"
-	}
-
-	if c.Git.Branch == "" {
-		c.Git.Branch = "master"
-	}
-	// RemoteDisabled is a bool — its zero value is false, which
-	// matches the default behaviour (push enabled).
-	if c.Narrative.WordLimit == 0 {
-		c.Narrative.WordLimit = 150
-	}
-
-	if c.Narrative.Language == "" {
-		c.Narrative.Language = "ru"
-	}
-	// LLM driver selection. Default = openai.
-	if c.LLM.Driver == "" {
-		c.LLM.Driver = "openai"
-	}
-
-	switch c.LLM.Driver {
-	case "openai", "anthropic":
-		// ok
-	default:
-		return fmt.Errorf("llm.driver must be one of openai|anthropic, got %q", c.LLM.Driver)
-	}
-	// Per-role defaults. A missing key falls back to these.
-	c.LLM.DefaultTimeoutSeconds = nonZero(c.LLM.DefaultTimeoutSeconds, 120)
-	for name, role := range c.LLM.Roles {
-		role.APIURL = nonEmpty(role.APIURL, "http://localhost:11434/v1")
-		role.APIKey = nonEmpty(role.APIKey, "ollama")
-		role.RequestTimeoutSeconds = nonZero(role.RequestTimeoutSeconds, c.LLM.DefaultTimeoutSeconds)
-		role.MaxTokens = nonZero(role.MaxTokens, 2500)
-		role.Temperature = nonZeroFloat(role.Temperature, 0.8)
-		role.CompactionThreshold = nonZeroFloat(role.CompactionThreshold, 0.7)
-		role.CompactionKeepRecent = nonZero(role.CompactionKeepRecent, 5)
-		role.MaxEmptyRetries = nonZero(role.MaxEmptyRetries, 2)
-		role.EmptyRetryTimeoutSeconds = nonZero(role.EmptyRetryTimeoutSeconds, role.RequestTimeoutSeconds)
-		// system_prompt_path stays empty by default. main.go
-		// will fall back to the embed.FS copy in internal/prompts.
-		// Operators who want to A/B test a new prompt set the
-		// path explicitly in config.yaml.
-		c.LLM.Roles[name] = role
-	}
-	// The narrative role is mandatory — it's the only one wired today
-	// but a bot that boots with zero roles is always a misconfiguration.
-	narr, ok := c.LLM.Roles[NarrativeRole]
-	if !ok {
-		return fmt.Errorf("llm.%s role must be configured (model + system_prompt_path)", NarrativeRole)
-	}
-
-	if narr.Model == "" {
-		return fmt.Errorf("llm.%s.model must be set", NarrativeRole)
-	}
-
-	return nil
+	return c.validateLLMBlockers()
 }
 
 func nonEmpty(s, def string) string {
@@ -728,4 +663,181 @@ func (t TelegramConfig) IsConfigured() bool {
 // configuration to start (access token + group id).
 func (v VKConfig) IsConfigured() bool {
 	return v.AccessToken != "" && v.GroupID > 0
+}
+
+// validateMessaging checks that at least one transport is wired and
+// that its per-transport invariants hold (real bot token, non-empty
+// allow list, etc.).
+func (c *Config) validateMessaging() error {
+	tgOK := c.Messaging.Telegram.IsConfigured()
+	vkOK := c.Messaging.VK.IsConfigured()
+
+	wsOK := c.Messaging.WSChat.IsConfigured()
+	if !tgOK && !vkOK && !wsOK {
+		return errors.New("at least one messaging transport must be configured (telegram, vk or wschat)")
+	}
+
+	if tgOK {
+		if c.Messaging.Telegram.Token == "REPLACE_WITH_BOTFATHER_TOKEN" {
+			return errors.New("messaging.telegram.token must be set to a real bot token")
+		}
+
+		if len(c.Messaging.Telegram.AllowedUserIDs) == 0 {
+			return errors.New("messaging.telegram.allowed_user_ids must contain at least one user id")
+		}
+	}
+
+	if vkOK {
+		if len(c.Messaging.VK.AllowedUserIDs) == 0 {
+			return errors.New("messaging.vk.allowed_user_ids must contain at least one user id")
+		}
+
+		if c.Messaging.VK.PollingWait == 0 {
+			c.Messaging.VK.PollingWait = 25
+		}
+	}
+
+	if wsOK {
+		if c.Messaging.WSChat.DevToken == "" && len(c.Messaging.WSChat.AllowedTokens) == 0 {
+			return errors.New("messaging.wschat.dev_token (or allowed_tokens) must be set when wschat is enabled")
+		}
+
+		if c.Messaging.WSChat.ChatID == "" {
+			c.Messaging.WSChat.ChatID = "dev"
+		}
+	}
+
+	return nil
+}
+
+// applyDefaults sets every default that does not depend on per-role
+// or per-provider data. Defaults that need a per-key fallback (role
+// / provider) live in validateRoles / validateProviders.
+func (c *Config) applyDefaults() {
+	if c.Paths.DataRoot == "" {
+		c.Paths.DataRoot = "game-data"
+	}
+
+	if c.Paths.GitWorkdir == "" {
+		c.Paths.GitWorkdir = "."
+	}
+	// Slowlog.File defaults to ./slow.log so an operator who only
+	// flips `slowlog.enabled: true` gets a sensible path.
+	if c.Slowlog.Enabled && c.Slowlog.File == "" {
+		c.Slowlog.File = "slow.log"
+	}
+	// TokenTracking defaults to "off" — most operators do not need
+	// the per-reply line, and the estimate mode adds a final chunk
+	// of work after every response. Flip to "estimate" in
+	// config.yaml to enable.
+	if c.LLM.TokenTracking == "" {
+		c.LLM.TokenTracking = TokenTrackingOff
+	}
+
+	if c.Git.Remote == "" {
+		c.Git.Remote = "origin"
+	}
+
+	if c.Git.Branch == "" {
+		c.Git.Branch = "master"
+	}
+	// RemoteDisabled is a bool — its zero value is false, which
+	// matches the default behaviour (push enabled).
+	if c.Narrative.WordLimit == 0 {
+		c.Narrative.WordLimit = 150
+	}
+
+	if c.Narrative.Language == "" {
+		c.Narrative.Language = "ru"
+	}
+
+	c.LLM.DefaultTimeoutSeconds = nonZero(c.LLM.DefaultTimeoutSeconds, 120)
+}
+
+// validateProviders walks every llm.providers entry, applies
+// per-provider defaults (driver=openai, api_url/api_key=ollama
+// defaults) and rejects unknown drivers. Defaults belong to a
+// single source of truth so the operator can omit a driver field
+// and still get a working bot.
+func (c *Config) validateProviders() error {
+	provDefaultURL := "http://localhost:11434/v1"
+	provDefaultKey := "ollama"
+
+	// Iterate the providers and apply per-provider defaults
+	// (driver=openai, api_url/api_key=ollama defaults).
+	for name, prov := range c.LLM.Providers {
+		prov.Driver = nonEmpty(prov.Driver, "openai")
+
+		switch prov.Driver {
+		case "openai", "anthropic":
+			// ok
+		default:
+			return fmt.Errorf("llm.providers.%s.driver must be one of openai|anthropic, got %q", name, prov.Driver)
+		}
+
+		prov.APIURL = nonEmpty(prov.APIURL, provDefaultURL)
+		prov.APIKey = nonEmpty(prov.APIKey, provDefaultKey)
+		c.LLM.Providers[name] = prov
+	}
+
+	return nil
+}
+
+// validateRoles walks every llm.roles entry, verifies the role
+// references a defined provider, applies per-role defaults
+// (temperature, max_tokens, compaction knobs).
+func (c *Config) validateRoles() error {
+	for name, role := range c.LLM.Roles {
+		if role.Provider == "" {
+			return fmt.Errorf("llm.roles.%s.provider must reference a providers key", name)
+		}
+
+		if _, ok := c.LLM.Providers[role.Provider]; !ok {
+			return fmt.Errorf("llm.roles.%s.provider %q is not defined in llm.providers", name, role.Provider)
+		}
+
+		role.RequestTimeoutSeconds = nonZero(role.RequestTimeoutSeconds, c.LLM.DefaultTimeoutSeconds)
+		role.MaxTokens = nonZero(role.MaxTokens, 2500)
+		role.Temperature = nonZeroFloat(role.Temperature, 0.8)
+		role.CompactionThreshold = nonZeroFloat(role.CompactionThreshold, 0.7)
+		role.CompactionKeepRecent = nonZero(role.CompactionKeepRecent, 5)
+		role.MaxEmptyRetries = nonZero(role.MaxEmptyRetries, 2)
+		role.EmptyRetryTimeoutSeconds = nonZero(role.EmptyRetryTimeoutSeconds, role.RequestTimeoutSeconds)
+		// system_prompt_path stays empty by default. main.go
+		// will fall back to the embed.FS copy in internal/prompts.
+		// Operators who want to A/B test a new prompt set the
+		// path explicitly in config.yaml.
+		c.LLM.Roles[name] = role
+	}
+
+	return nil
+}
+
+// validateLLMBlockers covers post-default LLM invariants that
+// belong together: token_tracking enum, role "narrative"
+// presence, narrative.model non-empty. The narrative role is
+// the only one wired today; a bot that boots with zero roles is
+// always a misconfiguration.
+func (c *Config) validateLLMBlockers() error {
+	switch c.LLM.TokenTracking {
+	case TokenTrackingOff, TokenTrackingEstimate, TokenTrackingUsage:
+		// ok
+	default:
+		return fmt.Errorf("llm.token_tracking must be one of off|estimate|usage, got %q", c.LLM.TokenTracking)
+	}
+
+	narr, ok := c.LLM.Roles[NarrativeRole]
+	if !ok {
+		return fmt.Errorf("llm.%s role must be configured (provider + model + system_prompt_path)", NarrativeRole)
+	}
+
+	if narr.Model == "" {
+		return fmt.Errorf("llm.%s.model must be set", NarrativeRole)
+	}
+
+	if _, ok := c.LLM.Providers[narr.Provider]; !ok {
+		return fmt.Errorf("llm.%s.provider %q is not defined in llm.providers", NarrativeRole, narr.Provider)
+	}
+
+	return nil
 }

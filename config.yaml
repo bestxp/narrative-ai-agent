@@ -74,8 +74,6 @@ narrative:
   # Уведомление при компакции (дроп старых turn'ов). Отдельный bubble.
   compaction_notify: true
   compaction_notify_verbose: false
-  # Отдавать ли system_state.md в промпт. Default false — операторский файл.
-  include_system_state_in_prompt: false
 
 llm:
   default_timeout_seconds: 120
@@ -83,13 +81,37 @@ llm:
   token_tracking: "estimate"
   # Дописывать "🔢 ~N tok" в конец ответа.
   include_in_reply: true
-  # driver: "openai" (/v1/chat/completions) | "anthropic" (/v1/messages)
-  driver: "openai"
+
+  # providers — LLM-эндпоинты. Каждый provider содержит driver +
+  # url + key + context_window. Роли ссылаются на provider по имени.
+  # Можно иметь несколько provider (например, локальный Ollama +
+  # облачный OpenRouter) и смешивать их через роли.
+  providers:
+    # Основной локальный провайдер: Ollama на стандартном порту.
+    # Поддерживает /v1/chat/completions openai-driver, локальные
+    # модели (qwen, deepseek, llama).
+    local_ollama:
+      # driver: "openai" (/v1/chat/completions) |
+      #         "anthropic" (/v1/messages, авто-детект ollama.com vs всё остальное)
+      driver: "openai"
+      # OpenAI-compatible chat completions endpoint. По умолчанию
+      # Ollama. Переопределите для OpenRouter/vLLM/LM-Studio/...
+      api_url: "http://localhost:11434/v1"
+      # Bearer token. Ollama игнорирует; OpenAI/OpenRouter требуют
+      # настоящий. Treat as a secret.
+      api_key: "ollama"
+      # context_window: soft cap на input-токены. При накоплении
+      # истории past compaction_threshold * context_window бот
+      # триггерит compaction. 0 = без компактинга.
+      context_window: 32000
 
   roles:
+    # narrative: основная роль — управляет GM, генерирует ответы.
+    # Указывает provider по имени; все endpoint-настройки берутся
+    # оттуда. Provider не задаёт модель — её задаёт role (или
+    # модель провайдера по умолчанию в будущем).
     narrative:
-      api_url: "http://localhost:11434/v1"
-      api_key: "ollama"
+      provider: local_ollama
       model: "qwen2.5:7b-instruct"
       # Путь к system prompt. "" = встроенный narrative.md.
       system_prompt_path: ""
@@ -99,8 +121,10 @@ llm:
       use_prefill_bracket: false
       temperature: 0.8
       request_timeout_seconds: 120
-      # context_window: лимит input-токенов. 0 = без компактинга.
-      context_window: 32000
+      # context_window берётся из provider (32000 выше).
+      # compaction_threshold / compaction_keep_recent остаются
+      # per-role — разные роли могут хотеть разные политики
+      # дропа старых turn'ов.
       compaction_threshold: 0.7
       compaction_keep_recent: 5
       # disable_thinking: шлёт reasoning_effort="none".
@@ -109,16 +133,17 @@ llm:
       reasoning_effort: "none"
 
     # summary: дешёвая модель для сжатия NPC/lore/memorise.
-    # 0 = выключено (только drop, без сжатия).
+    # 0 = выключено (только drop, без сжатия). Тот же provider, что
+    # и narrative — Ollama допускает несколько моделей на одном
+    # эндпоинте. Если хотите другой провайдер для summary, добавьте
+    # ещё один в providers и укажите здесь.
     summary:
-      api_url: "http://localhost:11434/v1"
-      api_key: "ollama"
+      provider: local_ollama
       model: "deepseek-v4-flash"
       system_prompt_path: ""
       max_tokens: 500
       temperature: 0.2
       request_timeout_seconds: 60
-      context_window: 16000
       compaction_threshold: 0.5
       compaction_keep_recent: 3
       disable_thinking: true
